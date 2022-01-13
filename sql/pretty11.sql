@@ -1,0 +1,24 @@
+SELECT
+    *
+FROM
+    t0
+UNION
+SELECT
+    *
+FROM
+    t1
+UNION ALL
+SELECT
+    *
+FROM
+    t2
+EXCEPT
+SELECT
+    *
+FROM
+    t3
+INTERSECT
+SELECT
+    *
+FROM
+    t4

@@ -1,0 +1,42 @@
+[package]
+name = "xngin-bench"
+version = "0.1.0"
+edition = "2021"
+authors = ["jiangzhe <nju.jiangzhe@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Benchmarks of X-Engine"
+keywords = ["database", "benchmark"]
+categories = ["database"]
+repository = "https://github.com/jiangzhe/xngin/xngin-bench/"
+
+[dependencies]
+xngin-compute = {version = "0.1.0", path = "../xngin-compute"}
+
+[dev-dependencies]
+criterion = {version = "0.3", features = ["html_reports"]}
+bytemuck = "1.7"
+rand = "0.8.3"
+
+[[bench]]
+name = "bitmap_foreach"
+harness = false
+
+[[bench]]
+name = "bitmap_shift"
+harness = false
+
+[[bench]]
+name = "bitmap_merge"
+harness = false
+
+[[bench]]
+name = "bitmap_extend"
+harness = false
+
+[[bench]]
+name = "bitmap_count"
+harness = false
+
+[[bench]]
+name = "bitmap_range_iter"
+harness = false

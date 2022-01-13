@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+    - name: Build
+      run: cargo build --verbose --all
+    - name: Run tests
+      run: cargo test --verbose --all
+    - name: Install cargo-tarpaulin
+      uses: actions-rs/install@v0.1
+      with:
+        crate: cargo-tarpaulin
+        version: latest
+        use-tool-cache: true
+    - name: Run cargo-tarpaulin
+      run: cargo tarpaulin --all-features --workspace --timeout 120 --out Xml
+    - name: Upload to codecov.io
+      uses: codecov/codecov-action@v1.0.2
+      with:
+        token: ${{secrets.CODECOV_TOKEN}}

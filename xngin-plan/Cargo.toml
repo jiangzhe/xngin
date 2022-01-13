@@ -1,0 +1,21 @@
+[package]
+name = "xngin-plan"
+version = "0.1.0"
+edition = "2021"
+authors = ["jiangzhe <nju.jiangzhe@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Planner module of X-Engine"
+keywords = ["query", "planning", "optimization"]
+categories = ["database-implementations"]
+repository = "https://github.com/jiangzhe/xngin/xngin-plan/"
+
+[dependencies]
+xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
+xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
+slab = "0.4"
+thiserror = "1.0"
+smol_str = "0.1"
+fnv = "1.0"
+indexmap = "1.7"
+static_init = "1.0"
+smallvec = "1.7"

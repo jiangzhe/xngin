@@ -1,0 +1,20 @@
+[package]
+name = "xngin-compute"
+version = "0.1.0"
+edition = "2021"
+authors = ["jiangzhe <nju.jiangzhe@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Computation module of X-Engine"
+keywords = ["database", "vectorization"]
+categories = ["database-implementations"]
+repository = "https://github.com/jiangzhe/xngin/xngin-compute/"
+
+[dependencies]
+bytemuck = "1.7"
+thiserror = "1.0"
+libc = "0.2.101"
+xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
+
+[dev-dependencies]
+rand = "0.8"
+anyhow = "1.0"

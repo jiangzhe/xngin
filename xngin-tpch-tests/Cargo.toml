@@ -1,0 +1,13 @@
+[package]
+name = "xngin-tpch-tests"
+version = "0.1.0"
+edition = "2021"
+authors = ["jiangzhe <nju.jiangzhe@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "TPCH test cases of X-Engine"
+repository = "https://github.com/jiangzhe/xngin/xngin-tpch-tests/"
+
+[dependencies]
+xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
+xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
+xngin-plan = { version = "0.1.0", path = "../xngin-plan" }

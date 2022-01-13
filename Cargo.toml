@@ -1,0 +1,2 @@
+[workspace]
+members = ["xngin-frontend", "xngin-compute", "xngin-catalog", "xngin-plan", "xngin-bench", "xngin-tpch-tests"]
