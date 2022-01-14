@@ -3,16 +3,14 @@ mod tests;
 
 use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
-use crate::expr::{self, Col, SubqKind, Unknown};
-use crate::id::QueryID;
 use crate::op::{Join, JoinKind, JoinOp, Op, OpMutVisitor, SortItem};
-use crate::pred::{Pred, PredFuncKind};
 use crate::query::{QueryPlan, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, Resolution};
 use crate::scope::{Scope, Scopes};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
+use xngin_expr::{self as expr, Col, Pred, PredFuncKind, QueryID, SubqKind, Plhd};
 use xngin_frontend::ast::*;
 
 pub struct PlanBuilder {
@@ -96,7 +94,7 @@ impl PlanBuilder {
                     self.find_correlated_tbl_col(tbl_alias, col_alias, location)?
                 }
                 [col_alias] => self.find_correlated_col(col_alias, location)?,
-                _ => return Err(Error::unknown_column_idents(&ident, location)),
+                _ => return Err(Error::unknown_column_idents(ident, location)),
             };
             let _ = root.walk_mut(&mut ReplaceCorrelatedCol(*uid, ccol));
         }
@@ -180,9 +178,8 @@ impl PlanBuilder {
                     col = Some(expr::Expr::correlated_col(*query_id, idx as u32))
                 }
             }
-            match col {
-                Some(e) => return Ok(e),
-                None => (),
+            if let Some(e) = col {
+                return Ok(e)
             }
         }
         Err(Error::unknown_column_name(col_alias, location))
@@ -197,7 +194,7 @@ impl PlanBuilder {
     ) -> Result<()> {
         for (uid, kind, subq, _) in subqueries {
             let phc = PlaceholderCollector::new(true);
-            let query_id = self.build_subquery(&subq, phc)?;
+            let query_id = self.build_subquery(subq, phc)?;
             let _ = root.walk_mut(&mut ReplaceSubquery(uid, kind, query_id));
         }
         Ok(())
@@ -410,7 +407,7 @@ impl PlanBuilder {
         match &mut root {
             Op::Aggr(aggr) => aggr.proj = proj_cols,
             _ => {
-                root = Op::proj(proj_cols, expr::SetQuantifier::All, root);
+                root = Op::proj(proj_cols, expr::Setq::All, root);
             }
         }
         // f) build Sort operator
@@ -785,7 +782,7 @@ impl PlanBuilder {
         }
         let proj = Op::proj(
             proj_cols,
-            expr::SetQuantifier::All,
+            expr::Setq::All,
             Op::table(schema_id, table_id),
         );
         let mut subquery = Subquery::new(proj, false, Scope::default());
@@ -1095,13 +1092,10 @@ struct ReplaceCorrelatedCol(u32, expr::Expr);
 impl OpMutVisitor for ReplaceCorrelatedCol {
     fn enter(&mut self, op: &mut Op) -> bool {
         for e in op.exprs_mut() {
-            match e {
-                expr::Expr::Unknown(Unknown::Ident(uid)) => {
-                    if *uid == self.0 {
-                        *e = self.1.clone();
-                    }
+            if let expr::Expr::Plhd(Plhd::Ident(uid)) = e {
+                if *uid == self.0 {
+                    *e = self.1.clone();
                 }
-                _ => (),
             }
         }
         true
@@ -1117,13 +1111,10 @@ struct ReplaceSubquery(u32, SubqKind, QueryID);
 impl OpMutVisitor for ReplaceSubquery {
     fn enter(&mut self, op: &mut Op) -> bool {
         for e in op.exprs_mut() {
-            match e {
-                expr::Expr::Unknown(Unknown::Subquery(uid)) => {
-                    if *uid == self.0 {
-                        *e = expr::Expr::Subq(self.1, self.2);
-                    }
+            if let expr::Expr::Plhd(Plhd::Subquery(uid)) = e {
+                if *uid == self.0 {
+                    *e = expr::Expr::Subq(self.1, self.2);
                 }
-                _ => (),
             }
         }
         true

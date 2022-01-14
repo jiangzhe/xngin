@@ -106,10 +106,10 @@ impl Error {
     pub fn unknown_column_idents(ids: &[SmolStr], location: &str) -> Self {
         Self::unknown_column_apply(location, |s| {
             let (head, tail) = ids.split_first().unwrap();
-            s.push_str(&head);
+            s.push_str(head);
             for id in tail {
                 s.push('.');
-                s.push_str(&id.as_str());
+                s.push_str(id.as_str());
             }
         })
     }

@@ -10,5 +10,5 @@ macro_rules! check_build {
         let (_, qry) = parse_query_verbose(MySQL(sql)).unwrap();
         let builder = PlanBuilder::new(cat, "tpch").unwrap();
         let _ = builder.build_plan(&qry).unwrap();
-    }
+    };
 }

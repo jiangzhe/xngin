@@ -7,12 +7,10 @@
 //! with schema validated.
 //!
 //! Each table/column is lookuped from catalog and assigned a unique id.
-use crate::expr::{Expr, SetQuantifier};
-use crate::id::QueryID;
-use crate::pred::Pred;
 use smallvec::smallvec;
 use smol_str::SmolStr;
 use xngin_catalog::{SchemaID, TableID};
+use xngin_expr::{Expr, Pred, QueryID, Setq};
 
 /// Op stands for logical operator.
 /// This is the overall enum containing all nodes of logical plan.
@@ -42,7 +40,7 @@ pub enum Op {
 
 impl Op {
     #[inline]
-    pub fn proj(cols: Vec<(Expr, SmolStr)>, q: SetQuantifier, source: Op) -> Self {
+    pub fn proj(cols: Vec<(Expr, SmolStr)>, q: Setq, source: Op) -> Self {
         Op::Proj(Proj {
             cols,
             q,
@@ -207,7 +205,7 @@ impl Op {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proj {
     pub cols: Vec<(Expr, SmolStr)>,
-    pub q: SetQuantifier,
+    pub q: Setq,
     pub source: Box<Op>,
 }
 
