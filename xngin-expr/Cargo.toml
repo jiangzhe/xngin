@@ -1,0 +1,12 @@
+[package]
+name = "xngin-expr"
+version = "0.1.0"
+edition = "2021"
+authors = ["jiangzhe <nju.jiangzhe@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Expression module of X-Engine"
+repository = "https://github.com/jiangzhe/xngin/xngin-expr/"
+
+[dependencies]
+xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
+smallvec = "1.7"

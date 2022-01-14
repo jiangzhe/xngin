@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
-use crate::id::QueryID;
 use indexmap::{map, IndexMap};
 use smol_str::SmolStr;
 use std::ops::{Deref, DerefMut};
+use xngin_expr::QueryID;
 
 /// PlanAliases stores the aliases of tables.
 /// MySQL allows subquery and table has same alias.

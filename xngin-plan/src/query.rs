@@ -1,12 +1,11 @@
 use crate::error::{Error, Result};
-use crate::expr::{Col, Expr};
-use crate::id::QueryID;
 use crate::op::{Join, JoinOp, Op, OpMutVisitor, OpVisitor};
 use crate::scope::Scope;
 use fnv::FnvHashMap;
 use slab::Slab;
 use smol_str::SmolStr;
 use xngin_catalog::{SchemaID, TableID};
+use xngin_expr::{Col, Expr, QueryID};
 
 /// QueryPlan represents a self-contained query plan with
 /// complete information about all its nodes.

@@ -1,6 +1,7 @@
 # XNGIN (pronounced "X Engine")
 
 ![build](https://github.com/jiangzhe/xngin/actions/workflows/build.yml/badge.svg)
+![codecov](https://codecov.io/gh/jiangzhe/xngin/branch/main/graph/badge.svg?token=T3RMZE2998)
 
 This is a personal project to build a SQL engine from scratch.
 

@@ -12,6 +12,7 @@ repository = "https://github.com/jiangzhe/xngin/xngin-plan/"
 [dependencies]
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
 xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
+xngin-expr = { version = "0.1.0", path = "../xngin-expr" }
 slab = "0.4"
 thiserror = "1.0"
 smol_str = "0.1"

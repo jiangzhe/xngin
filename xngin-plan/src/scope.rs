@@ -1,9 +1,8 @@
 use crate::alias::QueryAliases;
-use crate::expr::Expr;
-use crate::id::QueryID;
 use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::ops::{Deref, DerefMut};
+use xngin_expr::{Expr, QueryID};
 
 // Scopes is stack-like environment for query blocks.
 #[derive(Debug, Default)]

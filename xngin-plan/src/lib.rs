@@ -3,11 +3,7 @@
 pub mod alias;
 pub mod builder;
 pub mod error;
-pub mod expr;
-pub mod func;
-pub mod id;
 pub mod op;
-pub mod pred;
 pub mod query;
 pub mod resolv;
 pub mod scope;

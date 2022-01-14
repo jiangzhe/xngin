@@ -1,12 +1,9 @@
 use crate::error::{Error, Result, ToResult};
-use crate::expr::{self, SubqKind};
-use crate::func::FuncKind;
-use crate::id::QueryID;
-use crate::pred::{Pred, PredFuncKind};
 use crate::query::Subquery;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::QueryCatalog;
+use xngin_expr::{self as expr, FuncKind, Pred, PredFuncKind, QueryID, SubqKind};
 use xngin_frontend::ast::*;
 
 #[derive(Debug)]
@@ -500,8 +497,8 @@ pub trait ExprResolve {
     ) -> Result<expr::Expr> {
         let e = self.resolve_expr(&af.expr, location, phc)?;
         let q = match af.q {
-            SetQuantifier::All => expr::SetQuantifier::All,
-            SetQuantifier::Distinct => expr::SetQuantifier::Distinct,
+            SetQuantifier::All => expr::Setq::All,
+            SetQuantifier::Distinct => expr::Setq::Distinct,
         };
         let res = match af.kind {
             AggrFuncKind::CountAsterisk => expr::Expr::count_asterisk(),
@@ -548,7 +545,7 @@ impl<'a> PlaceholderCollector<'a> {
         let uid = self.ident_id_gen;
         self.idents.push((uid, ident, location));
         self.ident_id_gen += 1;
-        expr::Expr::unknown_ident(uid)
+        expr::Expr::ph_ident(uid)
     }
 
     #[inline]
@@ -561,6 +558,6 @@ impl<'a> PlaceholderCollector<'a> {
         let uid = self.subquery_id_gen;
         self.subqueries.push((uid, kind, subquery, location));
         self.subquery_id_gen += 1;
-        expr::Expr::unknown_subquery(uid)
+        expr::Expr::ph_subquery(uid)
     }
 }
