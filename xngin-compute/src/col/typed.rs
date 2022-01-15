@@ -1,6 +1,6 @@
 use crate::col::sized::VecSizedCol;
 use crate::col::BaseCol;
-use crate::types::DataType;
+use xngin_datatype::DataType;
 
 pub type VecI64Col = VecSizedCol<i64>;
 pub type VecF64Col = VecSizedCol<f64>;

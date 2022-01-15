@@ -1,7 +1,8 @@
 use super::*;
 use std::sync::Arc;
 use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
-use xngin_catalog::{ColumnAttr, DataType};
+use xngin_catalog::ColumnAttr;
+use xngin_datatype::DataType;
 use xngin_frontend::parser::dialect::MySQL;
 use xngin_frontend::parser::parse_query;
 

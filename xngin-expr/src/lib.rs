@@ -8,7 +8,8 @@ use smallvec::{smallvec, SmallVec};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::Arc;
-use xngin_catalog::{DataType, TableID};
+use xngin_catalog::TableID;
+use xngin_datatype::{DataType, Date, Datetime, Decimal, Interval, Time, TimeUnit};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
@@ -67,6 +68,11 @@ impl Expr {
     }
 
     #[inline]
+    pub fn const_null() -> Self {
+        Expr::Const(Const::Null)
+    }
+
+    #[inline]
     pub fn const_i64(i: i64) -> Self {
         Expr::Const(Const::I64(i))
     }
@@ -80,6 +86,31 @@ impl Expr {
     #[inline]
     pub fn const_f64(f: f64) -> Self {
         Expr::Const(Const::F64(ValidF64::new(f).unwrap()))
+    }
+
+    #[inline]
+    pub fn const_decimal(d: Decimal) -> Self {
+        Expr::Const(Const::Decimal(d))
+    }
+
+    #[inline]
+    pub fn const_date(dt: Date) -> Self {
+        Expr::Const(Const::Date(dt))
+    }
+
+    #[inline]
+    pub fn const_time(tm: Time) -> Self {
+        Expr::Const(Const::Time(tm))
+    }
+
+    #[inline]
+    pub fn const_datetime(ts: Datetime) -> Self {
+        Expr::Const(Const::Datetime(ts))
+    }
+
+    #[inline]
+    pub fn const_interval(unit: TimeUnit, value: i32) -> Self {
+        Expr::Const(Const::Interval(Interval { unit, value }))
     }
 
     #[inline]
@@ -274,10 +305,14 @@ pub enum Const {
     I64(i64),
     U64(u64),
     F64(ValidF64),
-    Decimal,  // todo
-    Datetime, // todo
+    Decimal(Decimal),
+    Date(Date),
+    Time(Time),
+    Datetime(Datetime),
+    Interval(Interval),
     String(Arc<str>),
     Bytes(Arc<[u8]>),
+    Null,
 }
 
 #[derive(Debug, Clone)]

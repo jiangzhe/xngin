@@ -4,8 +4,8 @@ mod typed;
 
 use crate::bitmap::ReadBitmap;
 use crate::error::Result;
-use crate::types::DataType;
 use std::ops::Range;
+use xngin_datatype::DataType;
 
 pub use self::typed::{TypedCol, VecF64Col, VecI64Col};
 

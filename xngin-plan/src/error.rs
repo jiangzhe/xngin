@@ -58,6 +58,12 @@ pub enum Error {
     AggrFuncInGroupBy,
     #[error(transparent)]
     ParseFloatError(#[from] std::num::ParseFloatError),
+    #[error(transparent)]
+    ParseIntError(#[from] std::num::ParseIntError),
+    #[error(transparent)]
+    ParseDecimalError(#[from] xngin_datatype::DecimalError),
+    #[error(transparent)]
+    ParseDatetimeError(#[from] xngin_datatype::DatetimeParseError),
     #[error("Internal error MustOK")]
     MustOK,
 }
@@ -133,5 +139,15 @@ impl Error {
             }
             s.push('*');
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn limit_plan_error_size() {
+        assert!(std::mem::size_of::<Error>() <= 64);
     }
 }
