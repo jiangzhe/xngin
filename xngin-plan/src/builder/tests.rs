@@ -34,6 +34,9 @@ fn test_plan_build_expr() {
         "select l_tax is null, l_tax is not null, l_tax is true, l_tax is not true, l_tax is false, l_tax is not false from lineitem",
         "select l_shipdate <=> l_commitdate, l_comment like 'A%', l_comment not like 'A%', l_comment regexp '.*', l_comment not regexp '.*' from lineitem",
         "select l_quantity in (1,2,3), l_quantity not in (1,2,3), l_quantity between 1 and 3, l_quantity not between 1 and 3 from lineitem",
+        "select extract(year from l_shipdate), extract(quarter from l_shipdate), extract(month from l_shipdate), extract(week from l_shipdate), extract(day from l_shipdate) from lineitem",
+        "select extract(hour from l_shipdate), extract(minute from l_shipdate), extract(second from l_shipdate), extract(microsecond from l_shipdate) from lineitem",
+        "select substring(l_comment, 1), substring(l_comment, 1, 10) from lineitem",
     ] {
         let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
         let (_, qr) = parse_query(MySQL(sql)).unwrap();

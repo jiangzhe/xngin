@@ -4,7 +4,7 @@ use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::QueryCatalog;
 use xngin_datatype::{Date, Decimal, TimeUnit, DEFAULT_DATE_FORMAT};
-use xngin_expr::{self as expr, FuncKind, Pred, PredFuncKind, QueryID, SubqKind};
+use xngin_expr::{self as expr, Farg, FuncKind, Pred, PredFuncKind, QueryID, SubqKind};
 use xngin_frontend::ast::*;
 
 #[derive(Debug)]
@@ -435,6 +435,49 @@ pub trait ExprResolve {
             Expr::ScalarSubquery(subq) => {
                 phc.add_subquery(expr::SubqKind::Scalar, subq.as_ref(), location)
             }
+            Expr::Builtin(bi) => match bi {
+                Builtin::Extract(unit, arg) => {
+                    let unit = time_unit_from_ast(*unit);
+                    let e = self.resolve_expr(arg, location, phc)?;
+                    expr::Expr::func(
+                        expr::FuncKind::Extract,
+                        vec![expr::Expr::Farg(Farg::TimeUnit(unit)), e],
+                    )
+                }
+                Builtin::Substring(arg, start, end) => {
+                    let arg = self.resolve_expr(arg, location, phc)?;
+                    let start = self.resolve_expr(start, location, phc)?;
+                    let end = match end {
+                        Some(e) => self.resolve_expr(e, location, phc)?,
+                        None => expr::Expr::farg_none(),
+                    };
+                    expr::Expr::func(expr::FuncKind::Substring, vec![arg, start, end])
+                }
+            },
+            Expr::CaseWhen(CaseWhen {
+                operand,
+                branches,
+                fallback,
+            }) => {
+                let mut args = Vec::with_capacity(branches.len() * 2 + 2);
+                let node = match operand {
+                    Some(e) => self.resolve_expr(e, location, phc)?,
+                    None => expr::Expr::farg_none(),
+                };
+                args.push(node);
+                let fb = match fallback {
+                    Some(e) => self.resolve_expr(e, location, phc)?,
+                    None => expr::Expr::farg_none(),
+                };
+                args.push(fb);
+                for (when, then) in branches {
+                    let when = self.resolve_expr(when, location, phc)?;
+                    args.push(when);
+                    let then = self.resolve_expr(then, location, phc)?;
+                    args.push(then);
+                }
+                expr::Expr::func(expr::FuncKind::Case, args)
+            }
             _ => todo!("exprs"),
         };
         Ok(res)
@@ -492,17 +535,7 @@ pub trait ExprResolve {
                 expr::Expr::const_date(dt)
             }
             Literal::Interval(Interval { unit, value }) => {
-                let unit = match unit {
-                    DatetimeUnit::Microsecond => TimeUnit::Microsecond,
-                    DatetimeUnit::Second => TimeUnit::Second,
-                    DatetimeUnit::Minute => TimeUnit::Minute,
-                    DatetimeUnit::Hour => TimeUnit::Hour,
-                    DatetimeUnit::Day => TimeUnit::Day,
-                    DatetimeUnit::Week => TimeUnit::Week,
-                    DatetimeUnit::Month => TimeUnit::Month,
-                    DatetimeUnit::Quarter => TimeUnit::Quarter,
-                    DatetimeUnit::Year => TimeUnit::Year,
-                };
+                let unit = time_unit_from_ast(*unit);
                 let value: i32 = value.parse()?;
                 expr::Expr::const_interval(unit, value)
             }
@@ -582,5 +615,21 @@ impl<'a> PlaceholderCollector<'a> {
         self.subqueries.push((uid, kind, subquery, location));
         self.subquery_id_gen += 1;
         expr::Expr::ph_subquery(uid)
+    }
+}
+
+/* helper functions */
+
+fn time_unit_from_ast(unit: DatetimeUnit) -> TimeUnit {
+    match unit {
+        DatetimeUnit::Microsecond => TimeUnit::Microsecond,
+        DatetimeUnit::Second => TimeUnit::Second,
+        DatetimeUnit::Minute => TimeUnit::Minute,
+        DatetimeUnit::Hour => TimeUnit::Hour,
+        DatetimeUnit::Day => TimeUnit::Day,
+        DatetimeUnit::Week => TimeUnit::Week,
+        DatetimeUnit::Month => TimeUnit::Month,
+        DatetimeUnit::Quarter => TimeUnit::Quarter,
+        DatetimeUnit::Year => TimeUnit::Year,
     }
 }

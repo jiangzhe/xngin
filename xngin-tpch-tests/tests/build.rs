@@ -43,20 +43,20 @@ fn build_tpch6() {
     check_build!("../../sql/tpch6.sql");
 }
 
-// #[test]
-// fn build_tpch7() {
-//     check_build!("../../sql/tpch7.sql");
-// }
+#[test]
+fn build_tpch7() {
+    check_build!("../../sql/tpch7.sql");
+}
 
-// #[test]
-// fn build_tpch8() {
-//     check_build!("../../sql/tpch8.sql");
-// }
+#[test]
+fn build_tpch8() {
+    check_build!("../../sql/tpch8.sql");
+}
 
-// #[test]
-// fn build_tpch9() {
-//     check_build!("../../sql/tpch9.sql");
-// }
+#[test]
+fn build_tpch9() {
+    check_build!("../../sql/tpch9.sql");
+}
 
 #[test]
 fn build_tpch10() {
@@ -68,20 +68,20 @@ fn build_tpch11() {
     check_build!("../../sql/tpch11.sql");
 }
 
-// #[test]
-// fn build_tpch12() {
-//     check_build!("../../sql/tpch12.sql");
-// }
+#[test]
+fn build_tpch12() {
+    check_build!("../../sql/tpch12.sql");
+}
 
 #[test]
 fn build_tpch13() {
     check_build!("../../sql/tpch13.sql");
 }
 
-// #[test]
-// fn build_tpch14() {
-//     check_build!("../../sql/tpch14.sql");
-// }
+#[test]
+fn build_tpch14() {
+    check_build!("../../sql/tpch14.sql");
+}
 
 #[test]
 fn build_tpch15() {
@@ -118,7 +118,7 @@ fn build_tpch21() {
     check_build!("../../sql/tpch21.sql");
 }
 
-// #[test]
-// fn build_tpch22() {
-//     check_build!("../../sql/tpch22.sql");
-// }
+#[test]
+fn build_tpch22() {
+    check_build!("../../sql/tpch22.sql");
+}

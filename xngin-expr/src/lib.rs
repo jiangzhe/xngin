@@ -20,12 +20,14 @@ pub enum Expr {
     Pred(Box<Pred>),
     Cast(Box<Expr>, DataType),
     Tuple(Vec<Expr>),
-    // Subquery that returns single value
+    /// Subquery that returns single value.
     Subq(SubqKind, QueryID),
-    // Placeholder can represent any intermediate value
-    // generated in building phase. It should be
-    // resolved as a normal expression later.
+    /// Placeholder can represent any intermediate value
+    /// generated in building phase. It should be
+    /// resolved as a normal expression later.
     Plhd(Plhd),
+    /// Predefined function argument.
+    Farg(Farg),
 }
 
 impl Expr {
@@ -198,11 +200,18 @@ impl Expr {
         Expr::Plhd(Plhd::Subquery(uid))
     }
 
+    #[inline]
+    pub fn farg_none() -> Self {
+        Expr::Farg(Farg::None)
+    }
+
     /// Most expression has two children so we use SmallVec<[&Expr; 2]>.
     #[inline]
     pub fn children(&self) -> smallvec::IntoIter<[&Expr; 2]> {
         match self {
-            Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) => smallvec![],
+            Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => {
+                smallvec![]
+            }
             Expr::Aggf(af) => smallvec![af.expr.as_ref()],
             Expr::Func(f) => SmallVec::from_iter(f.args.iter()),
             Expr::Pred(p) => match p.as_ref() {
@@ -225,7 +234,9 @@ impl Expr {
     #[inline]
     pub fn children_mut(&mut self) -> smallvec::IntoIter<[&mut Expr; 2]> {
         match self {
-            Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) => smallvec![],
+            Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => {
+                smallvec![]
+            }
             Expr::Aggf(af) => smallvec![af.expr.as_mut()],
             Expr::Func(f) => SmallVec::from_iter(f.args.iter_mut()),
             Expr::Pred(p) => match p.as_mut() {
@@ -376,6 +387,13 @@ pub enum SubqKind {
 pub enum Plhd {
     Ident(u32),
     Subquery(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Farg {
+    /// indicates there is no argument present in this position of the argument list
+    None,
+    TimeUnit(TimeUnit),
 }
 
 /// QueryID wraps u32 to be the identifier of subqueries in single query.

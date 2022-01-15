@@ -18,10 +18,12 @@ impl Func {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FuncKind {
-    // arithmetic unary
+    /// Unary operators: 1 arg
+    // Negate
     Neg,
+    // Bit inverse
     BitInv,
-    // arithmetic binary
+    /// Binary operators: 2 args
     Add,
     Sub,
     Mul,
@@ -32,4 +34,12 @@ pub enum FuncKind {
     BitXor,
     BitShl,
     BitShr,
+    /// Case when clause.
+    // arguments: [node, else, when, then, ..., when, then]
+    Case,
+    /// SQL builtin functions: variable args
+    // extract: [time_unit, arg]
+    Extract,
+    // substring: [arg, start, end]
+    Substring,
 }
