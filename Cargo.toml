@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "xngin-datatype",
     "xngin-catalog", 
     "xngin-frontend",
     "xngin-expr",

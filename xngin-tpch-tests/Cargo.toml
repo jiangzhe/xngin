@@ -8,6 +8,7 @@ description = "TPCH test cases of X-Engine"
 repository = "https://github.com/jiangzhe/xngin/xngin-tpch-tests/"
 
 [dependencies]
+xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
 xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
 xngin-plan = { version = "0.1.0", path = "../xngin-plan" }

@@ -1,10 +1,10 @@
 use crate::error::{Error, Result};
-use crate::types::DataType;
 use crate::{Column, ColumnAttr, ColumnID, QueryCatalog, Schema, SchemaID, Table, TableID};
 use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use xngin_datatype::DataType;
 
 #[derive(Debug, Clone)]
 pub struct MemCatalog {

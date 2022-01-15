@@ -1,8 +1,8 @@
 use crate::bitmap::{AppendBitmap, ReadBitmap, ReadBitmapExt, VecBitmap, WriteBitmap};
 use crate::col::{AppendCol, BaseCol, ReadCol, WriteCol};
 use crate::error::{Error, Result};
-use crate::types::{DataType, Typed};
 use std::ops::Range;
+use xngin_datatype::{DataType, Typed};
 
 #[derive(Debug, Clone)]
 pub struct VecSizedCol<T> {

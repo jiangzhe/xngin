@@ -3,6 +3,7 @@ use crate::query::Subquery;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::QueryCatalog;
+use xngin_datatype::{Date, Decimal, TimeUnit, DEFAULT_DATE_FORMAT};
 use xngin_expr::{self as expr, FuncKind, Pred, PredFuncKind, QueryID, SubqKind};
 use xngin_frontend::ast::*;
 
@@ -445,6 +446,7 @@ pub trait ExprResolve {
     #[inline]
     fn resolve_lit(&self, lit: &Literal<'_>) -> Result<expr::Expr> {
         let res = match lit {
+            Literal::Null => expr::Expr::const_null(),
             Literal::Numeric(n) => {
                 if n.contains(|c| c == 'e' || c == 'E') {
                     // float64
@@ -452,7 +454,8 @@ pub trait ExprResolve {
                     expr::Expr::const_f64(f)
                 } else if n.contains('.') {
                     // decimal
-                    todo!("decimal")
+                    let d: Decimal = n.parse()?;
+                    expr::Expr::const_decimal(d)
                 } else if let Ok(i) = n.parse::<i64>() {
                     // i64
                     expr::Expr::const_i64(i)
@@ -461,7 +464,8 @@ pub trait ExprResolve {
                     expr::Expr::const_u64(u)
                 } else {
                     // decimal
-                    todo!("decimal")
+                    let d: Decimal = n.parse()?;
+                    expr::Expr::const_decimal(d)
                 }
             }
             Literal::CharStr(cs) => {
@@ -483,7 +487,26 @@ pub trait ExprResolve {
                     expr::Expr::pred(Pred::False)
                 }
             }
-            _ => todo!("literal"),
+            Literal::Date(dt) => {
+                let dt = Date::parse(dt, &DEFAULT_DATE_FORMAT)?;
+                expr::Expr::const_date(dt)
+            }
+            Literal::Interval(Interval { unit, value }) => {
+                let unit = match unit {
+                    DatetimeUnit::Microsecond => TimeUnit::Microsecond,
+                    DatetimeUnit::Second => TimeUnit::Second,
+                    DatetimeUnit::Minute => TimeUnit::Minute,
+                    DatetimeUnit::Hour => TimeUnit::Hour,
+                    DatetimeUnit::Day => TimeUnit::Day,
+                    DatetimeUnit::Week => TimeUnit::Week,
+                    DatetimeUnit::Month => TimeUnit::Month,
+                    DatetimeUnit::Quarter => TimeUnit::Quarter,
+                    DatetimeUnit::Year => TimeUnit::Year,
+                };
+                let value: i32 = value.parse()?;
+                expr::Expr::const_interval(unit, value)
+            }
+            _ => todo!("hexstr, bitstr, time, datetime, interval"),
         };
         Ok(res)
     }

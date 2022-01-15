@@ -1,7 +1,7 @@
 use crate::bitmap::VecBitmap;
 use crate::col::BaseCol;
-use crate::types::{DataType, Typed};
 use std::marker::PhantomData;
+use xngin_datatype::{DataType, Typed};
 
 #[allow(dead_code)]
 pub struct VecNonsizedCol<T: ?Sized> {

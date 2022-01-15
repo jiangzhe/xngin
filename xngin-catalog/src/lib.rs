@@ -1,12 +1,11 @@
 pub mod error;
 pub mod mem_impl;
-pub mod types;
 
 use bitflags::bitflags;
 use smol_str::SmolStr;
 use std::hash::Hash;
 use std::marker::PhantomData;
-pub use types::DataType;
+use xngin_datatype::DataType;
 
 pub trait QueryCatalog {
     fn all_schemas(&self) -> Vec<Schema>;

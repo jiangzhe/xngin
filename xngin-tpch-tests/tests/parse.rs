@@ -40,7 +40,7 @@ macro_rules! check_sql {
 }
 
 #[test]
-fn tpch1_parse() {
+fn parse_tpch1() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -93,7 +93,7 @@ fn tpch1_parse() {
 }
 
 #[test]
-fn tpch2_parse() {
+fn parse_tpch2() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -172,7 +172,7 @@ fn tpch2_parse() {
 }
 
 #[test]
-fn tpch3_parse() {
+fn parse_tpch3() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -217,7 +217,7 @@ fn tpch3_parse() {
 }
 
 #[test]
-fn tpch4_parse() {
+fn parse_tpch4() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -257,7 +257,7 @@ fn tpch4_parse() {
 }
 
 #[test]
-fn tpch5_parse() {
+fn parse_tpch5() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -301,7 +301,7 @@ fn tpch5_parse() {
 }
 
 #[test]
-fn tpch6_parse() {
+fn parse_tpch6() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -331,7 +331,7 @@ fn tpch6_parse() {
 }
 
 #[test]
-fn tpch7_parse() {
+fn parse_tpch7() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -430,7 +430,7 @@ fn tpch7_parse() {
 }
 
 #[test]
-fn tpch8_parse() {
+fn parse_tpch8() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -522,7 +522,7 @@ fn tpch8_parse() {
 }
 
 #[test]
-fn tpch9_parse() {
+fn parse_tpch9() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -596,7 +596,7 @@ fn tpch9_parse() {
 }
 
 #[test]
-fn tpch10_parse() {
+fn parse_tpch10() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -652,7 +652,7 @@ fn tpch10_parse() {
 }
 
 #[test]
-fn tpch11_parse() {
+fn parse_tpch11() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -707,7 +707,7 @@ fn tpch11_parse() {
 }
 
 #[test]
-fn tpch12_parse() {
+fn parse_tpch12() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -780,7 +780,7 @@ fn tpch12_parse() {
 }
 
 #[test]
-fn tpch13_parse() {
+fn parse_tpch13() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -833,7 +833,7 @@ fn tpch13_parse() {
 }
 
 #[test]
-fn tpch14_parse() {
+fn parse_tpch14() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -877,7 +877,7 @@ fn tpch14_parse() {
 }
 
 #[test]
-fn tpch15_parse() {
+fn parse_tpch15() {
     let expected = QueryExpr {
         with: Some(With {
             recursive: false,
@@ -953,7 +953,7 @@ fn tpch15_parse() {
 }
 
 #[test]
-fn tpch16_parse() {
+fn parse_tpch16() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -1020,7 +1020,7 @@ fn tpch16_parse() {
 }
 
 #[test]
-fn tpch17_parse() {
+fn parse_tpch17() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -1064,7 +1064,7 @@ fn tpch17_parse() {
 }
 
 #[test]
-fn tpch18_parse() {
+fn parse_tpch18() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -1123,7 +1123,7 @@ fn tpch18_parse() {
 }
 
 #[test]
-fn tpch19_parse() {
+fn parse_tpch19() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -1250,7 +1250,7 @@ fn tpch19_parse() {
 }
 
 #[test]
-fn tpch20_parse() {
+fn parse_tpch20() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -1340,7 +1340,7 @@ fn tpch20_parse() {
 }
 
 #[test]
-fn tpch21_parse() {
+fn parse_tpch21() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {
@@ -1412,7 +1412,7 @@ fn tpch21_parse() {
 }
 
 #[test]
-fn tpch22_parse() {
+fn parse_tpch22() {
     let expected = QueryExpr {
         with: None,
         query: Query::table(SelectTable {

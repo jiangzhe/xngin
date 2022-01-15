@@ -10,7 +10,7 @@ use crate::scope::{Scope, Scopes};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
-use xngin_expr::{self as expr, Col, Pred, PredFuncKind, QueryID, SubqKind, Plhd};
+use xngin_expr::{self as expr, Col, Plhd, Pred, PredFuncKind, QueryID, SubqKind};
 use xngin_frontend::ast::*;
 
 pub struct PlanBuilder {
@@ -179,7 +179,7 @@ impl PlanBuilder {
                 }
             }
             if let Some(e) = col {
-                return Ok(e)
+                return Ok(e);
             }
         }
         Err(Error::unknown_column_name(col_alias, location))
@@ -780,11 +780,7 @@ impl PlanBuilder {
                 c.name,
             ))
         }
-        let proj = Op::proj(
-            proj_cols,
-            expr::Setq::All,
-            Op::table(schema_id, table_id),
-        );
+        let proj = Op::proj(proj_cols, expr::Setq::All, Op::table(schema_id, table_id));
         let mut subquery = Subquery::new(proj, false, Scope::default());
         subquery.reset_out_cols();
         let query_id = self.qs.insert(subquery);

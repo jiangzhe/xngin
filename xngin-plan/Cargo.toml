@@ -10,6 +10,7 @@ categories = ["database-implementations"]
 repository = "https://github.com/jiangzhe/xngin/xngin-plan/"
 
 [dependencies]
+xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
 xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
 xngin-expr = { version = "0.1.0", path = "../xngin-expr" }

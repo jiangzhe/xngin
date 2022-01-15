@@ -7,4 +7,3 @@ pub mod op;
 pub mod query;
 pub mod resolv;
 pub mod scope;
-pub mod type_infer;
