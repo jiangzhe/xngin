@@ -3,6 +3,7 @@
 pub mod alias;
 pub mod builder;
 pub mod error;
+pub mod explain;
 pub mod op;
 pub mod query;
 pub mod resolv;

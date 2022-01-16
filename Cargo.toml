@@ -5,7 +5,7 @@ members = [
     "xngin-frontend",
     "xngin-expr",
     "xngin-compute", 
-    "xngin-plan", 
-    "xngin-bench", 
+    "xngin-plan",
     "xngin-tpch-tests"
 ]
+exclude = ["xngin-bench"]

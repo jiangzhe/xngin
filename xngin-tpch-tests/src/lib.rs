@@ -11,7 +11,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
         .add_table(
             "tpch",
             "lineitem",
-            &vec![
+            &[
                 ColumnSpec::new("l_orderkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("l_partkey", DataType::I32, ColumnAttr::empty()),
                 ColumnSpec::new("l_suppkey", DataType::I32, ColumnAttr::empty()),
@@ -35,7 +35,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
         .add_table(
             "tpch",
             "orders",
-            &vec![
+            &[
                 ColumnSpec::new("o_orderkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("o_custkey", DataType::I32, ColumnAttr::empty()),
                 ColumnSpec::new("o_orderstatus", DataType::Char, ColumnAttr::empty()),
@@ -52,7 +52,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
         .add_table(
             "tpch",
             "customer",
-            &vec![
+            &[
                 ColumnSpec::new("c_custkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("c_name", DataType::String, ColumnAttr::empty()),
                 ColumnSpec::new("c_address", DataType::String, ColumnAttr::empty()),
@@ -68,7 +68,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
         .add_table(
             "tpch",
             "partsupp",
-            &vec![
+            &[
                 ColumnSpec::new("ps_partkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("ps_suppkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("ps_availqty", DataType::I32, ColumnAttr::empty()),
@@ -81,7 +81,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
         .add_table(
             "tpch",
             "part",
-            &vec![
+            &[
                 ColumnSpec::new("p_partkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("p_name", DataType::String, ColumnAttr::empty()),
                 ColumnSpec::new("p_mfgr", DataType::String, ColumnAttr::empty()),
@@ -98,7 +98,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
         .add_table(
             "tpch",
             "supplier",
-            &vec![
+            &[
                 ColumnSpec::new("s_suppkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("s_name", DataType::String, ColumnAttr::empty()),
                 ColumnSpec::new("s_address", DataType::String, ColumnAttr::empty()),
@@ -113,7 +113,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
         .add_table(
             "tpch",
             "nation",
-            &vec![
+            &[
                 ColumnSpec::new("n_nationkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("n_name", DataType::String, ColumnAttr::empty()),
                 ColumnSpec::new("n_regionkey", DataType::I32, ColumnAttr::empty()),
@@ -125,7 +125,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
         .add_table(
             "tpch",
             "region",
-            &vec![
+            &[
                 ColumnSpec::new("r_regionkey", DataType::I32, ColumnAttr::PK),
                 ColumnSpec::new("r_name", DataType::String, ColumnAttr::empty()),
                 ColumnSpec::new("r_comment", DataType::String, ColumnAttr::empty()),

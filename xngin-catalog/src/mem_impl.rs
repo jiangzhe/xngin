@@ -87,7 +87,7 @@ impl QueryCatalog for MemCatalog {
         self.inner
             .table_columns
             .get(table_id)
-            .map(|twc| twc.columns.iter().any(|c| &c.name == column_name))
+            .map(|twc| twc.columns.iter().any(|c| c.name == column_name))
             .unwrap_or_default()
     }
 
@@ -95,7 +95,7 @@ impl QueryCatalog for MemCatalog {
         self.inner
             .table_columns
             .get(table_id)
-            .and_then(|twc| twc.columns.iter().find(|c| &c.name == column_name).cloned())
+            .and_then(|twc| twc.columns.iter().find(|c| c.name == column_name).cloned())
     }
 }
 
@@ -139,7 +139,7 @@ impl MemCatalogBuilder {
             if self
                 .tables
                 .get(&schema_id)
-                .and_then(|ts| ts.iter().find(|t| &t.name == table_name))
+                .and_then(|ts| ts.iter().find(|t| t.name == table_name))
                 .is_some()
             {
                 return Err(Error::TableAlreadyExists(table_name.to_string()));
@@ -173,7 +173,7 @@ impl MemCatalogBuilder {
                     table_id,
                     name: c.name.clone(),
                     ty: c.ty,
-                    attr: c.attr.clone(),
+                    attr: c.attr,
                     idx: i as u32,
                 };
                 columns.push(column);

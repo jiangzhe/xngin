@@ -65,22 +65,6 @@ impl Scope {
     }
 
     #[inline]
-    pub fn find_out_col(&self, alias: &str) -> Option<(Expr, SmolStr)> {
-        self.out_cols.iter().find_map(|(e, a)| {
-            if a == alias {
-                Some((e.clone(), a.clone()))
-            } else {
-                None
-            }
-        })
-    }
-
-    #[inline]
-    pub fn single_from(&self) -> bool {
-        self.query_aliases.len() == 1
-    }
-
-    #[inline]
     pub fn restrict_from_aliases(&self, aliases: &[SmolStr]) -> QueryAliases {
         let m: IndexMap<SmolStr, QueryID> = aliases
             .iter()

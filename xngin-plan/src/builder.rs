@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
@@ -380,6 +380,7 @@ impl PlanBuilder {
             match from.into_iter().next().unwrap() {
                 JoinOp::Subquery(query_id) => Op::subquery(query_id),
                 JoinOp::Join(j) => Op::Join(j),
+                _ => unreachable!("FROM clause only generate operators subquery and join"),
             }
         } else {
             Op::cross_join(from)

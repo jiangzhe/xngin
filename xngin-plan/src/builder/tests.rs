@@ -31,6 +31,7 @@ fn test_plan_build_expr() {
         "select 1+2, 1-2, 1*2, 1/2",
         "select 1&2, 1|2, 1^2, 1<<2, 1>>2",
         "select true, false, 1 and 2, 1 or 2, 1 xor 2, 1=2, 1>=2, 1>2, 1<=2, 1<2, 1<>2",
+        "select null, date '2021-01-01'",
         "select l_tax is null, l_tax is not null, l_tax is true, l_tax is not true, l_tax is false, l_tax is not false from lineitem",
         "select l_shipdate <=> l_commitdate, l_comment like 'A%', l_comment not like 'A%', l_comment regexp '.*', l_comment not regexp '.*' from lineitem",
         "select l_quantity in (1,2,3), l_quantity not in (1,2,3), l_quantity between 1 and 3, l_quantity not between 1 and 3 from lineitem",
@@ -209,7 +210,7 @@ fn empty_catalog() -> Arc<dyn QueryCatalog> {
 }
 
 #[inline]
-fn tpch_catalog() -> Arc<dyn QueryCatalog> {
+pub(crate) fn tpch_catalog() -> Arc<dyn QueryCatalog> {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("tpch").unwrap();
     builder
