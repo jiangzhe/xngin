@@ -121,7 +121,7 @@ impl Expr {
         let af = Aggf {
             kind: AggKind::Count,
             q: Setq::All,
-            expr: Box::new(Expr::const_i64(1)),
+            arg: Box::new(Expr::const_i64(1)),
         };
         Expr::Aggf(af)
     }
@@ -131,7 +131,7 @@ impl Expr {
         let af = Aggf {
             kind: AggKind::Count,
             q,
-            expr: Box::new(expr),
+            arg: Box::new(expr),
         };
         Expr::Aggf(af)
     }
@@ -141,7 +141,7 @@ impl Expr {
         let af = Aggf {
             kind: AggKind::Sum,
             q,
-            expr: Box::new(expr),
+            arg: Box::new(expr),
         };
         Expr::Aggf(af)
     }
@@ -151,7 +151,7 @@ impl Expr {
         let af = Aggf {
             kind: AggKind::Avg,
             q,
-            expr: Box::new(expr),
+            arg: Box::new(expr),
         };
         Expr::Aggf(af)
     }
@@ -161,7 +161,7 @@ impl Expr {
         let af = Aggf {
             kind: AggKind::Min,
             q,
-            expr: Box::new(expr),
+            arg: Box::new(expr),
         };
         Expr::Aggf(af)
     }
@@ -171,7 +171,7 @@ impl Expr {
         let af = Aggf {
             kind: AggKind::Max,
             q,
-            expr: Box::new(expr),
+            arg: Box::new(expr),
         };
         Expr::Aggf(af)
     }
@@ -198,16 +198,13 @@ impl Expr {
             Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => {
                 smallvec![]
             }
-            Expr::Aggf(af) => smallvec![af.expr.as_ref()],
+            Expr::Aggf(af) => smallvec![af.arg.as_ref()],
             Expr::Func(f) => SmallVec::from_iter(f.args.iter()),
             Expr::Pred(p) => match p.as_ref() {
                 Pred::True | Pred::False => smallvec![],
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => SmallVec::from_iter(es.iter()),
                 Pred::Not(e) => smallvec![e],
                 Pred::Func(f) => SmallVec::from_iter(f.args.iter()),
-                Pred::InValues(lhs, vals) | Pred::NotInValues(lhs, vals) => {
-                    std::iter::once(lhs).chain(vals.iter()).collect()
-                }
                 Pred::InSubquery(lhs, subq) | Pred::NotInSubquery(lhs, subq) => {
                     smallvec![lhs, subq]
                 }
@@ -224,7 +221,7 @@ impl Expr {
             Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => {
                 smallvec![]
             }
-            Expr::Aggf(af) => smallvec![af.expr.as_mut()],
+            Expr::Aggf(af) => smallvec![af.arg.as_mut()],
             Expr::Func(f) => SmallVec::from_iter(f.args.iter_mut()),
             Expr::Pred(p) => match p.as_mut() {
                 Pred::True | Pred::False => smallvec![],
@@ -233,9 +230,6 @@ impl Expr {
                 }
                 Pred::Not(e) => smallvec![e],
                 Pred::Func(f) => SmallVec::from_iter(f.args.iter_mut()),
-                Pred::InValues(lhs, vals) | Pred::NotInValues(lhs, vals) => {
-                    std::iter::once(lhs).chain(vals.iter_mut()).collect()
-                }
                 Pred::InSubquery(lhs, subq) | Pred::NotInSubquery(lhs, subq) => {
                     smallvec![lhs, subq]
                 }
@@ -326,6 +320,11 @@ impl ValidF64 {
             Some(ValidF64(value))
         }
     }
+
+    #[inline]
+    pub fn value(&self) -> f64 {
+        self.0
+    }
 }
 
 impl PartialEq for ValidF64 {
@@ -349,11 +348,21 @@ pub enum Setq {
     Distinct,
 }
 
+impl Setq {
+    #[inline]
+    pub fn to_lower(&self) -> &'static str {
+        match self {
+            Setq::All => "all",
+            Setq::Distinct => "distinct",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Aggf {
     pub kind: AggKind,
     pub q: Setq,
-    pub expr: Box<Expr>,
+    pub arg: Box<Expr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

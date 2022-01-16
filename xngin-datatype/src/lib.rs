@@ -90,6 +90,23 @@ pub enum TimeUnit {
     Year = 9,
 }
 
+impl TimeUnit {
+    #[inline]
+    pub fn to_lower(&self) -> &'static str {
+        match self {
+            TimeUnit::Microsecond => "microsecond",
+            TimeUnit::Second => "second",
+            TimeUnit::Minute => "minute",
+            TimeUnit::Hour => "hour",
+            TimeUnit::Day => "day",
+            TimeUnit::Week => "week",
+            TimeUnit::Month => "month",
+            TimeUnit::Quarter => "quarter",
+            TimeUnit::Year => "year",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Interval {
     pub value: i32,
