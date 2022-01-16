@@ -3,14 +3,14 @@ pub(crate) mod tests;
 
 use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
-use crate::op::{Join, JoinKind, JoinOp, Op, OpMutVisitor, SortItem};
+use crate::op::{Join, JoinKind, JoinOp, Op, OpMutVisitor, SetopKind, SortItem};
 use crate::query::{QueryPlan, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, Resolution};
 use crate::scope::{Scope, Scopes};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
-use xngin_expr::{self as expr, Col, Plhd, Pred, PredFuncKind, QueryID, SubqKind};
+use xngin_expr::{self as expr, Col, Plhd, Pred, PredFuncKind, QueryID, Setq, SubqKind};
 use xngin_frontend::ast::*;
 
 pub struct PlanBuilder {
@@ -38,9 +38,8 @@ impl PlanBuilder {
     }
 
     #[inline]
-    pub fn build_plan(mut self, query: &QueryExpr<'_>) -> Result<QueryPlan> {
-        let phc = PlaceholderCollector::new(false);
-        let root = self.build_subquery(query, phc)?;
+    pub fn build_plan(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<QueryPlan> {
+        let root = self.build_subquery(with, query, false)?;
         Ok(QueryPlan {
             queries: self.qs,
             root,
@@ -50,12 +49,18 @@ impl PlanBuilder {
     #[inline]
     fn build_subquery<'a>(
         &mut self,
-        subq: &'a QueryExpr<'a>,
-        mut phc: PlaceholderCollector<'a>,
+        with: &'a Option<With<'a>>,
+        query: &'a Query<'a>,
+        allow_unknown_ident: bool,
     ) -> Result<QueryID> {
         // create new scope to collect aliases.
         self.scopes.push(Scope::default());
-        let mut root = self.setup_query(subq, &mut phc)?;
+        if let Some(with) = with {
+            // with clause is within current scope
+            self.setup_with(with, allow_unknown_ident)?
+        }
+        let mut phc = PlaceholderCollector::new(allow_unknown_ident);
+        let mut root = self.setup_query(query, &mut phc)?;
         // first resolve subquery placeholders
         self.setup_subqueries(&mut root, phc.subqueries)?;
         // then resolve identifier placeholders agains outer scope
@@ -193,8 +198,8 @@ impl PlanBuilder {
         subqueries: Vec<(u32, SubqKind, &'a QueryExpr<'a>, &'static str)>,
     ) -> Result<()> {
         for (uid, kind, subq, _) in subqueries {
-            let phc = PlaceholderCollector::new(true);
-            let query_id = self.build_subquery(subq, phc)?;
+            let QueryExpr { with, query } = subq;
+            let query_id = self.build_subquery(with, query, true)?;
             let _ = root.walk_mut(&mut ReplaceSubquery(uid, kind, query_id));
         }
         Ok(())
@@ -207,11 +212,7 @@ impl PlanBuilder {
     ///
     /// if correlated is set to true, column can refer to sources in outer scopes.
     #[inline]
-    fn setup_with<'a>(
-        &mut self,
-        with: &With<'a>,
-        phc: &mut PlaceholderCollector<'a>,
-    ) -> Result<()> {
+    fn setup_with<'a>(&mut self, with: &With<'a>, allow_unknown_ident: bool) -> Result<()> {
         if with.recursive {
             return Err(Error::UnsupportedSqlSyntax("Recursive CTE".to_string()));
         }
@@ -222,9 +223,10 @@ impl PlanBuilder {
                 return Err(Error::DuplicatedTableAlias(alias));
             }
             // For each CTE declaration, we inherit the placeholder strategy and process separately
-            let with_phc = PlaceholderCollector::new(phc.allow_unknown_ident);
-            // open a nested scope and setup subquery.
-            let query_id = self.build_subquery(&elem.query_expr, with_phc)?;
+            let query_id = {
+                let QueryExpr { with, query } = &elem.query_expr;
+                self.build_subquery(with, query, allow_unknown_ident)?
+            };
             if !elem.cols.is_empty() {
                 // as output columns aliases are explicit specified,
                 // we need to update the output alias list of generated tree.
@@ -248,14 +250,9 @@ impl PlanBuilder {
     #[inline]
     fn setup_query<'a>(
         &mut self,
-        query: &'a QueryExpr<'a>,
+        query: &'a Query<'a>,
         phc: &mut PlaceholderCollector<'a>,
     ) -> Result<Op> {
-        let QueryExpr { with, query } = query;
-        if let Some(with) = with {
-            // with clause is within current scope
-            self.setup_with(with, phc)?
-        }
         match query {
             Query::Row(row) => {
                 // todo: support correlated row
@@ -278,12 +275,19 @@ impl PlanBuilder {
                 Ok(Op::row(cols))
             }
             Query::Table(select_table) => self.setup_select_table(select_table, phc),
-            Query::Set(select_set) => {
-                todo!("select_set")
-            }
+            Query::Set(select_set) => self.setup_select_set(select_set, phc),
         }
     }
 
+    /// Build operator tree from a comment SELECT statement, includes following steps:
+    /// 1. translate FROM clause
+    /// 2. translate SELECT clause
+    /// 3. translate WHERE clause
+    /// 4. translate GROUP BY clause
+    /// 5. translate HAVING clause
+    /// 6. translate ORDER BY clause
+    /// 7. translate LIMIT clause
+    /// The final operator tree will conditinally reorder and merge them.
     #[inline]
     fn setup_select_table<'a>(
         &mut self,
@@ -421,6 +425,30 @@ impl PlanBuilder {
             root = Op::limit(start, end, root);
         }
         Ok(root)
+    }
+
+    #[inline]
+    fn setup_select_set<'a>(
+        &mut self,
+        select_set: &'a SelectSet<'a>,
+        phc: &mut PlaceholderCollector<'a>,
+    ) -> Result<Op> {
+        let kind = match select_set.op {
+            SetOp::Union => SetopKind::Union,
+            SetOp::Except => SetopKind::Except,
+            SetOp::Intersect => SetopKind::Intersect,
+        };
+        let q = if select_set.distinct {
+            Setq::Distinct
+        } else {
+            Setq::All
+        };
+        let mut sources = Vec::with_capacity(select_set.children.len());
+        for query in &select_set.children {
+            let query_id = self.build_subquery(&None, query, phc.allow_unknown_ident)?;
+            sources.push(Op::subquery(query_id))
+        }
+        Ok(Op::setop(kind, q, sources))
     }
 
     /// process ORDER BY clause and generate sort items.
@@ -742,8 +770,8 @@ impl PlanBuilder {
                 // Non-lateral derived table can not refer to outer values.
                 // But a derived table within subquery could refer to outer values.
                 // We need to inherit allow_unknown_ident flag in phc
-                let derived_phc = PlaceholderCollector::new(phc.allow_unknown_ident);
-                let query_id = self.build_subquery(subq, derived_phc)?;
+                let QueryExpr { with, query } = subq.as_ref();
+                let query_id = self.build_subquery(with, query, phc.allow_unknown_ident)?;
                 let alias = alias.to_lower();
                 self.scopes
                     .curr_scope_mut()

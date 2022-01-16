@@ -79,6 +79,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
                     _ => Some(Span::Branch(2, false)),
                 },
             ),
+            Op::Setop(s) => ("Setop", Some(Span::Branch(s.sources.len() as u16, false))),
             Op::Subquery(query_id) => {
                 if let Some(subq) = self.queries.get(query_id) {
                     let mut qe = QueryExplain {
