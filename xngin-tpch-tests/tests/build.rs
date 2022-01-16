@@ -1,6 +1,7 @@
 use xngin_frontend::parser::dialect::Ansi;
 use xngin_frontend::parser::parse_query_verbose;
 use xngin_plan::builder::PlanBuilder;
+use xngin_plan::explain::Explain;
 use xngin_tpch_tests::tpch_catalog;
 
 macro_rules! check_build {
@@ -9,7 +10,10 @@ macro_rules! check_build {
         let sql = include_str!($filename);
         let (_, qry) = parse_query_verbose(Ansi(sql)).unwrap();
         let builder = PlanBuilder::new(cat, "tpch").unwrap();
-        let _ = builder.build_plan(&qry).unwrap();
+        let plan = builder.build_plan(&qry).unwrap();
+        let mut s = String::new();
+        assert!(plan.explain(&mut s).is_ok());
+        println!("Explain plan:\n{}", s)
     };
 }
 

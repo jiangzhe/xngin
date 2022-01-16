@@ -66,6 +66,11 @@ impl Op {
     }
 
     #[inline]
+    pub fn join(join: Join) -> Self {
+        Op::Join(Box::new(join))
+    }
+
+    #[inline]
     pub fn aggr(groups: Vec<Expr>, source: Op) -> Self {
         Op::Aggr(Box::new(Aggr {
             groups,
@@ -113,7 +118,12 @@ impl Op {
             Op::Aggr(aggr) => smallvec![&aggr.source],
             Op::Sort(sort) => smallvec![sort.source.as_ref()],
             Op::Limit(limit) => smallvec![limit.source.as_ref()],
-            Op::Join(_) | Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
+            Op::Join(j) => match j.as_ref() {
+                Join::Cross(jos) => jos.iter().collect(),
+                Join::Qualified(QualifiedJoin { left, right, .. })
+                | Join::Dependent(DependentJoin { left, right, .. }) => smallvec![left, right],
+            },
+            Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
         }
         .into_iter()
     }
@@ -298,26 +308,9 @@ pub struct DependentJoin {
     pub cond: Expr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JoinOp {
-    // Join will perform on only subquery node or
-    // join node recursively, because all tables
-    // are already converted to subqueries.
-    Subquery(QueryID),
-    Join(Box<Join>),
-}
-
-impl JoinOp {
-    #[inline]
-    pub fn subquery(query_id: QueryID) -> Self {
-        JoinOp::Subquery(query_id)
-    }
-
-    #[inline]
-    pub fn join(j: Join) -> Self {
-        JoinOp::Join(Box::new(j))
-    }
-}
+/// JoinOp is subset of Op, which only includes
+/// Subquery and Join as its variants.
+pub type JoinOp = Op;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sort {

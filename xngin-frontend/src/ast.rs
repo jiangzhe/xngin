@@ -90,10 +90,7 @@ impl<'a> Ident<'a> {
 
     #[inline]
     pub fn auto_alias(&self) -> bool {
-        match self {
-            Ident::AutoAlias(_) => true,
-            _ => false,
-        }
+        matches!(self, Ident::AutoAlias(_))
     }
 }
 

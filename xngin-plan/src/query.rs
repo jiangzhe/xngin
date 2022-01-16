@@ -178,6 +178,7 @@ impl UpsertQuery<'_> {
             JoinOp::Join(j) => {
                 self.modify_join(j);
             }
+            _ => unreachable!(),
         }
     }
 

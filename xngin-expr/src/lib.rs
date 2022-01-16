@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::Arc;
 use xngin_catalog::TableID;
-use xngin_datatype::{DataType, Date, Datetime, Decimal, Interval, Time, TimeUnit};
+use xngin_datatype::{Date, Datetime, Decimal, Interval, Time, TimeUnit};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
@@ -18,7 +18,6 @@ pub enum Expr {
     Aggf(Aggf),
     Func(Box<Func>),
     Pred(Box<Pred>),
-    Cast(Box<Expr>, DataType),
     Tuple(Vec<Expr>),
     /// Subquery that returns single value.
     Subq(SubqKind, QueryID),
@@ -54,14 +53,6 @@ impl Expr {
     #[inline]
     pub fn pred(p: Pred) -> Self {
         Expr::Pred(Box::new(p))
-    }
-
-    #[inline]
-    pub fn inner_pred(self) -> Option<Pred> {
-        match self {
-            Expr::Pred(pred) => Some(*pred),
-            _ => None,
-        }
     }
 
     #[inline]
@@ -186,11 +177,6 @@ impl Expr {
     }
 
     #[inline]
-    pub fn cast(arg: Expr, ty: DataType) -> Self {
-        Expr::Cast(Box::new(arg), ty)
-    }
-
-    #[inline]
     pub fn ph_ident(uid: u32) -> Self {
         Expr::Plhd(Plhd::Ident(uid))
     }
@@ -222,10 +208,11 @@ impl Expr {
                 Pred::InValues(lhs, vals) | Pred::NotInValues(lhs, vals) => {
                     std::iter::once(lhs).chain(vals.iter()).collect()
                 }
-                Pred::InSubquery(lhs, _) | Pred::NotInSubquery(lhs, _) => smallvec![lhs],
-                Pred::Exists(_) | Pred::NotExists(_) => smallvec![],
+                Pred::InSubquery(lhs, subq) | Pred::NotInSubquery(lhs, subq) => {
+                    smallvec![lhs, subq]
+                }
+                Pred::Exists(subq) | Pred::NotExists(subq) => smallvec![subq],
             },
-            Expr::Cast(e, _) => smallvec![e.as_ref()],
             Expr::Tuple(es) => SmallVec::from_iter(es.iter()),
         }
         .into_iter()
@@ -249,10 +236,11 @@ impl Expr {
                 Pred::InValues(lhs, vals) | Pred::NotInValues(lhs, vals) => {
                     std::iter::once(lhs).chain(vals.iter_mut()).collect()
                 }
-                Pred::InSubquery(lhs, _) | Pred::NotInSubquery(lhs, _) => smallvec![lhs],
-                Pred::Exists(_) | Pred::NotExists(_) => smallvec![],
+                Pred::InSubquery(lhs, subq) | Pred::NotInSubquery(lhs, subq) => {
+                    smallvec![lhs, subq]
+                }
+                Pred::Exists(subq) | Pred::NotExists(subq) => smallvec![subq],
             },
-            Expr::Cast(e, _) => smallvec![e.as_mut()],
             Expr::Tuple(es) => SmallVec::from_iter(es.iter_mut()),
         }
         .into_iter()
