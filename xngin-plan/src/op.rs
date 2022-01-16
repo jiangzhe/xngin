@@ -7,7 +7,7 @@
 //! with schema validated.
 //!
 //! Each table/column is lookuped from catalog and assigned a unique id.
-use smallvec::smallvec;
+use smallvec::{smallvec, SmallVec};
 use smol_str::SmolStr;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::{Expr, Pred, QueryID, Setq};
@@ -117,7 +117,7 @@ impl Op {
 
     /// Returns children under current operator until row/table/join/subquery
     #[inline]
-    pub fn children(&self) -> smallvec::IntoIter<[&Op; 2]> {
+    pub fn children(&self) -> SmallVec<[&Op; 2]> {
         match self {
             Op::Proj(proj) => smallvec![proj.source.as_ref()],
             Op::Filt(filt) => smallvec![filt.source.as_ref()],
@@ -132,11 +132,10 @@ impl Op {
             Op::Setop(set) => set.sources.iter().collect(),
             Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
         }
-        .into_iter()
     }
 
     #[inline]
-    pub fn children_mut(&mut self) -> smallvec::IntoIter<[&mut Op; 2]> {
+    pub fn children_mut(&mut self) -> SmallVec<[&mut Op; 2]> {
         match self {
             Op::Proj(proj) => smallvec![proj.source.as_mut()],
             Op::Filt(filt) => smallvec![filt.source.as_mut()],
@@ -151,11 +150,10 @@ impl Op {
             Op::Setop(set) => set.sources.iter_mut().collect(),
             Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
         }
-        .into_iter()
     }
 
     #[inline]
-    pub fn exprs(&self) -> smallvec::IntoIter<[&Expr; 2]> {
+    pub fn exprs(&self) -> SmallVec<[&Expr; 2]> {
         match self {
             Op::Proj(proj) => proj.cols.iter().map(|(e, _)| e).collect(),
             Op::Filt(filt) => smallvec![&filt.pred],
@@ -174,11 +172,10 @@ impl Op {
             },
             Op::Row(row) => row.iter().map(|(e, _)| e).collect(),
         }
-        .into_iter()
     }
 
     #[inline]
-    pub fn exprs_mut(&mut self) -> smallvec::IntoIter<[&mut Expr; 2]> {
+    pub fn exprs_mut(&mut self) -> SmallVec<[&mut Expr; 2]> {
         match self {
             Op::Proj(proj) => proj.cols.iter_mut().map(|(e, _)| e).collect(),
             Op::Filt(filt) => smallvec![&mut filt.pred],
@@ -197,7 +194,6 @@ impl Op {
             },
             Op::Row(row) => row.iter_mut().map(|(e, _)| e).collect(),
         }
-        .into_iter()
     }
 
     pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> bool {
@@ -279,6 +275,22 @@ pub enum JoinKind {
     Single,
 }
 
+impl JoinKind {
+    #[inline]
+    pub fn to_lower(&self) -> &'static str {
+        match self {
+            JoinKind::Inner => "inner",
+            JoinKind::Left => "left",
+            JoinKind::Right => "right",
+            JoinKind::Full => "full",
+            JoinKind::Semi => "semi",
+            JoinKind::AntiSemi => "antisemi",
+            JoinKind::Mark => "mark",
+            JoinKind::Single => "single",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Join {
     Cross(Vec<JoinOp>),
@@ -334,6 +346,17 @@ pub enum SetopKind {
     Union,
     Except,
     Intersect,
+}
+
+impl SetopKind {
+    #[inline]
+    pub fn to_lower(&self) -> &'static str {
+        match self {
+            SetopKind::Union => "union",
+            SetopKind::Except => "except",
+            SetopKind::Intersect => "intersect",
+        }
+    }
 }
 
 /// JoinOp is subset of Op, which only includes

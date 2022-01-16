@@ -12,9 +12,7 @@ pub enum Pred {
     // It can be achieved by adding cast function.
     Func(PredFunc),
     Not(Expr),
-    InValues(Expr, Vec<Expr>),
     InSubquery(Expr, Expr),
-    NotInValues(Expr, Vec<Expr>),
     NotInSubquery(Expr, Expr),
     Exists(Expr),
     NotExists(Expr),
@@ -76,4 +74,34 @@ pub enum PredFuncKind {
     NotInValues,
     Between,
     NotBetween,
+}
+
+impl PredFuncKind {
+    #[inline]
+    pub fn to_lower(&self) -> &'static str {
+        match self {
+            PredFuncKind::Cast => "cast",
+            PredFuncKind::Equal => "eq",
+            PredFuncKind::Greater => "gt",
+            PredFuncKind::GreaterEqual => "ge",
+            PredFuncKind::Less => "lt",
+            PredFuncKind::LessEqual => "le",
+            PredFuncKind::NotEqual => "ne",
+            PredFuncKind::IsNull => "isnull",
+            PredFuncKind::IsNotNull => "isnotnull",
+            PredFuncKind::IsTrue => "istrue",
+            PredFuncKind::IsNotTrue => "isnottrue",
+            PredFuncKind::IsFalse => "isfalse",
+            PredFuncKind::IsNotFalse => "isnotfalse",
+            PredFuncKind::SafeEqual => "safeeq",
+            PredFuncKind::Like => "like",
+            PredFuncKind::NotLike => "notlike",
+            PredFuncKind::Regexp => "regexp",
+            PredFuncKind::NotRegexp => "notregexp",
+            PredFuncKind::InValues => "in",
+            PredFuncKind::NotInValues => "notin",
+            PredFuncKind::Between => "between",
+            PredFuncKind::NotBetween => "notbetween",
+        }
+    }
 }

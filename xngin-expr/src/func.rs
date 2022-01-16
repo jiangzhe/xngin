@@ -43,3 +43,26 @@ pub enum FuncKind {
     // substring: [arg, start, end]
     Substring,
 }
+
+impl FuncKind {
+    #[inline]
+    pub fn to_lower(&self) -> &'static str {
+        match self {
+            FuncKind::Neg => "neg",
+            FuncKind::BitInv => "bitinv",
+            FuncKind::Add => "add",
+            FuncKind::Sub => "sub",
+            FuncKind::Mul => "mul",
+            FuncKind::Div => "div",
+            FuncKind::IntDiv => "intdiv",
+            FuncKind::BitAnd => "bitand",
+            FuncKind::BitOr => "bitor",
+            FuncKind::BitXor => "bitxor",
+            FuncKind::BitShl => "bitshl",
+            FuncKind::BitShr => "bitshr",
+            FuncKind::Case => "case",
+            FuncKind::Extract => "extract",
+            FuncKind::Substring => "substring",
+        }
+    }
+}
