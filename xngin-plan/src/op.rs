@@ -13,7 +13,7 @@ use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::{Expr, Pred, QueryID, Setq};
 
 /// Op stands for logical operator.
-/// This is the overall enum containing all nodes of logical plan.
+/// This is the general enum containing all nodes of logical plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     /// Projection node.
@@ -28,14 +28,15 @@ pub enum Op {
     Sort(Sort),
     /// Limit node.
     Limit(Limit),
-    /// Row represent a single select without source. e.g. "SELECT 1"
+    /// Row represents a single select without source table. e.g. "SELECT 1"
     Row(Vec<(Expr, SmolStr)>),
-    // Subquery node represents a single row, a concrete table or
-    // a sub-tree containing one or more operators.
+    /// Subquery node represents a single row, a concrete table or
+    /// a sub-tree containing one or more operators.
     Subquery(QueryID),
-    // Table node.
+    /// Table node.
     Table(SchemaID, TableID),
-    /* set ops like union/except/intersect to be implemented */
+    /// Set operations include union, except, intersect.
+    Setop(Setop),
 }
 
 impl Op {
@@ -105,6 +106,11 @@ impl Op {
     }
 
     #[inline]
+    pub fn setop(kind: SetopKind, q: Setq, sources: Vec<Op>) -> Self {
+        Op::Setop(Setop { kind, q, sources })
+    }
+
+    #[inline]
     pub fn cross_join(tables: Vec<JoinOp>) -> Self {
         Op::Join(Box::new(Join::Cross(tables)))
     }
@@ -118,11 +124,12 @@ impl Op {
             Op::Aggr(aggr) => smallvec![&aggr.source],
             Op::Sort(sort) => smallvec![sort.source.as_ref()],
             Op::Limit(limit) => smallvec![limit.source.as_ref()],
-            Op::Join(j) => match j.as_ref() {
+            Op::Join(join) => match join.as_ref() {
                 Join::Cross(jos) => jos.iter().collect(),
                 Join::Qualified(QualifiedJoin { left, right, .. })
                 | Join::Dependent(DependentJoin { left, right, .. }) => smallvec![left, right],
             },
+            Op::Setop(set) => set.sources.iter().collect(),
             Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
         }
         .into_iter()
@@ -136,7 +143,13 @@ impl Op {
             Op::Aggr(aggr) => smallvec![&mut aggr.source],
             Op::Sort(sort) => smallvec![sort.source.as_mut()],
             Op::Limit(limit) => smallvec![limit.source.as_mut()],
-            Op::Join(_) | Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
+            Op::Join(join) => match join.as_mut() {
+                Join::Cross(jos) => jos.iter_mut().collect(),
+                Join::Qualified(QualifiedJoin { left, right, .. })
+                | Join::Dependent(DependentJoin { left, right, .. }) => smallvec![left, right],
+            },
+            Op::Setop(set) => set.sources.iter_mut().collect(),
+            Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
         }
         .into_iter()
     }
@@ -153,7 +166,7 @@ impl Op {
                 .chain(aggr.proj.iter().map(|(e, _)| e))
                 .collect(),
             Op::Sort(sort) => sort.items.iter().map(|si| &si.expr).collect(),
-            Op::Limit(_) | Op::Subquery(_) | Op::Table(..) => smallvec![],
+            Op::Limit(_) | Op::Subquery(_) | Op::Table(..) | Op::Setop(_) => smallvec![],
             Op::Join(j) => match j.as_ref() {
                 Join::Cross(_) => smallvec![],
                 Join::Qualified(QualifiedJoin { cond, .. })
@@ -176,7 +189,7 @@ impl Op {
                 .chain(aggr.proj.iter_mut().map(|(e, _)| e))
                 .collect(),
             Op::Sort(sort) => sort.items.iter_mut().map(|si| &mut si.expr).collect(),
-            Op::Limit(_) | Op::Subquery(_) | Op::Table(..) => smallvec![],
+            Op::Limit(_) | Op::Subquery(_) | Op::Table(..) | Op::Setop(_) => smallvec![],
             Op::Join(j) => match j.as_mut() {
                 Join::Cross(_) => smallvec![],
                 Join::Qualified(QualifiedJoin { cond, .. })
@@ -306,6 +319,21 @@ pub struct DependentJoin {
     pub left: JoinOp,
     pub right: JoinOp,
     pub cond: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Setop {
+    pub kind: SetopKind,
+    pub q: Setq,
+    /// Sources of Setop are always subqueries.
+    pub sources: Vec<Op>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetopKind {
+    Union,
+    Except,
+    Intersect,
 }
 
 /// JoinOp is subset of Op, which only includes

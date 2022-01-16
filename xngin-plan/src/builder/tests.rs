@@ -175,6 +175,33 @@ fn test_plan_build_subquery() {
 }
 
 #[test]
+fn test_plan_build_setop() {
+    use crate::explain::Explain;
+    let cat = tpch_catalog();
+    for sql in vec![
+        "select * from lineitem union select * from lineitem",
+        "select * from lineitem union all select * from lineitem",
+        "select 1 union select 2",
+        "select l_orderkey from lineitem union select 1",
+        "select 1 union select l_orderkey from lineitem",
+        "select 1 union select 2 union select 3",
+        "select l_orderkey from lineitem union select 1 union select l_orderkey from lineitem",
+        "select 1 union select l_orderkey from lineitem union select 1",
+        "select l_orderkey from lineitem except select l_linenumber from lineitem",
+        "select l_orderkey from lineitem except all select l_linenumber from lineitem",
+        "select l_orderkey from lineitem intersect select l_linenumber from lineitem",
+        "select l_orderkey from lineitem intersect all select l_linenumber from lineitem",
+    ] {
+        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
+        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let plan = builder.build_plan(&qr).unwrap();
+        let mut s = String::new();
+        plan.explain(&mut s).unwrap();
+        println!("Explain plan:\n{}", s)
+    }
+}
+
+#[test]
 fn test_plan_build_with() {
     let cat = tpch_catalog();
     for (sql, n_cols) in vec![
