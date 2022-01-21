@@ -696,16 +696,15 @@ impl PlanBuilder {
                         (expr::Expr::pred(Pred::True), left_aliases)
                     };
                     // join type in JOIN clause only support INNER, LEFT, RIGHT, FULL.
-                    let kind = match qj.ty {
-                        JoinType::Inner => JoinKind::Inner,
-                        JoinType::Left => JoinKind::Left,
-                        JoinType::Right => JoinKind::Right,
-                        JoinType::Full => JoinKind::Full,
+                    let op = match qj.ty {
+                        JoinType::Inner => JoinOp::join(Join::qualified(JoinKind::Inner, left, right, cond)),
+                        JoinType::Left => JoinOp::join(Join::qualified(JoinKind::Left, left, right, cond)),
+                        // It's safe to convert right join to left join because the query aliases stores tables in original sequence,
+                        // and the projection list is generated using that sequence.
+                        JoinType::Right => JoinOp::join(Join::qualified(JoinKind::Left, right, left, cond)),
+                        JoinType::Full => JoinOp::join(Join::qualified(JoinKind::Full, left, right, cond)),
                     };
-                    (
-                        JoinOp::join(Join::qualified(kind, left, right, cond)),
-                        aliases,
-                    )
+                    (op, aliases)
                 }
             },
         };
