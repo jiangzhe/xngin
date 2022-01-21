@@ -12,6 +12,20 @@ use smol_str::SmolStr;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::{Expr, Pred, QueryID, Setq};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpKind {
+    Proj,
+    Filt,
+    Aggr,
+    Join,
+    Sort,
+    Limit,
+    Row,
+    Subquery,
+    Table,
+    Setop,
+}
+
 /// Op stands for logical operator.
 /// This is the general enum containing all nodes of logical plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +54,22 @@ pub enum Op {
 }
 
 impl Op {
+    #[inline]
+    pub fn kind(&self) -> OpKind {
+        match self {
+            Op::Proj(_) => OpKind::Proj,
+            Op::Filt(_) => OpKind::Filt,
+            Op::Aggr(_) => OpKind::Aggr,
+            Op::Join(_) => OpKind::Join,
+            Op::Sort(_) => OpKind::Sort,
+            Op::Limit(_) => OpKind::Limit,
+            Op::Row(_) => OpKind::Row,
+            Op::Subquery(_) => OpKind::Subquery,
+            Op::Table(..) => OpKind::Table,
+            Op::Setop(_) => OpKind::Setop,
+        }
+    }
+
     #[inline]
     pub fn proj(cols: Vec<(Expr, SmolStr)>, q: Setq, source: Op) -> Self {
         Op::Proj(Proj {
