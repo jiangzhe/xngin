@@ -266,7 +266,7 @@ impl PlanBuilder {
                             ))
                         }
                         DerivedCol::Expr(expr, alias) => {
-                            let e = resolver.resolve_expr(expr, "field list", phc)?;
+                            let e = resolver.resolve_expr(expr, "field list", phc, false)?;
                             cols.push((e.clone(), alias.to_lower()));
                             // alias conflict is detected when referring, here no need to check duplication
                         }
@@ -318,7 +318,7 @@ impl PlanBuilder {
                 qs: &self.qs,
                 query_aliases,
             };
-            let pred = resolver.resolve_expr(filter, "where clause", phc)?;
+            let pred = resolver.resolve_expr(filter, "where clause", phc, false)?;
             Some(pred)
         } else {
             None
@@ -349,8 +349,8 @@ impl PlanBuilder {
                 query_aliases,
                 proj_cols: &proj_cols,
             };
-            let having = resolver.resolve_expr(having, "having clause", phc)?;
-            validate_having(&groups, scalar_aggr, &having)?;
+            let having = resolver.resolve_expr(having, "having clause", phc, false)?;
+            validate_having(&proj_cols, &groups, scalar_aggr, &having)?;
             Some(having)
         } else {
             None
@@ -416,7 +416,7 @@ impl PlanBuilder {
             }
         }
         // f) build Sort operator
-        if !order.is_empty() && !scalar_aggr {
+        if !order.is_empty() {
             // scalar aggr query only returns 1 row, ingore SORT operation
             root = Op::sort(order, root);
         }
@@ -468,7 +468,7 @@ impl PlanBuilder {
     ) -> Result<Vec<SortItem>> {
         let mut res = Vec::with_capacity(elems.len());
         for elem in elems {
-            let expr = resolver.resolve_expr(&elem.expr, "order by", phc)?;
+            let expr = resolver.resolve_expr(&elem.expr, "order by", phc, false)?;
             let item = SortItem {
                 expr,
                 desc: elem.desc,
@@ -527,7 +527,7 @@ impl PlanBuilder {
                     proj_cols.extend(es);
                 }
                 DerivedCol::Expr(e, alias) => {
-                    let e = resolver.resolve_expr(e, location, phc)?;
+                    let e = resolver.resolve_expr(e, location, phc, false)?;
                     proj_cols.push((e, alias.to_lower()))
                 }
             }
@@ -686,7 +686,8 @@ impl PlanBuilder {
                                     qs: &self.qs,
                                     query_aliases: &from_aliases,
                                 };
-                                let pred = resolver.resolve_expr(e, "join condition", phc)?;
+                                let pred =
+                                    resolver.resolve_expr(e, "join condition", phc, false)?;
                                 (pred, left_aliases)
                             }
                         }
@@ -792,7 +793,10 @@ impl PlanBuilder {
     ) -> Result<Vec<expr::Expr>> {
         let mut items = Vec::with_capacity(group_by.len());
         for g in group_by {
-            let e = resolver.resolve_expr(g, "group by", phc)?;
+            let e = resolver.resolve_expr(g, "group by", phc, false)?;
+            if e.contains_aggr_func() {
+                return Err(Error::InvalidUsageOfAggrFunc);
+            }
             // the alias is temporary, will be updated in select clause
             items.push(e)
         }
@@ -894,6 +898,7 @@ fn validate_proj_aggr(
 /// 3. For flat projection, aggr functions are disallowed.
 #[inline]
 fn validate_having(
+    proj_cols: &[(expr::Expr, SmolStr)],
     aggr_groups: &[expr::Expr],
     scalar_aggr: bool,
     having: &expr::Expr,
@@ -917,8 +922,17 @@ fn validate_having(
         return Ok(());
     }
     // aggr functions are not allowed.
-    if having.contains_aggr_func() {
+    let (non_aggr_cols, aggr) = having.collect_non_aggr_cols();
+    if aggr {
         return Err(Error::FieldsSelectedNotInGroupBy);
+    }
+    // columns must match projected expressions
+    for nac in non_aggr_cols {
+        let ce = &expr::Expr::Col(nac);
+        if !proj_cols.iter().any(|(e, _)| e == ce) {
+            // todo: notify column name
+            return Err(Error::UnknownColumn("Unknown column".to_string()));
+        }
     }
     Ok(())
 }
@@ -1049,7 +1063,9 @@ impl ExprResolve for ResolveGroup<'_> {
     }
 }
 
-/// Resolver for HAVING
+/// Resolver for HAVING or ORDER BY
+/// The difference between them is HAVING does not care about
+/// tables/queries in FROM clause.
 pub struct ResolveHavingOrOrder<'a> {
     catalog: &'a dyn QueryCatalog,
     qs: &'a QuerySet,

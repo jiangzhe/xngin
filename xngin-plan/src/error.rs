@@ -56,6 +56,8 @@ pub enum Error {
     DulicatedAsterisksInFieldList,
     #[error("Aggregate functions in GROUP BY clause")]
     AggrFuncInGroupBy,
+    #[error("Invalid usage of aggregate function")]
+    InvalidUsageOfAggrFunc,
     #[error(transparent)]
     ParseFloatError(#[from] std::num::ParseFloatError),
     #[error(transparent)]

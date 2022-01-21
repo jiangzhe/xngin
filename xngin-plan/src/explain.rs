@@ -206,9 +206,9 @@ impl Explain for Const {
 impl Explain for Col {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         match self {
-            Col::TableCol(table_id, idx) => write!(f, "tc({},{})", table_id.value(), idx),
-            Col::QueryCol(query_id, idx) => write!(f, "qc({},{})", **query_id, idx),
-            Col::CorrelatedCol(query_id, idx) => write!(f, "cc({},{})", **query_id, idx),
+            Col::TableCol(table_id, idx) => write!(f, "t{}.{}", table_id.value(), idx),
+            Col::QueryCol(query_id, idx) => write!(f, "q{}.{}", **query_id, idx),
+            Col::CorrelatedCol(query_id, idx) => write!(f, "cq{}.{}", **query_id, idx),
         }
     }
 }
