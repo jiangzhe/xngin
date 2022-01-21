@@ -153,7 +153,7 @@ fn test_plan_build_select_table() {
         assert_eq!(shape, plan.shape());
         let p = plan.queries.get(&plan.root).unwrap();
         assert_eq!(n_cols, p.scope.out_cols.len());
-        print_plan(&plan)
+        print_plan(sql, &plan)
     }
 }
 
@@ -206,6 +206,12 @@ fn test_plan_build_join() {
             plan_shape![Proj, Join, Proj, Table, Proj, Table],
         ),
         (
+            "select t1.c0 from t1 left join t2 right join t3",
+            // because we implements conversion from right join to left join,
+            // the shape is changed accordingly.
+            plan_shape![Proj, Join, Proj, Table, Join, Proj, Table, Proj, Table],
+        ),
+        (
             "select t1.c0 from t1 full join t2 on t1.c1 = t2.c1",
             plan_shape![Proj, Join, Proj, Table, Proj, Table],
         ),
@@ -240,7 +246,7 @@ fn test_plan_build_join() {
             Ok(plan) => plan,
         };
         assert_eq!(shape, plan.shape());
-        print_plan(&plan)
+        print_plan(sql, &plan)
     }
 }
 
@@ -379,7 +385,7 @@ fn test_plan_build_setop() {
         let (_, qr) = parse_query(MySQL(sql)).unwrap();
         let plan = builder.build_plan(&qr).unwrap();
         assert_eq!(shape, plan.shape());
-        print_plan(&plan)
+        print_plan(sql, &plan)
     }
 }
 
@@ -408,7 +414,7 @@ fn test_plan_build_with() {
         assert_eq!(shape, plan.shape());
         let p = plan.queries.get(&plan.root).unwrap();
         assert_eq!(n_cols, p.scope.out_cols.len());
-        print_plan(&plan)
+        print_plan(sql, &plan)
     }
 }
 
@@ -452,8 +458,9 @@ pub(crate) fn tpch_catalog() -> Arc<dyn QueryCatalog> {
     Arc::new(cat)
 }
 
-fn print_plan(plan: &QueryPlan) {
+fn print_plan(sql: &str, plan: &QueryPlan) {
     use crate::explain::Explain;
+    println!("SQL: {}\n", sql);
     let mut s = String::new();
     plan.explain(&mut s).unwrap();
     println!("Explain plan:\n{}", s)

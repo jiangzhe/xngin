@@ -297,7 +297,6 @@ pub enum AggrProjKind {
 pub enum JoinKind {
     Inner,
     Left,
-    Right,
     Full,
     Semi,
     AntiSemi,
@@ -311,7 +310,6 @@ impl JoinKind {
         match self {
             JoinKind::Inner => "inner",
             JoinKind::Left => "left",
-            JoinKind::Right => "right",
             JoinKind::Full => "full",
             JoinKind::Semi => "semi",
             JoinKind::AntiSemi => "antisemi",
