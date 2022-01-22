@@ -1,6 +1,5 @@
 use crate::op::{
-    Aggr, DependentJoin, Filt, Join, Limit, Op, OpVisitor, Proj, QualifiedJoin, Setop, Sort,
-    SortItem,
+    Aggr, Apply, Filt, Join, Limit, Op, OpVisitor, Proj, QualifiedJoin, Setop, Sort, SortItem,
 };
 use crate::query::{QueryPlan, QuerySet};
 use std::fmt::{self, Write};
@@ -23,6 +22,7 @@ impl Explain for QueryPlan {
         match self.queries.get(&self.root) {
             Some(subq) => {
                 let mut qe = QueryExplain {
+                    title: Some("(root) ".to_string()),
                     queries: &self.queries,
                     f,
                     spans: vec![],
@@ -48,6 +48,7 @@ impl Explain for Op {
             Op::Join(join) => join.explain(f),
             Op::Setop(setop) => setop.explain(f),
             Op::Limit(limit) => limit.explain(f),
+            Op::Apply(apply) => apply.explain(f),
             Op::Row(row) => {
                 f.write_str("Row{")?;
                 let (head, tail) = row.split_first().unwrap();
@@ -68,16 +69,14 @@ impl Explain for Op {
 
 impl Explain for Proj {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        f.write_str("Proj{q=")?;
-        f.write_str(self.q.to_lower())?;
-        f.write_str(", cols=[")?;
+        f.write_str("Proj{")?;
         let (head, tail) = self.cols.split_first().unwrap();
         head.0.explain(f)?;
         for (e, _) in tail {
             f.write_str(", ")?;
             e.explain(f)?
         }
-        f.write_str("]}")
+        f.write_str("}")
     }
 }
 
@@ -132,15 +131,9 @@ impl Explain for Join {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Join{")?;
         match self {
-            Join::Cross(_) => f.write_str("type=cross")?,
-            Join::Dependent(DependentJoin { kind, cond, .. }) => {
-                f.write_str("type=dependent, kind=")?;
-                f.write_str(kind.to_lower())?;
-                f.write_str(", cond=")?;
-                cond.explain(f)?
-            }
+            Join::Cross(_) => f.write_str("cross")?,
             Join::Qualified(QualifiedJoin { kind, cond, .. }) => {
-                f.write_str("type=qualified, kind=")?;
+                f.write_str("qualified, ")?;
                 f.write_str(kind.to_lower())?;
                 f.write_str(", cond=")?;
                 cond.explain(f)?
@@ -150,9 +143,17 @@ impl Explain for Join {
     }
 }
 
+impl Explain for Apply {
+    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+        f.write_str("Apply{[")?;
+        write_exprs(f, &self.vars, ", ")?;
+        f.write_str("]}")
+    }
+}
+
 impl Explain for Setop {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        f.write_str("Setop{kind=")?;
+        f.write_str("Setop{")?;
         f.write_str(self.kind.to_lower())?;
         if self.q == Setq::All {
             f.write_str(" all")?
@@ -163,7 +164,7 @@ impl Explain for Setop {
 
 impl Explain for Limit {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        write!(f, "Limit{{start={}, end={}}}", self.start, self.end)
+        write!(f, "Limit{{{}, {}}}", self.start, self.end)
     }
 }
 
@@ -178,7 +179,9 @@ impl Explain for Expr {
             Expr::Func(v) => v.explain(f),
             Expr::Pred(p) => p.explain(f),
             Expr::Tuple(_) => write!(f, "(tuple todo)"),
-            Expr::Subq(..) => write!(f, "(subquery todo)"),
+            Expr::Subq(_, query_id) => {
+                write!(f, "subq({})", **query_id)
+            }
             Expr::Plhd(_) => write!(f, "(placeholder todo)"),
             Expr::Farg(_) => write!(f, "(funcarg todo)"),
         }
@@ -255,10 +258,24 @@ impl Explain for Pred {
                 f.write_str("not ")?;
                 e.explain(f)
             }
-            Pred::InSubquery(..)
-            | Pred::NotInSubquery(..)
-            | Pred::Exists(_)
-            | Pred::NotExists(_) => f.write_str("(pred subquery todo)"),
+            Pred::InSubquery(lhs, subq) => {
+                lhs.explain(f)?;
+                f.write_str(" in ")?;
+                subq.explain(f)
+            }
+            Pred::NotInSubquery(lhs, subq) => {
+                lhs.explain(f)?;
+                f.write_str(" not in ")?;
+                subq.explain(f)
+            }
+            Pred::Exists(subq) => {
+                f.write_str("exists ")?;
+                subq.explain(f)
+            }
+            Pred::NotExists(subq) => {
+                f.write_str("not exists ")?;
+                subq.explain(f)
+            }
         }
     }
 }
@@ -289,6 +306,7 @@ enum Span {
 }
 
 struct QueryExplain<'a, F> {
+    title: Option<String>,
     queries: &'a QuerySet,
     f: &'a mut F,
     spans: Vec<Span>,
@@ -299,6 +317,10 @@ impl<'a, F: Write> QueryExplain<'a, F> {
     // returns true if continue
     fn write_prefix(&mut self) -> bool {
         self.res = write_prefix(self.f, &self.spans);
+        // only write title once
+        if let Some(s) = self.title.take() {
+            let _ = self.write_str(&s);
+        }
         self.res.is_ok()
     }
 
@@ -320,6 +342,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
         if let Op::Subquery(query_id) = op {
             let res = if let Some(subq) = self.queries.get(query_id) {
                 let mut qe = QueryExplain {
+                    title: Some(format!("(q{}) ", **query_id)),
                     queries: self.queries,
                     f: self.f,
                     spans: self.spans.clone(),

@@ -56,9 +56,25 @@ pub struct Scope {
     pub query_aliases: QueryAliases,
     // output column list
     pub out_cols: Vec<(Expr, SmolStr)>,
+    // if set to true, unknown identifier can be passed to
+    // outer scope for search.
+    pub transitive: bool,
+    // Correlated subqueries associated to current queries,
+    // which may be nested(multiple level).
+    pub cor_subq: Vec<Vec<Expr>>,
+    // Correlated columns in current scope.
+    pub cor_cols: Vec<Expr>,
 }
 
 impl Scope {
+    #[inline]
+    pub fn new(transitive: bool) -> Self {
+        Scope {
+            transitive,
+            ..Default::default()
+        }
+    }
+
     #[inline]
     pub fn position_out_col(&self, alias: &str) -> Option<usize> {
         self.out_cols.iter().position(|(_, a)| a == alias)

@@ -11,11 +11,11 @@ pub enum Pred {
     // Wrapped expression must return bool.
     // It can be achieved by adding cast function.
     Func(PredFunc),
-    Not(Expr),
-    InSubquery(Expr, Expr),
-    NotInSubquery(Expr, Expr),
-    Exists(Expr),
-    NotExists(Expr),
+    Not(Box<Expr>),
+    InSubquery(Box<Expr>, Box<Expr>),
+    NotInSubquery(Box<Expr>, Box<Expr>),
+    Exists(Box<Expr>),
+    NotExists(Box<Expr>),
 }
 
 impl Pred {
