@@ -20,6 +20,7 @@ pub enum OpKind {
     Join,
     Sort,
     Limit,
+    Apply,
     Row,
     Subquery,
     Table,
@@ -42,6 +43,8 @@ pub enum Op {
     Sort(Sort),
     /// Limit node.
     Limit(Limit),
+    /// Apply node.
+    Apply(Box<Apply>),
     /// Row represents a single select without source table. e.g. "SELECT 1"
     Row(Vec<(Expr, SmolStr)>),
     /// Subquery node represents a single row, a concrete table or
@@ -63,6 +66,7 @@ impl Op {
             Op::Join(_) => OpKind::Join,
             Op::Sort(_) => OpKind::Sort,
             Op::Limit(_) => OpKind::Limit,
+            Op::Apply(_) => OpKind::Apply,
             Op::Row(_) => OpKind::Row,
             Op::Subquery(_) => OpKind::Subquery,
             Op::Table(..) => OpKind::Table,
@@ -71,10 +75,9 @@ impl Op {
     }
 
     #[inline]
-    pub fn proj(cols: Vec<(Expr, SmolStr)>, q: Setq, source: Op) -> Self {
+    pub fn proj(cols: Vec<(Expr, SmolStr)>, source: Op) -> Self {
         Op::Proj(Proj {
             cols,
-            q,
             source: Box::new(source),
         })
     }
@@ -154,10 +157,10 @@ impl Op {
             Op::Aggr(aggr) => smallvec![&aggr.source],
             Op::Sort(sort) => smallvec![sort.source.as_ref()],
             Op::Limit(limit) => smallvec![limit.source.as_ref()],
+            Op::Apply(apply) => smallvec![&apply.left, &apply.right],
             Op::Join(join) => match join.as_ref() {
                 Join::Cross(jos) => jos.iter().collect(),
-                Join::Qualified(QualifiedJoin { left, right, .. })
-                | Join::Dependent(DependentJoin { left, right, .. }) => smallvec![left, right],
+                Join::Qualified(QualifiedJoin { left, right, .. }) => smallvec![left, right],
             },
             Op::Setop(set) => set.sources.iter().collect(),
             Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
@@ -172,10 +175,10 @@ impl Op {
             Op::Aggr(aggr) => smallvec![&mut aggr.source],
             Op::Sort(sort) => smallvec![sort.source.as_mut()],
             Op::Limit(limit) => smallvec![limit.source.as_mut()],
+            Op::Apply(apply) => smallvec![&mut apply.left, &mut apply.right],
             Op::Join(join) => match join.as_mut() {
                 Join::Cross(jos) => jos.iter_mut().collect(),
-                Join::Qualified(QualifiedJoin { left, right, .. })
-                | Join::Dependent(DependentJoin { left, right, .. }) => smallvec![left, right],
+                Join::Qualified(QualifiedJoin { left, right, .. }) => smallvec![left, right],
             },
             Op::Setop(set) => set.sources.iter_mut().collect(),
             Op::Subquery(_) | Op::Row(_) | Op::Table(..) => smallvec![],
@@ -195,10 +198,10 @@ impl Op {
                 .collect(),
             Op::Sort(sort) => sort.items.iter().map(|si| &si.expr).collect(),
             Op::Limit(_) | Op::Subquery(_) | Op::Table(..) | Op::Setop(_) => smallvec![],
+            Op::Apply(apply) => apply.vars.iter().collect(),
             Op::Join(j) => match j.as_ref() {
                 Join::Cross(_) => smallvec![],
-                Join::Qualified(QualifiedJoin { cond, .. })
-                | Join::Dependent(DependentJoin { cond, .. }) => smallvec![cond],
+                Join::Qualified(QualifiedJoin { cond, .. }) => smallvec![cond],
             },
             Op::Row(row) => row.iter().map(|(e, _)| e).collect(),
         }
@@ -217,10 +220,10 @@ impl Op {
                 .collect(),
             Op::Sort(sort) => sort.items.iter_mut().map(|si| &mut si.expr).collect(),
             Op::Limit(_) | Op::Subquery(_) | Op::Table(..) | Op::Setop(_) => smallvec![],
+            Op::Apply(apply) => apply.vars.iter_mut().collect(),
             Op::Join(j) => match j.as_mut() {
                 Join::Cross(_) => smallvec![],
-                Join::Qualified(QualifiedJoin { cond, .. })
-                | Join::Dependent(DependentJoin { cond, .. }) => smallvec![cond],
+                Join::Qualified(QualifiedJoin { cond, .. }) => smallvec![cond],
             },
             Op::Row(row) => row.iter_mut().map(|(e, _)| e).collect(),
         }
@@ -254,7 +257,6 @@ impl Op {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proj {
     pub cols: Vec<(Expr, SmolStr)>,
-    pub q: Setq,
     pub source: Box<Op>,
 }
 
@@ -324,7 +326,6 @@ pub enum Join {
     Cross(Vec<JoinOp>),
     /// All natural join are converted to cross join or qualified join.
     Qualified(QualifiedJoin),
-    Dependent(DependentJoin),
 }
 
 impl Join {
@@ -359,6 +360,27 @@ pub struct DependentJoin {
     pub left: JoinOp,
     pub right: JoinOp,
     pub cond: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Apply {
+    pub kind: ApplyKind,
+    /// Free variables of subquery.
+    /// If empty, subquery is non-correlated.
+    /// Otherwise, correlated.
+    pub vars: Vec<Expr>,
+    /// Outer query.
+    pub left: Op,
+    /// inner subquery.
+    /// The operator is always Op::Subquery.
+    pub right: Op,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyKind {
+    /// Right generate single value,
+    /// Append it to left for each row.
+    Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

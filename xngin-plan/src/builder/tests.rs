@@ -253,7 +253,9 @@ fn test_plan_build_join() {
 #[test]
 fn test_plan_build_subquery() {
     let cat = j_catalog();
+    // success
     for sql in vec![
+        "select * from t0, (select * from t1) tmp",
         "select * from t0 where c0 in (select c0 from t1)",
         "select * from t0 where c0 not in (select c0 from t1)",
         "select * from t0 where not c0 in (select c0 from t1)",
@@ -274,13 +276,29 @@ fn test_plan_build_subquery() {
         "select * from t3 where exists (select 1 from t2, (select c0 from t1 where t1.c1 = t3.c1) tt where tt.c0 = t2.c0)",
         "select * from t3 where exists (with tmp as (select 1 from t2 where t2.c0 = t3.c0) select * from tmp)",
         "with cte as (select 1 as cx) select * from cte where exists (select 1 from t1 where t1.c0 = cx)",
+        "select * from t1 where c0 > (select max(c0) from t2 where t2.c1 = t1.c1)",
+        "select * from t2 where c0 > (select max(c0) from t1 where t1.c1 = c2)",
     ] {
         let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
         let (_, qr) = parse_query(MySQL(sql)).unwrap();
-        if let Err(e) = builder.build_plan(&qr) {
-            eprintln!("sql={}", sql);
-            panic!("{:?}", e)
-        }
+        let plan = match builder.build_plan(&qr) {
+            Ok(plan) => plan,
+            Err(e) => {
+                eprintln!("sql={}", sql);
+                panic!("{:?}", e)
+            }
+        };
+        print_plan(sql, &plan)
+    }
+
+    // fail
+    for sql in vec![
+        "select * from t0, (select * from t1 where t1.c0 = t0.c0) tmp",
+        "select * from t0, (select * from t1 where exists (select 1 from t2 where t2.c0 = t0.c0)) tmp",
+    ] {
+        let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
+        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        assert!(builder.build_plan(&qr).is_err())
     }
 }
 
@@ -460,8 +478,8 @@ pub(crate) fn tpch_catalog() -> Arc<dyn QueryCatalog> {
 
 fn print_plan(sql: &str, plan: &QueryPlan) {
     use crate::explain::Explain;
-    println!("SQL: {}\n", sql);
+    println!("SQL: {}", sql);
     let mut s = String::new();
     plan.explain(&mut s).unwrap();
-    println!("Explain plan:\n{}", s)
+    println!("Plan:\n{}", s)
 }

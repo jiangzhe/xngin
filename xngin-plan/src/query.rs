@@ -45,8 +45,6 @@ impl QueryPlan {
 pub struct Subquery {
     // root operator
     pub root: Op,
-    // correlated or not
-    pub correlated: bool,
     // scope contains information incrementally collected during
     // build phase
     pub scope: Scope,
@@ -55,12 +53,8 @@ pub struct Subquery {
 impl Subquery {
     /// Construct a subquery using given root operator and scope.
     #[inline]
-    pub fn new(root: Op, correlated: bool, scope: Scope) -> Self {
-        Subquery {
-            root,
-            correlated,
-            scope,
-        }
+    pub fn new(root: Op, scope: Scope) -> Self {
+        Subquery { root, scope }
     }
 
     #[inline]
@@ -208,10 +202,6 @@ impl UpsertQuery<'_> {
                 self.modify_join_op(&mut qj.left);
                 self.modify_join_op(&mut qj.right);
             }
-            Join::Dependent(dj) => {
-                self.modify_join_op(&mut dj.left);
-                self.modify_join_op(&mut dj.right);
-            }
         }
     }
 }
@@ -239,10 +229,6 @@ impl<'a> OpMutVisitor for UpsertQuery<'a> {
                 Join::Qualified(qj) => {
                     self.modify_join_op(&mut qj.left);
                     self.modify_join_op(&mut qj.right);
-                }
-                Join::Dependent(dj) => {
-                    self.modify_join_op(&mut dj.left);
-                    self.modify_join_op(&mut dj.right);
                 }
             },
             _ => (), // others are safe to copy

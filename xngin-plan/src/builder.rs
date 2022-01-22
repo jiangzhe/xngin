@@ -5,12 +5,14 @@ use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
 use crate::op::{Join, JoinKind, JoinOp, Op, OpMutVisitor, SetopKind, SortItem};
 use crate::query::{QueryPlan, QuerySet, Subquery};
-use crate::resolv::{ExprResolve, PlaceholderCollector, Resolution};
+use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
 use crate::scope::{Scope, Scopes};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
-use xngin_expr::{self as expr, Col, Plhd, Pred, PredFuncKind, QueryID, Setq, SubqKind};
+use xngin_expr::{
+    self as expr, Col, ExprMutVisitor, Plhd, Pred, PredFuncKind, QueryID, Setq, SubqKind,
+};
 use xngin_frontend::ast::*;
 
 pub struct PlanBuilder {
@@ -39,7 +41,7 @@ impl PlanBuilder {
 
     #[inline]
     pub fn build_plan(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<QueryPlan> {
-        let root = self.build_subquery(with, query, false)?;
+        let (root, _) = self.build_subquery(with, query, false)?;
         Ok(QueryPlan {
             queries: self.qs,
             root,
@@ -51,29 +53,41 @@ impl PlanBuilder {
         &mut self,
         with: &'a Option<With<'a>>,
         query: &'a Query<'a>,
-        allow_unknown_ident: bool,
-    ) -> Result<QueryID> {
+        transitive: bool,
+    ) -> Result<(QueryID, bool)> {
         // create new scope to collect aliases.
-        self.scopes.push(Scope::default());
+        self.scopes.push(Scope::new(transitive));
         if let Some(with) = with {
             // with clause is within current scope
-            self.setup_with(with, allow_unknown_ident)?
+            self.setup_with(with, transitive)?
         }
-        let mut phc = PlaceholderCollector::new(allow_unknown_ident);
+        let mut phc = PlaceholderCollector::new(transitive);
         let mut root = self.setup_query(query, &mut phc)?;
-        // first resolve subquery placeholders
-        self.setup_subqueries(&mut root, phc.subqueries)?;
-        // then resolve identifier placeholders agains outer scope
-        let scope = self.scopes.pop().unwrap(); // won't fail
-                                                // resolve identifier placeholders agains outer scope
-        let correlated = self.setup_correlated_cols(&mut root, phc.idents)?;
-        let mut subquery = Subquery::new(root, correlated, scope);
+        // first setup subqueries
+        for PlaceholderQuery { uid, kind, qry, .. } in phc.subqueries {
+            let QueryExpr { with, query } = qry;
+            let (query_id, correlated) = self.build_subquery(with, query, true)?;
+            let _ = root.walk_mut(&mut ReplaceSubq {
+                uid,
+                kind,
+                query_id,
+                correlated,
+                updated: false,
+            });
+        }
+        // then resolve correlated columns against outer scopes.
+        let mut scope = self.scopes.pop().unwrap(); // won't fail
+        let cor_cols = self.setup_correlated_cols(&mut root, phc.idents)?;
+        // We can identify whether current subquery is correlated by check the size of cor_cols
+        let correlated = !cor_cols.is_empty();
+        scope.cor_cols = cor_cols;
+        let mut subquery = Subquery::new(root, scope);
         subquery.reset_out_cols();
         let query_id = self.qs.insert(subquery);
-        Ok(query_id)
+        Ok((query_id, correlated))
     }
 
-    /// Setup correlated column.
+    /// Setup correlated columns.
     /// This method is only used in correlated subquery context, in which
     /// the column reference can not be mapped to any columns in the context.
     /// Then traverse outer context and match through all query sources.
@@ -83,12 +97,13 @@ impl PlanBuilder {
         &mut self,
         root: &mut Op,
         idents: Vec<(u32, Vec<SmolStr>, &'static str)>,
-    ) -> Result<bool> {
+    ) -> Result<Vec<expr::Expr>> {
         if idents.is_empty() {
-            return Ok(false);
+            return Ok(vec![]);
         }
+        let mut ccols = Vec::with_capacity(idents.len());
         for (uid, ident, location) in &idents {
-            let ccol = match &ident[..] {
+            let pair = match &ident[..] {
                 [schema_name, tbl_alias, col_alias] => self.find_correlated_schema_tbl_col(
                     schema_name,
                     tbl_alias,
@@ -101,21 +116,23 @@ impl PlanBuilder {
                 [col_alias] => self.find_correlated_col(col_alias, location)?,
                 _ => return Err(Error::unknown_column_idents(ident, location)),
             };
-            let _ = root.walk_mut(&mut ReplaceCorrelatedCol(*uid, ccol));
+            ccols.push(pair.clone());
+            // Replace placeholder with found correlated column
+            let _ = root.walk_mut(&mut ReplaceCorrelatedCol(*uid, pair));
         }
-        Ok(true)
+        Ok(ccols)
     }
 
     #[inline]
     fn find_correlated_schema_tbl_col(
-        &self,
+        &mut self,
         schema_name: &str,
         tbl_alias: &str,
         col_alias: &str,
         location: &'static str,
     ) -> Result<expr::Expr> {
         let schema = self.catalog.find_schema_by_name(schema_name).must_ok()?;
-        for s in self.scopes.iter().rev() {
+        for s in self.scopes.iter_mut().rev() {
             for (from_alias, query_id) in s.query_aliases.iter() {
                 if from_alias == tbl_alias {
                     // found table by alias
@@ -136,6 +153,9 @@ impl PlanBuilder {
                     })?;
                     return Ok(expr::Expr::correlated_col(*query_id, idx as u32));
                 }
+            }
+            if !s.transitive {
+                break; // stop at the first non-correlated scope
             }
         }
         Err(Error::unknown_column_full_name(
@@ -164,6 +184,9 @@ impl PlanBuilder {
                     return Ok(expr::Expr::correlated_col(*query_id, idx as u32));
                 }
             }
+            if !s.transitive {
+                break; // stop at the first non-correlated scope
+            }
         }
         Err(Error::unknown_column_partial_name(
             tbl_alias, col_alias, location,
@@ -186,24 +209,27 @@ impl PlanBuilder {
             if let Some(e) = col {
                 return Ok(e);
             }
+            if !s.transitive {
+                break; // stop at the first non-correlated scope
+            }
         }
         Err(Error::unknown_column_name(col_alias, location))
     }
 
     /// Subqueries can be correlated.
-    #[inline]
-    fn setup_subqueries<'a>(
-        &mut self,
-        root: &mut Op,
-        subqueries: Vec<(u32, SubqKind, &'a QueryExpr<'a>, &'static str)>,
-    ) -> Result<()> {
-        for (uid, kind, subq, _) in subqueries {
-            let QueryExpr { with, query } = subq;
-            let query_id = self.build_subquery(with, query, true)?;
-            let _ = root.walk_mut(&mut ReplaceSubquery(uid, kind, query_id));
-        }
-        Ok(())
-    }
+    // #[inline]
+    // fn setup_subqueries<'a>(
+    //     &mut self,
+    //     root: &mut Op,
+    //     subqueries: Vec<(u32, SubqKind, &'a QueryExpr<'a>, &'static str)>,
+    // ) -> Result<()> {
+    //     for (uid, kind, subq, _) in subqueries {
+    //         let QueryExpr { with, query } = subq;
+    //         let query_id = self.build_subquery(with, query, true)?;
+    //         let _ = root.walk_mut(&mut ReplaceSubquery(uid, kind, query_id));
+    //     }
+    //     Ok(())
+    // }
 
     /// Setup with clause.
     ///
@@ -222,8 +248,9 @@ impl PlanBuilder {
             if self.scopes.curr_scope().cte_aliases.contains_key(&alias) {
                 return Err(Error::DuplicatedTableAlias(alias));
             }
-            // For each CTE declaration, we inherit the placeholder strategy and process separately
-            let query_id = {
+            // For each CTE declaration, we inherit the placeholder strategy and process separately.
+            // todo: handle correlated CTE
+            let (query_id, _) = {
                 let QueryExpr { with, query } = &elem.query_expr;
                 self.build_subquery(with, query, allow_unknown_ident)?
             };
@@ -412,7 +439,7 @@ impl PlanBuilder {
         match &mut root {
             Op::Aggr(aggr) => aggr.proj = proj_cols,
             _ => {
-                root = Op::proj(proj_cols, expr::Setq::All, root);
+                root = Op::proj(proj_cols, root);
             }
         }
         // f) build Sort operator
@@ -445,7 +472,8 @@ impl PlanBuilder {
         };
         let mut sources = Vec::with_capacity(select_set.children.len());
         for query in &select_set.children {
-            let query_id = self.build_subquery(&None, query, phc.allow_unknown_ident)?;
+            // todo: handle correlated subquery
+            let (query_id, _) = self.build_subquery(&None, query, phc.allow_unknown_ident)?;
             sources.push(Op::subquery(query_id))
         }
         Ok(Op::setop(kind, q, sources))
@@ -586,6 +614,7 @@ impl PlanBuilder {
                     // a) reject if join key is not unique.
                     // b) convert to cross join if no identical column
                     //    found in both side.
+                    // c) otherwise, convert to inner join.
                     // 2. expand non-qualified asterisk for natural join
                     //    because natural join eliminate identical column
                     //    and change the output sequence of original columns.
@@ -697,12 +726,20 @@ impl PlanBuilder {
                     };
                     // join type in JOIN clause only support INNER, LEFT, RIGHT, FULL.
                     let op = match qj.ty {
-                        JoinType::Inner => JoinOp::join(Join::qualified(JoinKind::Inner, left, right, cond)),
-                        JoinType::Left => JoinOp::join(Join::qualified(JoinKind::Left, left, right, cond)),
+                        JoinType::Inner => {
+                            JoinOp::join(Join::qualified(JoinKind::Inner, left, right, cond))
+                        }
+                        JoinType::Left => {
+                            JoinOp::join(Join::qualified(JoinKind::Left, left, right, cond))
+                        }
                         // It's safe to convert right join to left join because the query aliases stores tables in original sequence,
                         // and the projection list is generated using that sequence.
-                        JoinType::Right => JoinOp::join(Join::qualified(JoinKind::Left, right, left, cond)),
-                        JoinType::Full => JoinOp::join(Join::qualified(JoinKind::Full, left, right, cond)),
+                        JoinType::Right => {
+                            JoinOp::join(Join::qualified(JoinKind::Left, right, left, cond))
+                        }
+                        JoinType::Full => {
+                            JoinOp::join(Join::qualified(JoinKind::Full, left, right, cond))
+                        }
                     };
                     (op, aliases)
                 }
@@ -771,7 +808,8 @@ impl PlanBuilder {
                 // But a derived table within subquery could refer to outer values.
                 // We need to inherit allow_unknown_ident flag in phc
                 let QueryExpr { with, query } = subq.as_ref();
-                let query_id = self.build_subquery(with, query, phc.allow_unknown_ident)?;
+                // todo: handle correlated derived table in subquery
+                let (query_id, _) = self.build_subquery(with, query, phc.allow_unknown_ident)?;
                 let alias = alias.to_lower();
                 self.scopes
                     .curr_scope_mut()
@@ -812,8 +850,8 @@ impl PlanBuilder {
                 c.name,
             ))
         }
-        let proj = Op::proj(proj_cols, expr::Setq::All, Op::table(schema_id, table_id));
-        let mut subquery = Subquery::new(proj, false, Scope::default());
+        let proj = Op::proj(proj_cols, Op::table(schema_id, table_id));
+        let mut subquery = Subquery::new(proj, Scope::default());
         subquery.reset_out_cols();
         let query_id = self.qs.insert(subquery);
         Ok(query_id)
@@ -1146,21 +1184,78 @@ impl OpMutVisitor for ReplaceCorrelatedCol {
     }
 }
 
-struct ReplaceSubquery(u32, SubqKind, QueryID);
+struct ReplaceSubq {
+    uid: u32,
+    kind: SubqKind,
+    query_id: QueryID,
+    correlated: bool,
+    updated: bool,
+}
 
-impl OpMutVisitor for ReplaceSubquery {
+impl OpMutVisitor for ReplaceSubq {
+    #[inline]
     fn enter(&mut self, op: &mut Op) -> bool {
-        for e in op.exprs_mut() {
-            if let expr::Expr::Plhd(Plhd::Subquery(uid)) = e {
-                if *uid == self.0 {
-                    *e = expr::Expr::Subq(self.1, self.2);
+        match op {
+            Op::Proj(proj) => {
+                for (e, _) in &mut proj.cols {
+                    let _ = e.walk_mut(self);
+                    if self.updated {
+                        return false;
+                    }
                 }
             }
+            Op::Filt(filt) => {
+                let _ = filt.pred.walk_mut(self);
+                if self.updated {
+                    return false;
+                }
+            }
+            Op::Aggr(aggr) => {
+                let _ = aggr.filt.walk_mut(self);
+                if self.updated {
+                    return false;
+                }
+                for (e, _) in &mut aggr.proj {
+                    let _ = e.walk_mut(self);
+                    if self.updated {
+                        return false;
+                    }
+                }
+            }
+            Op::Join(join) => {
+                if let Join::Qualified(qj) = join.as_mut() {
+                    let _ = qj.cond.walk_mut(self);
+                    if self.updated {
+                        return false;
+                    }
+                }
+            }
+            _ => (), // do not try others
         }
         true
     }
 
+    #[inline]
     fn leave(&mut self, _op: &mut Op) -> bool {
+        true
+    }
+}
+
+impl ExprMutVisitor for ReplaceSubq {
+    #[inline]
+    fn enter(&mut self, e: &mut expr::Expr) -> bool {
+        match e {
+            expr::Expr::Plhd(Plhd::Subquery(_, uid)) if *uid == self.uid => {
+                *e = expr::Expr::Subq(self.kind, self.query_id);
+                return false;
+            }
+            _ => (),
+        }
+        true
+    }
+
+    #[inline]
+    fn leave(&mut self, _e: &mut expr::Expr) -> bool {
         true
     }
 }

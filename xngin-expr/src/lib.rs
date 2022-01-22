@@ -17,7 +17,7 @@ pub enum Expr {
     Col(Col),
     Aggf(Aggf),
     Func(Box<Func>),
-    Pred(Box<Pred>),
+    Pred(Pred),
     Tuple(Vec<Expr>),
     /// Subquery that returns single value.
     Subq(SubqKind, QueryID),
@@ -52,12 +52,47 @@ impl Expr {
 
     #[inline]
     pub fn pred(p: Pred) -> Self {
-        Expr::Pred(Box::new(p))
+        Expr::Pred(p)
+    }
+
+    #[inline]
+    pub fn pred_true() -> Self {
+        Expr::Pred(Pred::True)
+    }
+
+    #[inline]
+    pub fn pred_false() -> Self {
+        Expr::Pred(Pred::False)
+    }
+
+    #[inline]
+    pub fn pred_not(e: Expr) -> Self {
+        Expr::Pred(Pred::Not(Box::new(e)))
+    }
+
+    #[inline]
+    pub fn pred_in_subq(lhs: Expr, subq: Expr) -> Self {
+        Expr::Pred(Pred::InSubquery(Box::new(lhs), Box::new(subq)))
+    }
+
+    #[inline]
+    pub fn pred_not_in_subq(lhs: Expr, subq: Expr) -> Self {
+        Expr::Pred(Pred::NotInSubquery(Box::new(lhs), Box::new(subq)))
+    }
+
+    #[inline]
+    pub fn pred_exists(subq: Expr) -> Self {
+        Expr::Pred(Pred::Exists(Box::new(subq)))
+    }
+
+    #[inline]
+    pub fn pred_not_exists(subq: Expr) -> Self {
+        Expr::Pred(Pred::NotExists(Box::new(subq)))
     }
 
     #[inline]
     pub fn pred_func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
-        Expr::Pred(Box::new(Pred::func(kind, args)))
+        Expr::Pred(Pred::func(kind, args))
     }
 
     #[inline]
@@ -182,8 +217,8 @@ impl Expr {
     }
 
     #[inline]
-    pub fn ph_subquery(uid: u32) -> Self {
-        Expr::Plhd(Plhd::Subquery(uid))
+    pub fn ph_subquery(kind: SubqKind, uid: u32) -> Self {
+        Expr::Plhd(Plhd::Subquery(kind, uid))
     }
 
     #[inline]
@@ -200,15 +235,15 @@ impl Expr {
             }
             Expr::Aggf(af) => smallvec![af.arg.as_ref()],
             Expr::Func(f) => SmallVec::from_iter(f.args.iter()),
-            Expr::Pred(p) => match p.as_ref() {
+            Expr::Pred(p) => match p {
                 Pred::True | Pred::False => smallvec![],
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => SmallVec::from_iter(es.iter()),
-                Pred::Not(e) => smallvec![e],
+                Pred::Not(e) => smallvec![e.as_ref()],
                 Pred::Func(f) => SmallVec::from_iter(f.args.iter()),
                 Pred::InSubquery(lhs, subq) | Pred::NotInSubquery(lhs, subq) => {
-                    smallvec![lhs, subq]
+                    smallvec![lhs.as_ref(), subq.as_ref()]
                 }
-                Pred::Exists(subq) | Pred::NotExists(subq) => smallvec![subq],
+                Pred::Exists(subq) | Pred::NotExists(subq) => smallvec![subq.as_ref()],
             },
             Expr::Tuple(es) => SmallVec::from_iter(es.iter()),
         }
@@ -223,17 +258,17 @@ impl Expr {
             }
             Expr::Aggf(af) => smallvec![af.arg.as_mut()],
             Expr::Func(f) => SmallVec::from_iter(f.args.iter_mut()),
-            Expr::Pred(p) => match p.as_mut() {
+            Expr::Pred(p) => match p {
                 Pred::True | Pred::False => smallvec![],
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => {
                     SmallVec::from_iter(es.iter_mut())
                 }
-                Pred::Not(e) => smallvec![e],
+                Pred::Not(e) => smallvec![e.as_mut()],
                 Pred::Func(f) => SmallVec::from_iter(f.args.iter_mut()),
                 Pred::InSubquery(lhs, subq) | Pred::NotInSubquery(lhs, subq) => {
-                    smallvec![lhs, subq]
+                    smallvec![lhs.as_mut(), subq.as_mut()]
                 }
-                Pred::Exists(subq) | Pred::NotExists(subq) => smallvec![subq],
+                Pred::Exists(subq) | Pred::NotExists(subq) => smallvec![subq.as_mut()],
             },
             Expr::Tuple(es) => SmallVec::from_iter(es.iter_mut()),
         }
@@ -246,6 +281,18 @@ impl Expr {
         }
         for c in self.children() {
             if !c.walk(visitor) {
+                return false;
+            }
+        }
+        visitor.leave(self)
+    }
+
+    pub fn walk_mut<V: ExprMutVisitor>(&mut self, visitor: &mut V) -> bool {
+        if !visitor.enter(self) {
+            return false;
+        }
+        for c in self.children_mut() {
+            if !c.walk_mut(visitor) {
                 return false;
             }
         }
@@ -377,13 +424,16 @@ pub enum AggKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubqKind {
     Scalar,
-    Table,
+    // in and not in
+    In,
+    // exists and not exists
+    Exists,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Plhd {
     Ident(u32),
-    Subquery(u32),
+    Subquery(SubqKind, u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -421,6 +471,14 @@ pub trait ExprVisitor {
 
     /// Returns true if continue
     fn leave(&mut self, e: &Expr) -> bool;
+}
+
+pub trait ExprMutVisitor {
+    /// Returns true if continue
+    fn enter(&mut self, e: &mut Expr) -> bool;
+
+    /// Returns true if continue
+    fn leave(&mut self, e: &mut Expr) -> bool;
 }
 
 pub(crate) struct CollectNonAggrCols<'a> {

@@ -317,8 +317,31 @@ pub trait ExprResolve {
                 }
                 UnaryOp::LogicalNot => {
                     let e = self.resolve_expr(&ue.arg, location, phc, within_aggr)?;
-                    let p = Pred::Not(e);
-                    expr::Expr::pred(p)
+                    match e {
+                        // handle not(not(e))
+                        expr::Expr::Pred(Pred::Not(e)) => *e,
+                        // handle not(true)
+                        expr::Expr::Pred(Pred::True) => expr::Expr::pred_false(),
+                        // handle not(false)
+                        expr::Expr::Pred(Pred::False) => expr::Expr::pred_true(),
+                        // handle not(exists)
+                        expr::Expr::Pred(Pred::Exists(subq)) => {
+                            expr::Expr::Pred(Pred::NotExists(subq))
+                        }
+                        // handle not(notExists)
+                        expr::Expr::Pred(Pred::NotExists(subq)) => {
+                            expr::Expr::Pred(Pred::Exists(subq))
+                        }
+                        // handle not(inSubq)
+                        expr::Expr::Pred(Pred::InSubquery(lhs, subq)) => {
+                            expr::Expr::Pred(Pred::NotInSubquery(lhs, subq))
+                        }
+                        // handle not(notInSubq)
+                        expr::Expr::Pred(Pred::NotInSubquery(lhs, subq)) => {
+                            expr::Expr::Pred(Pred::InSubquery(lhs, subq))
+                        }
+                        _ => expr::Expr::pred_not(e),
+                    }
                 }
             },
             Expr::Binary(be) => {
@@ -398,13 +421,13 @@ pub trait ExprResolve {
                 }
                 Predicate::InSubquery(lhs, subq) => {
                     let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
-                    let ph = phc.add_subquery(SubqKind::Table, subq.as_ref(), location);
-                    expr::Expr::pred(Pred::InSubquery(lhs, ph))
+                    let ph = phc.add_subquery(SubqKind::In, subq.as_ref(), location);
+                    expr::Expr::pred_in_subq(lhs, ph)
                 }
                 Predicate::NotInSubquery(lhs, subq) => {
                     let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
-                    let ph = phc.add_subquery(SubqKind::Table, subq.as_ref(), location);
-                    expr::Expr::pred(Pred::NotInSubquery(lhs, ph))
+                    let ph = phc.add_subquery(SubqKind::In, subq.as_ref(), location);
+                    expr::Expr::pred_not_in_subq(lhs, ph)
                 }
                 Predicate::Between(lhs, mhs, rhs) => {
                     let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
@@ -419,8 +442,8 @@ pub trait ExprResolve {
                     expr::Expr::pred_func(PredFuncKind::NotBetween, vec![lhs, mhs, rhs])
                 }
                 Predicate::Exists(subq) => {
-                    let ph = phc.add_subquery(SubqKind::Table, subq.as_ref(), location);
-                    expr::Expr::pred(Pred::Exists(ph))
+                    let ph = phc.add_subquery(SubqKind::Exists, subq.as_ref(), location);
+                    expr::Expr::pred_exists(ph)
                 }
                 Predicate::Conj(cs) => {
                     let mut list = Vec::with_capacity(cs.len());
@@ -594,7 +617,7 @@ pub trait ExprResolve {
 pub struct PlaceholderCollector<'a> {
     pub allow_unknown_ident: bool,
     pub idents: Vec<(u32, Vec<SmolStr>, &'static str)>,
-    pub subqueries: Vec<(u32, expr::SubqKind, &'a QueryExpr<'a>, &'static str)>,
+    pub subqueries: Vec<PlaceholderQuery<'a>>,
     ident_id_gen: u32,
     subquery_id_gen: u32,
 }
@@ -619,18 +642,43 @@ impl<'a> PlaceholderCollector<'a> {
         expr::Expr::ph_ident(uid)
     }
 
+    // #[inline]
+    // pub fn add_subquery(
+    //     &mut self,
+    //     kind: expr::SubqKind,
+    //     subquery: &'a QueryExpr<'a>,
+    //     location: &'static str,
+    // ) -> expr::Expr {
+    //     let uid = self.subquery_id_gen;
+    //     self.subqueries.push((uid, kind, subquery, location));
+    //     self.subquery_id_gen += 1;
+    //     expr::Expr::ph_subquery(uid)
+    // }
+
     #[inline]
     pub fn add_subquery(
         &mut self,
         kind: expr::SubqKind,
-        subquery: &'a QueryExpr<'a>,
+        qry: &'a QueryExpr<'a>,
         location: &'static str,
     ) -> expr::Expr {
         let uid = self.subquery_id_gen;
-        self.subqueries.push((uid, kind, subquery, location));
+        self.subqueries.push(PlaceholderQuery {
+            uid,
+            kind,
+            qry,
+            location,
+        });
         self.subquery_id_gen += 1;
-        expr::Expr::ph_subquery(uid)
+        expr::Expr::ph_subquery(kind, uid)
     }
+}
+
+pub struct PlaceholderQuery<'a> {
+    pub uid: u32,
+    pub kind: expr::SubqKind,
+    pub qry: &'a QueryExpr<'a>,
+    pub location: &'static str,
 }
 
 /* helper functions */
