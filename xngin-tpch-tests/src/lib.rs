@@ -4,7 +4,7 @@ use xngin_catalog::{ColumnAttr, QueryCatalog};
 use xngin_datatype::DataType;
 
 #[inline]
-pub fn tpch_catalog() -> Arc<dyn QueryCatalog + Send + Sync> {
+pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("tpch").unwrap();
     builder

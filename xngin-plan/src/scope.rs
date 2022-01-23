@@ -1,4 +1,5 @@
 use crate::alias::QueryAliases;
+use fnv::FnvHashSet;
 use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::ops::{Deref, DerefMut};
@@ -50,18 +51,23 @@ impl Scopes {
 /// 2. column aliases
 #[derive(Debug, Clone, Default)]
 pub struct Scope {
-    // CTE aliases will only contain row and subquery.
+    /// CTE aliases will only contain row and subquery.
     pub cte_aliases: QueryAliases,
-    // FROM aliases will only contain table and subquery.
+    /// Query aliases will only contain row and subqueries.
+    /// The source is FROM clause.
+    /// Row and derived table remain the same.
+    /// Any table present in FROM clause, will be converted to
+    /// a simple query automatically, .
+    /// The converted query has a Proj operator upon Table operator,
+    /// and no other operator or query involved.
     pub query_aliases: QueryAliases,
     // output column list
     pub out_cols: Vec<(Expr, SmolStr)>,
     // if set to true, unknown identifier can be passed to
     // outer scope for search.
     pub transitive: bool,
-    // Correlated subqueries associated to current queries,
-    // which may be nested(multiple level).
-    pub cor_subq: Vec<Vec<Expr>>,
+    // Correlated variables in current scope.
+    pub cor_vars: FnvHashSet<(QueryID, u32)>,
     // Correlated columns in current scope.
     pub cor_cols: Vec<Expr>,
 }
