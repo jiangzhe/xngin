@@ -1,9 +1,9 @@
-# XNGIN (pronounced "X Engine")
+# XNGIN
 
 ![build](https://github.com/jiangzhe/xngin/actions/workflows/build.yml/badge.svg)
 ![codecov](https://codecov.io/gh/jiangzhe/xngin/branch/main/graph/badge.svg?token=T3RMZE2998)
 
-This is a personal project to build a SQL engine from scratch.
+Xngin(pronounced "X Engine") is a personal project to build a SQL engine from scratch.
 
 The project name is inspired by [Nginx](https://en.wikipedia.org/wiki/Nginx), which is a
 very popular web server with high performance and ease to use. 
@@ -28,7 +28,8 @@ There are lots of things to do. Just list some as below.
 | Frontend AST Parse | Done |
 | Frontend AST Format | Done |
 | Logical IR Definition | In progress |
-| Logical IR Rewrite   | Todo |
+| Logical IR Rewrite   | In progress |
+| Logical Rule-based Optimization | In progress |
 | Catalog Definition | Demo |
 | Catalog Maintain | Todo |
 | Statistics Definition | Todo |
@@ -39,7 +40,7 @@ There are lots of things to do. Just list some as below.
 | Plan Cache | Todo |
 | Physical Plan Definition | Todo |
 | Execution Framework | Todo |
-| In-Memory Data Format | Todo |
+| In-Memory Data Format | Demo |
 | Physical Operators | Todo |
 | Client Protocol | Todo |
 | Internal Network Protocol | Todo |

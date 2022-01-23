@@ -7,4 +7,5 @@ pub mod explain;
 pub mod op;
 pub mod query;
 pub mod resolv;
+pub mod rule;
 pub mod scope;

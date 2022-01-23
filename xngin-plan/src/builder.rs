@@ -151,6 +151,9 @@ impl PlanBuilder {
                     let idx = subquery.scope.position_out_col(col_alias).ok_or_else(|| {
                         Error::unknown_column_full_name(schema_name, tbl_alias, col_alias, location)
                     })?;
+                    // mark cor_vars in the matched scope, so column pruning will also take them
+                    // into consideration.
+                    s.cor_vars.insert((*query_id, idx as u32));
                     return Ok(expr::Expr::correlated_col(*query_id, idx as u32));
                 }
             }
@@ -168,12 +171,12 @@ impl PlanBuilder {
 
     #[inline]
     fn find_correlated_tbl_col(
-        &self,
+        &mut self,
         tbl_alias: &str,
         col_alias: &str,
         location: &'static str,
     ) -> Result<expr::Expr> {
-        for s in self.scopes.iter().rev() {
+        for s in self.scopes.iter_mut().rev() {
             for (from_alias, query_id) in s.query_aliases.iter() {
                 if from_alias == tbl_alias {
                     // found table by alias
@@ -181,6 +184,9 @@ impl PlanBuilder {
                     let idx = subquery.scope.position_out_col(col_alias).ok_or_else(|| {
                         Error::unknown_column_partial_name(tbl_alias, col_alias, location)
                     })?;
+                    // mark cor_vars in the matched scope, so column pruning will also take them
+                    // into consideration.
+                    s.cor_vars.insert((*query_id, idx as u32));
                     return Ok(expr::Expr::correlated_col(*query_id, idx as u32));
                 }
             }
@@ -194,20 +200,29 @@ impl PlanBuilder {
     }
 
     #[inline]
-    fn find_correlated_col(&self, col_alias: &str, location: &'static str) -> Result<expr::Expr> {
-        for s in self.scopes.iter().rev() {
-            let mut col = None;
+    fn find_correlated_col(
+        &mut self,
+        col_alias: &str,
+        location: &'static str,
+    ) -> Result<expr::Expr> {
+        for s in self.scopes.iter_mut().rev() {
+            let mut matched = None;
             for (_, query_id) in s.query_aliases.iter() {
                 let subquery = self.qs.get(query_id).must_ok()?;
                 if let Some(idx) = subquery.scope.position_out_col(col_alias) {
-                    if col.is_some() {
+                    if matched.is_some() {
                         return Err(Error::DuplicatedColumnAlias(col_alias.to_string()));
                     }
-                    col = Some(expr::Expr::correlated_col(*query_id, idx as u32))
+                    let ccol = expr::Expr::correlated_col(*query_id, idx as u32);
+                    let cvar = (*query_id, idx as u32);
+                    matched = Some((ccol, cvar))
                 }
             }
-            if let Some(e) = col {
-                return Ok(e);
+            if let Some((c, v)) = matched {
+                // mark cor_vars in the matched scope, so column pruning will also take them
+                // into consideration.
+                s.cor_vars.insert(v);
+                return Ok(c);
             }
             if !s.transitive {
                 break; // stop at the first non-correlated scope

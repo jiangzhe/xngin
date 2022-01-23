@@ -302,7 +302,7 @@ fn test_plan_build_subquery() {
     }
 }
 
-fn j_catalog() -> Arc<dyn QueryCatalog> {
+pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("j").unwrap();
     builder
@@ -347,6 +347,14 @@ fn j_catalog() -> Arc<dyn QueryCatalog> {
         .unwrap();
     let cat = builder.build();
     Arc::new(cat)
+}
+
+pub(crate) fn assert_j_plan<F: FnOnce(&str, QueryPlan)>(sql: &str, f: F) {
+    let cat = j_catalog();
+    let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
+    let (_, qr) = parse_query(MySQL(sql)).unwrap();
+    let plan = builder.build_plan(&qr).unwrap();
+    f(sql, plan)
 }
 
 #[test]
@@ -476,7 +484,7 @@ pub(crate) fn tpch_catalog() -> Arc<dyn QueryCatalog> {
     Arc::new(cat)
 }
 
-fn print_plan(sql: &str, plan: &QueryPlan) {
+pub(crate) fn print_plan(sql: &str, plan: &QueryPlan) {
     use crate::explain::Explain;
     println!("SQL: {}", sql);
     let mut s = String::new();
