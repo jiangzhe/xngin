@@ -121,8 +121,11 @@ impl Explain for Aggr {
             f.write_str(", ")?;
             e.explain(f)?
         }
-        f.write_str("], filt=")?;
-        self.filt.explain(f)?;
+        f.write_char(']')?;
+        if let Some(filt) = &self.filt {
+            f.write_str(", filt=")?;
+            filt.explain(f)?
+        }
         f.write_char('}')
     }
 }
@@ -201,6 +204,7 @@ impl Explain for Const {
             Const::Interval(v) => write!(f, "interval'{}'{}", v.value, v.unit.to_lower()),
             Const::String(s) => write!(f, "'{}'", s),
             Const::Bytes(_) => write!(f, "(bytes todo)"),
+            Const::Bool(b) => write!(f, "{}", b),
             Const::Null => f.write_str("null"),
         }
     }
@@ -248,8 +252,6 @@ impl Explain for Func {
 impl Explain for Pred {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         match self {
-            Pred::True => f.write_str("true"),
-            Pred::False => f.write_str("false"),
             Pred::Conj(es) => write_exprs(f, es, " and "),
             Pred::Disj(es) => write_exprs(f, es, " or "),
             Pred::Xor(es) => write_exprs(f, es, " xor "),

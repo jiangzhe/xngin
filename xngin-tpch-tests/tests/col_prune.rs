@@ -17,7 +17,7 @@ macro_rules! check_tpch_col_prune {
             let (_, qry) = parse_query_verbose(Ansi(sql)).unwrap();
             let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
             let mut plan = builder.build_plan(&qry).unwrap();
-            col_prune(&mut plan);
+            col_prune(&mut plan).unwrap();
             let mut s = String::new();
             assert!(plan.explain(&mut s).is_ok());
             println!("Explain plan:\n{}", s)

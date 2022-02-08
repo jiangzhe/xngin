@@ -1,5 +1,6 @@
 use super::*;
 use crate::op::OpKind;
+use crate::op::OpVisitor;
 use std::sync::Arc;
 use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
 use xngin_catalog::ColumnAttr;
@@ -351,10 +352,67 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
 
 pub(crate) fn assert_j_plan<F: FnOnce(&str, QueryPlan)>(sql: &str, f: F) {
     let cat = j_catalog();
+    let plan = build_plan(&cat, sql);
+    f(sql, plan)
+}
+
+pub(crate) fn assert_j_plan2<F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
+    sql1: &str,
+    sql2: &str,
+    f: F,
+) {
+    let cat = j_catalog();
+    let p1 = build_plan(&cat, sql1);
+    let p2 = build_plan(&cat, sql2);
+    f(sql1, p1, sql2, p2)
+}
+
+fn build_plan(cat: &Arc<dyn QueryCatalog>, sql: &str) -> QueryPlan {
     let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
     let (_, qr) = parse_query(MySQL(sql)).unwrap();
-    let plan = builder.build_plan(&qr).unwrap();
-    f(sql, plan)
+    builder.build_plan(&qr).unwrap()
+}
+
+pub(crate) fn get_lvl_queries(plan: &QueryPlan, lvl: usize) -> Vec<&Subquery> {
+    if lvl == 0 {
+        return plan.root_query().into_iter().collect();
+    }
+    let roots = get_lvl_queries(plan, lvl - 1);
+    let mut res = vec![];
+    for root in roots {
+        for (_, query_id) in root.scope.query_aliases.iter() {
+            if let Some(subq) = plan.queries.get(query_id) {
+                res.push(subq);
+            }
+        }
+    }
+    res
+}
+
+pub(crate) fn get_filt_expr(plan: &QueryPlan) -> Option<xngin_expr::Expr> {
+    plan.root_query().and_then(|subq| {
+        let mut cfe = CollectFiltExpr(None);
+        let _ = subq.root.walk(&mut cfe);
+        cfe.0
+    })
+}
+
+struct CollectFiltExpr(Option<xngin_expr::Expr>);
+
+impl OpVisitor for CollectFiltExpr {
+    fn enter(&mut self, op: &Op) -> bool {
+        match op {
+            Op::Filt(filt) => {
+                self.0 = Some(filt.pred.clone());
+                false
+            }
+            _ => true,
+        }
+    }
+
+    fn leave(&mut self, _op: &Op) -> bool {
+        true
+    }
 }
 
 #[test]

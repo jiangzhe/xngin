@@ -1,9 +1,18 @@
-use crate::Expr;
+use crate::expr::Expr;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Func {
     pub kind: FuncKind,
     pub args: Box<[Expr]>,
+}
+
+impl Default for Func {
+    fn default() -> Self {
+        Func {
+            kind: FuncKind::Uninit,
+            args: Box::default(),
+        }
+    }
 }
 
 impl Func {
@@ -18,6 +27,9 @@ impl Func {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FuncKind {
+    // Uninitialized, should be used only for intermediate placeholder
+    // in transformation
+    Uninit,
     /// Unary operators: 1 arg
     // Negate
     Neg,
@@ -48,6 +60,7 @@ impl FuncKind {
     #[inline]
     pub fn to_lower(&self) -> &'static str {
         match self {
+            FuncKind::Uninit => "uninit",
             FuncKind::Neg => "neg",
             FuncKind::BitInv => "bitinv",
             FuncKind::Add => "add",

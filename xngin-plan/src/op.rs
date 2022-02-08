@@ -10,7 +10,7 @@
 use smallvec::{smallvec, SmallVec};
 use smol_str::SmolStr;
 use xngin_catalog::{SchemaID, TableID};
-use xngin_expr::{Expr, Pred, QueryID, Setq};
+use xngin_expr::{Expr, QueryID, Setq};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpKind {
@@ -108,7 +108,7 @@ impl Op {
     pub fn aggr(groups: Vec<Expr>, source: Op) -> Self {
         Op::Aggr(Box::new(Aggr {
             groups,
-            filt: Expr::pred(Pred::True),
+            filt: None,
             proj: vec![],
             source,
         }))
@@ -193,7 +193,7 @@ impl Op {
             Op::Aggr(aggr) => aggr
                 .groups
                 .iter()
-                .chain(std::iter::once(&aggr.filt))
+                .chain(aggr.filt.iter())
                 .chain(aggr.proj.iter().map(|(e, _)| e))
                 .collect(),
             Op::Sort(sort) => sort.items.iter().map(|si| &si.expr).collect(),
@@ -215,7 +215,7 @@ impl Op {
             Op::Aggr(aggr) => aggr
                 .groups
                 .iter_mut()
-                .chain(std::iter::once(&mut aggr.filt))
+                .chain(aggr.filt.iter_mut())
                 .chain(aggr.proj.iter_mut().map(|(e, _)| e))
                 .collect(),
             Op::Sort(sort) => sort.items.iter_mut().map(|si| &mut si.expr).collect(),
@@ -284,7 +284,7 @@ pub enum AggrKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Aggr {
     pub groups: Vec<Expr>,
-    pub filt: Expr,
+    pub filt: Option<Expr>,
     pub proj: Vec<(Expr, SmolStr)>,
     pub source: Op,
 }
@@ -460,12 +460,12 @@ pub trait OpMutVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_size_of_logical_nodes() {
         println!("size of Op {}", std::mem::size_of::<Op>());
         println!("size of Proj {}", std::mem::size_of::<Proj>());
         println!("size of Filt {}", std::mem::size_of::<Filt>());
-        println!("size of Pred {}", std::mem::size_of::<Pred>());
         println!("size of Join {}", std::mem::size_of::<Join>());
         println!("size of JoinKind {}", std::mem::size_of::<JoinKind>());
         println!("size of Aggr {}", std::mem::size_of::<Aggr>());

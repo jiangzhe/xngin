@@ -442,9 +442,9 @@ impl PlanBuilder {
         // d) merge HAVING into Aggr or Filt
         if let Some(pred) = having {
             match &mut root {
-                Op::Aggr(aggr) => aggr.filt = pred,
+                Op::Aggr(aggr) => aggr.filt = Some(pred),
                 Op::Filt(filt) => {
-                    let orig = std::mem::replace(&mut filt.pred, expr::Expr::pred(Pred::True));
+                    let orig = std::mem::replace(&mut filt.pred, expr::Expr::const_bool(true));
                     filt.pred = expr::Expr::pred(Pred::Conj(vec![orig, pred]));
                 }
                 _ => root = Op::filt(pred, root),
@@ -737,7 +737,7 @@ impl PlanBuilder {
                         }
                     } else {
                         left_aliases.extend(right_aliases);
-                        (expr::Expr::pred(Pred::True), left_aliases)
+                        (expr::Expr::const_bool(true), left_aliases)
                     };
                     // join type in JOIN clause only support INNER, LEFT, RIGHT, FULL.
                     let op = match qj.ty {
@@ -1226,7 +1226,9 @@ impl OpMutVisitor for ReplaceSubq {
                 }
             }
             Op::Aggr(aggr) => {
-                let _ = aggr.filt.walk_mut(self);
+                if let Some(filt) = &mut aggr.filt {
+                    let _ = filt.walk_mut(self);
+                }
                 if self.updated {
                     return false;
                 }

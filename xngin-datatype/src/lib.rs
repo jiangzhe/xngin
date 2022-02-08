@@ -1,3 +1,7 @@
+#[macro_use]
+mod macros;
+pub mod precise;
+
 pub use fxd::{Error as DecimalError, FixedDecimal as Decimal};
 pub use time::format_description::{self, FormatItem};
 pub use time::PrimitiveDateTime as Datetime;
@@ -39,16 +43,6 @@ impl DataType {
 pub trait Typed {
     /// Returns type of data
     fn ty() -> DataType;
-}
-
-macro_rules! impl_typed {
-    ($ty:ty, $p:path) => {
-        impl Typed for $ty {
-            fn ty() -> DataType {
-                $p
-            }
-        }
-    };
 }
 
 impl_typed!(i8, DataType::I8);

@@ -68,6 +68,8 @@ pub enum Error {
     ParseDatetimeError(#[from] xngin_datatype::DatetimeParseError),
     #[error("Internal error MustOK")]
     MustOK,
+    #[error(transparent)]
+    ExprError(#[from] xngin_expr::error::Error),
 }
 
 impl Error {
