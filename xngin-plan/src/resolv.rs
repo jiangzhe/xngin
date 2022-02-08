@@ -317,31 +317,7 @@ pub trait ExprResolve {
                 }
                 UnaryOp::LogicalNot => {
                     let e = self.resolve_expr(&ue.arg, location, phc, within_aggr)?;
-                    match e {
-                        // handle not(not(e))
-                        expr::Expr::Pred(Pred::Not(e)) => *e,
-                        // handle not(true)
-                        expr::Expr::Pred(Pred::True) => expr::Expr::pred_false(),
-                        // handle not(false)
-                        expr::Expr::Pred(Pred::False) => expr::Expr::pred_true(),
-                        // handle not(exists)
-                        expr::Expr::Pred(Pred::Exists(subq)) => {
-                            expr::Expr::Pred(Pred::NotExists(subq))
-                        }
-                        // handle not(notExists)
-                        expr::Expr::Pred(Pred::NotExists(subq)) => {
-                            expr::Expr::Pred(Pred::Exists(subq))
-                        }
-                        // handle not(inSubq)
-                        expr::Expr::Pred(Pred::InSubquery(lhs, subq)) => {
-                            expr::Expr::Pred(Pred::NotInSubquery(lhs, subq))
-                        }
-                        // handle not(notInSubq)
-                        expr::Expr::Pred(Pred::NotInSubquery(lhs, subq)) => {
-                            expr::Expr::Pred(Pred::InSubquery(lhs, subq))
-                        }
-                        _ => expr::Expr::pred_not(e),
-                    }
+                    expr::Expr::pred_not(e)
                 }
             },
             Expr::Binary(be) => {
@@ -561,13 +537,7 @@ pub trait ExprResolve {
                 };
                 expr::Expr::const_str(s)
             }
-            Literal::Bool(b) => {
-                if *b {
-                    expr::Expr::pred(Pred::True)
-                } else {
-                    expr::Expr::pred(Pred::False)
-                }
-            }
+            Literal::Bool(b) => expr::Expr::const_bool(*b),
             Literal::Date(dt) => {
                 let dt = Date::parse(dt, &DEFAULT_DATE_FORMAT)?;
                 expr::Expr::const_date(dt)

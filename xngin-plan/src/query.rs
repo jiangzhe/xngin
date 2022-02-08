@@ -31,28 +31,6 @@ impl QueryPlan {
     pub fn root_query(&self) -> Option<&Subquery> {
         self.queries.get(&self.root)
     }
-
-    /// Returns queries at given level.
-    /// lvl=0: root query.
-    /// lvl=1: child queries of root query.
-    /// ...
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn lvl_queries(&self, lvl: usize) -> Vec<&Subquery> {
-        if lvl == 0 {
-            return self.root_query().into_iter().collect();
-        }
-        let roots = self.lvl_queries(lvl - 1);
-        let mut res = vec![];
-        for root in roots {
-            for (_, query_id) in root.scope.query_aliases.iter() {
-                if let Some(subq) = self.queries.get(query_id) {
-                    res.push(subq);
-                }
-            }
-        }
-        res
-    }
 }
 
 /// Query wraps logical operator with additional syntax information.

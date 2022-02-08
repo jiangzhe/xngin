@@ -3,5 +3,7 @@
 //! is supposed to be always better, so that no cost model involved.
 
 pub mod col_prune;
+pub mod expr_simplify;
 
 pub use col_prune::col_prune;
+pub use expr_simplify::expr_simplify;
