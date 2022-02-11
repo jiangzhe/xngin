@@ -19,6 +19,7 @@ pub enum Pred {
 impl Pred {
     #[inline]
     pub fn func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
+        assert_eq!(kind.n_args(), args.len());
         Pred::Func(PredFunc {
             kind,
             args: args.into_boxed_slice(),
@@ -96,7 +97,19 @@ impl PredFuncKind {
     }
 
     #[inline]
-    pub fn flip(&self) -> Option<Self> {
+    pub fn n_args(&self) -> usize {
+        use PredFuncKind::*;
+        match self {
+            Equal | Greater | GreaterEqual | Less | LessEqual | NotEqual | SafeEqual | Like
+            | NotLike | Regexp | NotRegexp | InValues | NotInValues => 2,
+            IsNull | IsNotNull | IsTrue | IsNotTrue | IsFalse | IsNotFalse => 1,
+            Between | NotBetween => 3,
+        }
+    }
+
+    // flip kind logically by NOT operator
+    #[inline]
+    pub fn logic_flip(&self) -> Option<Self> {
         use PredFuncKind::*;
         let res = match self {
             Equal => NotEqual,
@@ -120,6 +133,22 @@ impl PredFuncKind {
             NotInValues => InValues,
             Between => NotBetween,
             NotBetween => Between,
+        };
+        Some(res)
+    }
+
+    // flip kind by swap operand by position
+    #[inline]
+    pub fn pos_flip(&self) -> Option<Self> {
+        use PredFuncKind::*;
+        let res = match self {
+            Equal => Equal,
+            Greater => Less,
+            GreaterEqual => LessEqual,
+            Less => Greater,
+            LessEqual => GreaterEqual,
+            NotEqual => NotEqual,
+            _ => return None,
         };
         Some(res)
     }

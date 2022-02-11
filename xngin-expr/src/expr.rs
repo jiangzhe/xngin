@@ -1,11 +1,13 @@
 use crate::func::{Func, FuncKind};
 use crate::pred::{Pred, PredFuncKind};
 use smallvec::{smallvec, SmallVec};
-use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::Arc;
+
 use xngin_catalog::TableID;
 use xngin_datatype::{Date, Datetime, Decimal, Interval, Time, TimeUnit};
+
+pub use xngin_datatype::{Const, ValidF64};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
@@ -50,11 +52,6 @@ impl Expr {
     #[inline]
     pub fn func(kind: FuncKind, args: Vec<Expr>) -> Self {
         Expr::Func(Func::new(kind, args))
-    }
-
-    #[inline]
-    pub fn pred(p: Pred) -> Self {
-        Expr::Pred(p)
     }
 
     #[inline]
@@ -335,93 +332,6 @@ pub enum Col {
     TableCol(TableID, u32),
     QueryCol(QueryID, u32),
     CorrelatedCol(QueryID, u32),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Const {
-    I64(i64),
-    U64(u64),
-    F64(ValidF64),
-    Decimal(Decimal),
-    Date(Date),
-    Time(Time),
-    Datetime(Datetime),
-    Interval(Interval),
-    String(Arc<str>),
-    Bytes(Arc<[u8]>),
-    Bool(bool),
-    Null,
-}
-
-impl Default for Const {
-    fn default() -> Self {
-        Const::Null
-    }
-}
-
-impl Const {
-    #[inline]
-    pub fn new_f64(v: f64) -> Option<Self> {
-        ValidF64::new(v).map(Const::F64)
-    }
-
-    #[inline]
-    pub fn is_zero(&self) -> Option<bool> {
-        let res = match self {
-            Const::I64(i) => *i == 0,
-            Const::U64(u) => *u == 0,
-            Const::F64(f) => f.value() == 0.0,
-            Const::Decimal(d) => d.is_zero(),
-            Const::Bool(b) => !*b, // treat false as zero
-            _ => return None,
-        };
-        Some(res)
-    }
-
-    // #[inline]
-    // pub fn try_flip(&self) -> Option<Expr> {
-    //     if let Some(zero) = self.is_zero() {
-    //         return Some(Expr::const_bool(!zero))
-    //     }
-    //     match self {
-    //         Const::Null => Some(Expr::const_null()),
-    //         _ => None,
-    //     }
-    // }
-}
-
-#[derive(Debug, Clone)]
-pub struct ValidF64(f64);
-
-impl ValidF64 {
-    #[inline]
-    pub fn new(value: f64) -> Option<Self> {
-        if value.is_infinite() || value.is_nan() {
-            None
-        } else {
-            Some(ValidF64(value))
-        }
-    }
-
-    #[inline]
-    pub fn value(&self) -> f64 {
-        self.0
-    }
-}
-
-impl PartialEq for ValidF64 {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.eq(&other.0)
-    }
-}
-
-// we must ensure f64 is valid for equality check
-impl Eq for ValidF64 {}
-
-impl Hash for ValidF64 {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0.to_bits())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
