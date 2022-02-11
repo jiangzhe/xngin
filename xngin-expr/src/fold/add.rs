@@ -92,14 +92,10 @@ impl ConstFold for FoldAdd<'_> {
                     Const::Decimal(res)
                 }
                 Const::Bool(v1) => {
-                    if *v1 {
-                        let v1 = Decimal::one();
-                        let mut res = Decimal::zero();
-                        Decimal::add_to(v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
-                        Const::Decimal(res)
-                    } else {
-                        Const::Decimal(v0.clone())
-                    }
+                    let v1 = if *v1 { Decimal::one() } else { Decimal::zero() };
+                    let mut res = Decimal::zero();
+                    Decimal::add_to(v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+                    Const::Decimal(res)
                 }
                 Const::Null => Const::Null,
                 _ => return Ok(None), // todo: handle non-nuemric value
@@ -140,19 +136,15 @@ impl ConstFold for FoldAdd<'_> {
     }
 }
 
+/// i64 + u64 always returns u64, fail if not in range
 fn i64_add_u64(v0: i64, v1: u64) -> Result<Const> {
     let v0 = Decimal::from(v0);
     let v1 = Decimal::from(v1);
     let mut res = Decimal::zero();
-    Decimal::add_to(&v0, &v1, &mut res).unwrap();
-    let res = if res.is_zero() || res.is_neg() {
-        let res = res.as_i64().map_err(|_| Error::ValueOutOfRange)?;
-        Const::I64(res)
-    } else {
-        let res = res.as_u64().map_err(|_| Error::ValueOutOfRange)?;
-        Const::U64(res)
-    };
-    Ok(res)
+    Decimal::add_to(&v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+    res.as_u64()
+        .map(Const::U64)
+        .map_err(|_| Error::ValueOutOfRange)
 }
 
 #[cfg(test)]

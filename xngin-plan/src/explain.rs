@@ -51,12 +51,7 @@ impl Explain for Op {
             Op::Apply(apply) => apply.explain(f),
             Op::Row(row) => {
                 f.write_str("Row{")?;
-                let (head, tail) = row.split_first().unwrap();
-                head.0.explain(f)?;
-                for (e, _) in tail {
-                    f.write_str(", ")?;
-                    e.explain(f)?
-                }
+                write_exprs(f, row.iter().map(|(e, _)| e), ", ")?;
                 f.write_char('}')
             }
             Op::Table(_, table_id) => {
@@ -70,12 +65,7 @@ impl Explain for Op {
 impl Explain for Proj {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Proj{")?;
-        let (head, tail) = self.cols.split_first().unwrap();
-        head.0.explain(f)?;
-        for (e, _) in tail {
-            f.write_str(", ")?;
-            e.explain(f)?
-        }
+        write_exprs(f, self.cols.iter().map(|(e, _)| e), ", ")?;
         f.write_str("}")
     }
 }
@@ -91,12 +81,7 @@ impl Explain for Filt {
 impl Explain for Sort {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Sort{")?;
-        let (head, tail) = self.items.split_first().unwrap();
-        head.explain(f)?;
-        for si in tail {
-            f.write_str(", ")?;
-            si.explain(f)?
-        }
+        write_exprs(f, &*self.items, ", ")?;
         f.write_char('}')
     }
 }
@@ -115,12 +100,7 @@ impl Explain for Aggr {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Aggr{")?;
         f.write_str("proj=[")?;
-        let (head, tail) = self.proj.split_first().unwrap();
-        head.0.explain(f)?;
-        for (e, _) in tail {
-            f.write_str(", ")?;
-            e.explain(f)?
-        }
+        write_exprs(f, self.proj.iter().map(|(e, _)| e), ", ")?;
         f.write_char(']')?;
         if let Some(filt) = &self.filt {
             f.write_str(", filt=")?;
@@ -181,7 +161,11 @@ impl Explain for Expr {
             Expr::Aggf(a) => a.explain(f),
             Expr::Func(v) => v.explain(f),
             Expr::Pred(p) => p.explain(f),
-            Expr::Tuple(_) => write!(f, "(tuple todo)"),
+            Expr::Tuple(es) => {
+                f.write_char('(')?;
+                write_exprs(f, es, ", ")?;
+                f.write_char(')')
+            }
             Expr::Subq(_, query_id) => {
                 write!(f, "subq({})", **query_id)
             }
@@ -244,7 +228,7 @@ impl Explain for Func {
         if self.args.is_empty() {
             return f.write_char(')');
         }
-        write_exprs(f, &self.args, ", ")?;
+        write_exprs(f, &*self.args, ", ")?;
         f.write_char(')')
     }
 }
@@ -286,15 +270,22 @@ impl Explain for PredFunc {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str(self.kind.to_lower())?;
         f.write_char('(')?;
-        write_exprs(f, &self.args, ", ")?;
+        write_exprs(f, &*self.args, ", ")?;
         f.write_char(')')
     }
 }
 
-fn write_exprs<F: Write>(f: &mut F, exprs: &[Expr], delimiter: &str) -> fmt::Result {
-    let (head, tail) = exprs.split_first().unwrap();
-    head.explain(f)?;
-    for e in tail {
+fn write_exprs<'i, F, E: 'i, I>(f: &mut F, exprs: I, delimiter: &str) -> fmt::Result
+where
+    F: Write,
+    E: Explain,
+    I: IntoIterator<Item = &'i E>,
+{
+    let mut exprs = exprs.into_iter();
+    if let Some(head) = exprs.next() {
+        head.explain(f)?
+    }
+    for e in exprs {
         f.write_str(delimiter)?;
         e.explain(f)?
     }

@@ -445,7 +445,7 @@ impl PlanBuilder {
                 Op::Aggr(aggr) => aggr.filt = Some(pred),
                 Op::Filt(filt) => {
                     let orig = std::mem::replace(&mut filt.pred, expr::Expr::const_bool(true));
-                    filt.pred = expr::Expr::pred(Pred::Conj(vec![orig, pred]));
+                    filt.pred = expr::Expr::Pred(Pred::Conj(vec![orig, pred]));
                 }
                 _ => root = Op::filt(pred, root),
             }
@@ -715,7 +715,7 @@ impl PlanBuilder {
                                 let pred = if preds.len() == 1 {
                                     preds.pop().must_ok()?
                                 } else {
-                                    expr::Expr::pred(Pred::Conj(preds))
+                                    expr::Expr::Pred(Pred::Conj(preds))
                                 };
                                 (pred, left_aliases)
                             }

@@ -377,23 +377,27 @@ pub trait ExprResolve {
                 }
                 Predicate::InValues(lhs, vals) => {
                     let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
-                    let mut list = Vec::with_capacity(vals.len() + 1);
-                    list.push(lhs);
+                    let mut list = Vec::with_capacity(vals.len());
                     for v in vals {
                         let e = self.resolve_expr(v, location, phc, within_aggr)?;
                         list.push(e);
                     }
-                    expr::Expr::pred_func(PredFuncKind::InValues, list)
+                    expr::Expr::pred_func(
+                        PredFuncKind::InValues,
+                        vec![lhs, expr::Expr::Tuple(list)],
+                    )
                 }
                 Predicate::NotInValues(lhs, vals) => {
                     let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
-                    let mut list = Vec::with_capacity(vals.len() + 1);
-                    list.push(lhs);
+                    let mut list = Vec::with_capacity(vals.len());
                     for v in vals {
                         let e = self.resolve_expr(v, location, phc, within_aggr)?;
                         list.push(e);
                     }
-                    expr::Expr::pred_func(PredFuncKind::NotInValues, list)
+                    expr::Expr::pred_func(
+                        PredFuncKind::NotInValues,
+                        vec![lhs, expr::Expr::Tuple(list)],
+                    )
                 }
                 Predicate::InSubquery(lhs, subq) => {
                     let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
@@ -427,7 +431,7 @@ pub trait ExprResolve {
                         let e = self.resolve_expr(c, location, phc, within_aggr)?;
                         list.push(e);
                     }
-                    expr::Expr::pred(Pred::Conj(list))
+                    expr::Expr::Pred(Pred::Conj(list))
                 }
                 Predicate::Disj(ds) => {
                     let mut list = Vec::with_capacity(ds.len());
@@ -435,7 +439,7 @@ pub trait ExprResolve {
                         let e = self.resolve_expr(d, location, phc, within_aggr)?;
                         list.push(e);
                     }
-                    expr::Expr::pred(Pred::Disj(list))
+                    expr::Expr::Pred(Pred::Disj(list))
                 }
                 Predicate::LogicalXor(xs) => {
                     let mut list = Vec::with_capacity(xs.len());
@@ -443,7 +447,7 @@ pub trait ExprResolve {
                         let e = self.resolve_expr(x, location, phc, within_aggr)?;
                         list.push(e);
                     }
-                    expr::Expr::pred(Pred::Xor(list))
+                    expr::Expr::Pred(Pred::Xor(list))
                 }
             },
             Expr::ScalarSubquery(subq) => {

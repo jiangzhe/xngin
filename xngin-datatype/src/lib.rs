@@ -1,6 +1,14 @@
 #[macro_use]
 mod macros;
+pub mod align;
+pub mod konst;
 pub mod precise;
+pub mod runtime;
+
+pub use align::*;
+pub use konst::*;
+pub use precise::*;
+pub use runtime::*;
 
 pub use fxd::{Error as DecimalError, FixedDecimal as Decimal};
 pub use time::format_description::{self, FormatItem};
@@ -10,35 +18,7 @@ pub use time::{Date, Time};
 
 use static_init::dynamic;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum DataType {
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    F64,
-    Bool,
-    String,
-    Bytes,
-    Char,
-    Date,
-    Time,
-    Datetime,
-    Interval,
-    Decimal,
-}
-
-impl DataType {
-    #[inline]
-    pub const fn is_fixed_len(self) -> bool {
-        !matches!(self, DataType::String | DataType::Bytes)
-    }
-}
+pub type DataType = RuntimeType;
 
 pub trait Typed {
     /// Returns type of data
