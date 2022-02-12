@@ -1,139 +1,140 @@
 use crate::error::{Error, Result};
-use crate::fold::ConstFold;
-use crate::Const;
+use crate::{Const, Expr};
 use xngin_datatype::Decimal;
 
-pub struct FoldAdd<'a>(pub &'a Const, pub &'a Const);
+#[inline]
+pub fn fold_add(lhs: &Expr, rhs: &Expr) -> Result<Option<Const>> {
+    match (lhs, rhs) {
+        (Expr::Const(Const::Null), _) | (_, Expr::Const(Const::Null)) => Ok(Some(Const::Null)),
+        (Expr::Const(lhs), Expr::Const(rhs)) => fold_add_const(lhs, rhs),
+        _ => return Ok(None),
+    }
+}
 
-impl ConstFold for FoldAdd<'_> {
-    fn fold(self) -> Result<Option<Const>> {
-        let res = match self.0 {
-            Const::I64(v0) => match self.1 {
-                Const::I64(v1) => v0
-                    .checked_add(*v1)
-                    .map(Const::I64)
-                    .ok_or(Error::ValueOutOfRange)?,
-                Const::U64(v1) => i64_add_u64(*v0, *v1)?,
-                Const::F64(v1) => {
-                    Const::new_f64(*v0 as f64 + v1.value()).ok_or(Error::ValueOutOfRange)?
-                }
-                Const::Decimal(v1) => {
-                    let v0 = Decimal::from(*v0);
-                    let mut res = Decimal::zero();
-                    Decimal::add_to(&v0, v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
-                    Const::Decimal(res)
-                }
-                // differ from MySQL, can return i64 if possible
-                Const::Bool(v1) => i64_add_u64(*v0, if *v1 { 1 } else { 0 })?,
-                Const::Null => Const::Null,
-                _ => return Ok(None), // todo: handle non-nuemric value
-            },
-            Const::U64(v0) => match self.1 {
-                Const::I64(v1) => i64_add_u64(*v1, *v0)?,
-                Const::U64(v1) => v0
-                    .checked_add(*v1)
-                    .map(Const::U64)
-                    .ok_or(Error::ValueOutOfRange)?,
-                Const::F64(v1) => {
-                    Const::new_f64(*v0 as f64 + v1.value()).ok_or(Error::ValueOutOfRange)?
-                }
-                Const::Decimal(v1) => {
-                    let v0 = Decimal::from(*v0);
-                    let mut res = Decimal::zero();
-                    Decimal::add_to(&v0, v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
-                    Const::Decimal(res)
-                }
-                Const::Bool(v1) => v0
-                    .checked_add(if *v1 { 1 } else { 0 })
-                    .map(Const::U64)
-                    .ok_or(Error::ValueOutOfRange)?,
-                Const::Null => Const::Null,
-                _ => return Ok(None), // todo: handle non-nuemric value
-            },
-            Const::F64(v0) => match self.1 {
-                Const::I64(v1) => {
-                    Const::new_f64(v0.value() + *v1 as f64).ok_or(Error::ValueOutOfRange)?
-                }
-                Const::U64(v1) => {
-                    Const::new_f64(v0.value() + *v1 as f64).ok_or(Error::ValueOutOfRange)?
-                }
-                Const::F64(v1) => {
-                    Const::new_f64(v0.value() + v1.value()).ok_or(Error::ValueOutOfRange)?
-                }
-                Const::Decimal(v1) => {
-                    let v1: f64 = v1.to_string(-1).parse()?;
-                    Const::new_f64(v0.value() + v1).ok_or(Error::ValueOutOfRange)?
-                }
-                Const::Bool(v1) => Const::new_f64(v0.value() + if *v1 { 1.0 } else { 0.0 })
-                    .ok_or(Error::ValueOutOfRange)?,
-                Const::Null => Const::Null,
-                _ => return Ok(None), // todo: handle non-nuemric value
-            },
-            Const::Decimal(v0) => match self.1 {
-                Const::I64(v1) => {
-                    let v1 = Decimal::from(*v1);
-                    let mut res = Decimal::zero();
-                    Decimal::add_to(v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
-                    Const::Decimal(res)
-                }
-                Const::U64(v1) => {
-                    let v1 = Decimal::from(*v1);
-                    let mut res = Decimal::zero();
-                    Decimal::add_to(v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
-                    Const::Decimal(res)
-                }
-                Const::F64(v1) => {
-                    let v0: f64 = v0.to_string(-1).parse()?;
-                    Const::new_f64(v0 + v1.value()).ok_or(Error::ValueOutOfRange)?
-                }
-                Const::Decimal(v1) => {
-                    let mut res = Decimal::zero();
-                    Decimal::add_to(v0, v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
-                    Const::Decimal(res)
-                }
-                Const::Bool(v1) => {
-                    let v1 = if *v1 { Decimal::one() } else { Decimal::zero() };
-                    let mut res = Decimal::zero();
-                    Decimal::add_to(v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
-                    Const::Decimal(res)
-                }
-                Const::Null => Const::Null,
-                _ => return Ok(None), // todo: handle non-nuemric value
-            },
-            Const::Bool(v0) => match self.1 {
-                Const::I64(v1) => i64_add_u64(*v1, if *v0 { 1 } else { 0 })?,
-                Const::U64(v1) => v1
-                    .checked_add(if *v0 { 1 } else { 0 })
-                    .map(Const::U64)
-                    .ok_or(Error::ValueOutOfRange)?,
-                Const::F64(v1) => {
-                    let v0: f64 = if *v0 { 1.0 } else { 0.0 };
-                    Const::new_f64(v0 + v1.value()).ok_or(Error::ValueOutOfRange)?
-                }
-                Const::Decimal(v1) => {
-                    if *v0 {
-                        let v0 = Decimal::one();
-                        let mut res = Decimal::zero();
-                        Decimal::add_to(&v0, v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
-                        Const::Decimal(res)
-                    } else {
-                        self.1.clone()
-                    }
-                }
-                // coerce to u64
-                Const::Bool(v1) => {
-                    let v0: u64 = if *v0 { 1 } else { 0 };
-                    let v1: u64 = if *v1 { 1 } else { 0 };
-                    Const::U64(v0 + v1)
-                }
-                Const::Null => Const::Null,
-                _ => return Ok(None), // todo: handle non-nuemric value
-            },
+#[inline]
+pub fn fold_add_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
+    let res = match lhs {
+        Const::I64(v0) => match rhs {
+            Const::I64(v1) => v0
+                .checked_add(*v1)
+                .map(Const::I64)
+                .ok_or(Error::ValueOutOfRange)?,
+            Const::U64(v1) => i64_add_u64(*v0, *v1)?,
+            Const::F64(v1) => {
+                Const::new_f64(*v0 as f64 + v1.value()).ok_or(Error::ValueOutOfRange)?
+            }
+            Const::Decimal(v1) => {
+                let v0 = Decimal::from(*v0);
+                let mut res = Decimal::zero();
+                Decimal::add_to(&v0, v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+                Const::Decimal(res)
+            }
+            // differ from MySQL, can return i64 if possible
+            Const::Bool(v1) => i64_add_u64(*v0, if *v1 { 1 } else { 0 })?,
             Const::Null => Const::Null,
             _ => return Ok(None), // todo: handle non-nuemric value
-        };
-        Ok(Some(res))
-    }
+        },
+        Const::U64(v0) => match rhs {
+            Const::I64(v1) => i64_add_u64(*v1, *v0)?,
+            Const::U64(v1) => v0
+                .checked_add(*v1)
+                .map(Const::U64)
+                .ok_or(Error::ValueOutOfRange)?,
+            Const::F64(v1) => {
+                Const::new_f64(*v0 as f64 + v1.value()).ok_or(Error::ValueOutOfRange)?
+            }
+            Const::Decimal(v1) => {
+                let v0 = Decimal::from(*v0);
+                let mut res = Decimal::zero();
+                Decimal::add_to(&v0, v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+                Const::Decimal(res)
+            }
+            Const::Bool(v1) => v0
+                .checked_add(if *v1 { 1 } else { 0 })
+                .map(Const::U64)
+                .ok_or(Error::ValueOutOfRange)?,
+            Const::Null => Const::Null,
+            _ => return Ok(None), // todo: handle non-nuemric value
+        },
+        Const::F64(v0) => match rhs {
+            Const::I64(v1) => {
+                Const::new_f64(v0.value() + *v1 as f64).ok_or(Error::ValueOutOfRange)?
+            }
+            Const::U64(v1) => {
+                Const::new_f64(v0.value() + *v1 as f64).ok_or(Error::ValueOutOfRange)?
+            }
+            Const::F64(v1) => {
+                Const::new_f64(v0.value() + v1.value()).ok_or(Error::ValueOutOfRange)?
+            }
+            Const::Decimal(v1) => {
+                let v1: f64 = v1.to_string(-1).parse()?;
+                Const::new_f64(v0.value() + v1).ok_or(Error::ValueOutOfRange)?
+            }
+            Const::Bool(v1) => Const::new_f64(v0.value() + if *v1 { 1.0 } else { 0.0 })
+                .ok_or(Error::ValueOutOfRange)?,
+            Const::Null => Const::Null,
+            _ => return Ok(None), // todo: handle non-nuemric value
+        },
+        Const::Decimal(v0) => match rhs {
+            Const::I64(v1) => {
+                let v1 = Decimal::from(*v1);
+                let mut res = Decimal::zero();
+                Decimal::add_to(v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+                Const::Decimal(res)
+            }
+            Const::U64(v1) => {
+                let v1 = Decimal::from(*v1);
+                let mut res = Decimal::zero();
+                Decimal::add_to(v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+                Const::Decimal(res)
+            }
+            Const::F64(v1) => {
+                let v0: f64 = v0.to_string(-1).parse()?;
+                Const::new_f64(v0 + v1.value()).ok_or(Error::ValueOutOfRange)?
+            }
+            Const::Decimal(v1) => {
+                let mut res = Decimal::zero();
+                Decimal::add_to(v0, v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+                Const::Decimal(res)
+            }
+            Const::Bool(v1) => {
+                let v1 = if *v1 { Decimal::one() } else { Decimal::zero() };
+                let mut res = Decimal::zero();
+                Decimal::add_to(v0, &v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+                Const::Decimal(res)
+            }
+            Const::Null => Const::Null,
+            _ => return Ok(None), // todo: handle non-nuemric value
+        },
+        Const::Bool(v0) => match rhs {
+            Const::I64(v1) => i64_add_u64(*v1, if *v0 { 1 } else { 0 })?,
+            Const::U64(v1) => v1
+                .checked_add(if *v0 { 1 } else { 0 })
+                .map(Const::U64)
+                .ok_or(Error::ValueOutOfRange)?,
+            Const::F64(v1) => {
+                let v0: f64 = if *v0 { 1.0 } else { 0.0 };
+                Const::new_f64(v0 + v1.value()).ok_or(Error::ValueOutOfRange)?
+            }
+            Const::Decimal(v1) => {
+                let v0 = if *v0 { Decimal::one() } else { Decimal::zero() };
+                let mut res = Decimal::zero();
+                Decimal::add_to(&v0, v1, &mut res).map_err(|_| Error::ValueOutOfRange)?;
+                Const::Decimal(res)
+            }
+            // coerce to u64
+            Const::Bool(v1) => {
+                let v0: u64 = if *v0 { 1 } else { 0 };
+                let v1: u64 = if *v1 { 1 } else { 0 };
+                Const::U64(v0 + v1)
+            }
+            Const::Null => Const::Null,
+            _ => return Ok(None), // todo: handle non-nuemric value
+        },
+        Const::Null => Const::Null,
+        _ => return Ok(None), // todo: handle non-nuemric value
+    };
+    Ok(Some(res))
 }
 
 /// i64 + u64 always returns u64, fail if not in range
@@ -207,7 +208,9 @@ mod tests {
     }
 
     fn assert_eq_fold_add(c1: Const, c2: Const, c3: Const) {
-        let res = FoldAdd(&c1, &c2).fold().unwrap().unwrap();
+        let res = fold_add(&Expr::Const(c1), &Expr::Const(c2))
+            .unwrap()
+            .unwrap();
         assert_eq!(res, c3)
     }
 }

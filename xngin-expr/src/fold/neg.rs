@@ -1,66 +1,71 @@
 use crate::error::Result;
-use crate::fold::ConstFold;
-use crate::Const;
+use crate::{Const, Expr};
 use xngin_datatype::Decimal;
 
-pub struct FoldNeg<'a>(pub &'a Const);
+#[inline]
+pub fn fold_neg(arg: &Expr) -> Result<Option<Const>> {
+    match arg {
+        Expr::Const(Const::Null) => Ok(Some(Const::Null)),
+        Expr::Const(c) => fold_neg_const(c),
+        _ => Ok(None),
+    }
+}
 
-impl ConstFold for FoldNeg<'_> {
-    fn fold(self) -> Result<Option<Const>> {
-        let res = match self.0 {
-            Const::I64(i) => {
-                let mut d = Decimal::from(*i);
-                if *i < 0 {
-                    d.set_pos()
-                } else {
-                    d.set_neg()
-                }
+#[inline]
+pub fn fold_neg_const(arg: &Const) -> Result<Option<Const>> {
+    let res = match arg {
+        Const::I64(i) => {
+            let mut d = Decimal::from(*i);
+            if *i < 0 {
+                d.set_pos()
+            } else {
+                d.set_neg()
+            }
+            match d.as_i64() {
+                // in MySQL negating negative number returns decimal, here we
+                // returns the i64 if possible
+                Ok(new) => Const::I64(new),
+                Err(_) => Const::Decimal(d),
+            }
+        }
+        Const::U64(u) => {
+            if *u == 0 {
+                Const::U64(0)
+            } else {
+                let mut d = Decimal::from(*u);
+                d.set_neg();
                 match d.as_i64() {
-                    // in MySQL negating negative number returns decimal, here we
-                    // returns the i64 if possible
                     Ok(new) => Const::I64(new),
                     Err(_) => Const::Decimal(d),
                 }
             }
-            Const::U64(u) => {
-                if *u == 0 {
-                    Const::U64(0)
+        }
+        Const::F64(f) => Const::new_f64(-f.value()).unwrap(),
+        Const::Decimal(d) => {
+            if d.is_zero() {
+                Const::Decimal(d.clone())
+            } else {
+                let mut res = d.clone();
+                if d.is_neg() {
+                    res.set_pos()
                 } else {
-                    let mut d = Decimal::from(*u);
-                    d.set_neg();
-                    match d.as_i64() {
-                        Ok(new) => Const::I64(new),
-                        Err(_) => Const::Decimal(d),
-                    }
+                    res.set_neg()
                 }
+                Const::Decimal(res)
             }
-            Const::F64(f) => Const::new_f64(-f.value()).unwrap(),
-            Const::Decimal(d) => {
-                if d.is_zero() {
-                    Const::Decimal(d.clone())
-                } else {
-                    let mut res = d.clone();
-                    if d.is_neg() {
-                        res.set_pos()
-                    } else {
-                        res.set_neg()
-                    }
-                    Const::Decimal(res)
-                }
+        }
+        Const::Bool(b) => {
+            if *b {
+                Const::I64(-1)
+            } else {
+                Const::I64(0)
             }
-            Const::Bool(b) => {
-                if *b {
-                    Const::I64(-1)
-                } else {
-                    Const::I64(0)
-                }
-            }
-            Const::Null => Const::Null,
-            // todo: handle negating non-numeric values
-            _ => return Ok(None),
-        };
-        Ok(Some(res))
-    }
+        }
+        Const::Null => Const::Null,
+        // todo: handle negating non-numeric values
+        _ => return Ok(None),
+    };
+    Ok(Some(res))
 }
 
 #[cfg(test)]
@@ -93,7 +98,7 @@ mod tests {
     }
 
     fn assert_eq_fold_neg(c1: Const, c2: Const) {
-        let res = FoldNeg(&c1).fold().unwrap().unwrap();
+        let res = fold_neg(&Expr::Const(c1)).unwrap().unwrap();
         assert_eq!(res, c2)
     }
 }
