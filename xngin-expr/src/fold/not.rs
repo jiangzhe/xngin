@@ -1,17 +1,18 @@
 use crate::error::Result;
-use crate::fold::ConstFold;
-use crate::Const;
+use crate::{Const, Expr};
 
-pub struct FoldNot<'a>(pub &'a Const);
-
-impl ConstFold for FoldNot<'_> {
-    fn fold(self) -> Result<Option<Const>> {
-        let res = match self.0 {
-            Const::Null => Some(Const::Null),
-            other => other.is_zero().map(Const::Bool),
-        };
-        Ok(res)
+#[inline]
+pub fn fold_not(arg: &Expr) -> Result<Option<Const>> {
+    match arg {
+        Expr::Const(Const::Null) => Ok(Some(Const::Null)),
+        Expr::Const(c) => fold_not_const(c),
+        _ => return Ok(None),
     }
+}
+
+#[inline]
+pub fn fold_not_const(arg: &Const) -> Result<Option<Const>> {
+    Ok(arg.is_zero().map(Const::Bool))
 }
 
 #[cfg(test)]
@@ -36,7 +37,7 @@ mod tests {
     }
 
     fn assert_eq_fold_not(c1: Const, c2: Const) {
-        let res = FoldNot(&c1).fold().unwrap().unwrap();
+        let res = fold_not(&Expr::Const(c1)).unwrap().unwrap();
         assert_eq!(res, c2)
     }
 }

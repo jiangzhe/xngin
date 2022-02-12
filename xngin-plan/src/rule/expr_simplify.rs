@@ -114,12 +114,12 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                 Some(mem::take(&mut args[0]))
             }
             // rule 2: -c => new_c
-            Expr::Const(c) => FoldNeg(c).fold()?.map(Expr::Const),
+            Expr::Const(c) => fold_neg_const(c)?.map(Expr::Const),
             _ => None,
         },
         FuncKind::Add => match f.args.as_mut() {
             // rule 3: 1+1 => 2
-            [Expr::Const(c1), Expr::Const(c2)] => FoldAdd(c1, c2).fold()?.map(Expr::Const),
+            [Expr::Const(c1), Expr::Const(c2)] => fold_add_const(c1, c2)?.map(Expr::Const),
             [e, Expr::Const(c1)] => {
                 if c1.is_zero().unwrap_or_default() {
                     // rule 4: e+0 => e
@@ -129,21 +129,21 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                     match (kind, args.as_mut()) {
                         // rule 6: (e1+c2)+c1 => e1 + (c2+c1)
                         (FuncKind::Add, [e1, Expr::Const(c2)]) => {
-                            FoldAdd(c2, c1).fold()?.map(|c3| {
+                            fold_add_const(c2, c1)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 expr_add_const(e1, c3)
                             })
                         }
                         // rule 6: (e1-c2)+c1 => e1 - (c2-c1)
                         (FuncKind::Sub, [e1, Expr::Const(c2)]) => {
-                            FoldSub(c2, c1).fold()?.map(|c3| {
+                            fold_sub_const(c2, c1)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 expr_sub_const(e1, c3)
                             })
                         }
                         // rule 6: (c2-e1)+c1 => (c2+c1) - e1
                         (FuncKind::Sub, [Expr::Const(c2), e1]) => {
-                            FoldAdd(c2, c1).fold()?.map(|c3| {
+                            fold_add_const(c2, c1)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 const_sub_expr(c3, e1)
                             })
@@ -162,35 +162,34 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                     Some(coerce_numeric(e))
                 } else {
                     match e {
-                        Expr::Func(Func { kind, args }) => match (kind, args.as_mut()) {
-                            // rule 7: c1 + (e1+c2) => e1 + (c1+c2)
-                            (FuncKind::Add, [e1, Expr::Const(c2)]) => {
-                                FoldAdd(c1, c2).fold()?.map(|c3| {
-                                    let e1 = mem::take(e1);
-                                    expr_add_const(e1, c3)
-                                })
+                        Expr::Func(Func { kind, args }) => {
+                            match (kind, args.as_mut()) {
+                                // rule 7: c1 + (e1+c2) => e1 + (c1+c2)
+                                (FuncKind::Add, [e1, Expr::Const(c2)]) => fold_add_const(c1, c2)?
+                                    .map(|c3| {
+                                        let e1 = mem::take(e1);
+                                        expr_add_const(e1, c3)
+                                    }),
+                                // rule 7: c1 + (e1-c2) => e1 + (c1-c2)
+                                (FuncKind::Sub, [e1, Expr::Const(c2)]) => fold_sub_const(c1, c2)?
+                                    .map(|c3| {
+                                        let e1 = mem::take(e1);
+                                        expr_add_const(e1, c3)
+                                    }),
+                                // rule 7: c1 + (c2-e1) => (c1+c2) - e1
+                                (FuncKind::Sub, [Expr::Const(c2), e1]) => fold_add_const(c1, c2)?
+                                    .map(|c3| {
+                                        let e1 = mem::take(e1);
+                                        const_sub_expr(c3, e1)
+                                    }),
+                                // rule 5: c1 + e1 => e1 + c1
+                                _ => {
+                                    let e1 = mem::take(e);
+                                    let c1 = mem::take(c1);
+                                    Some(Expr::func(FuncKind::Add, vec![e1, Expr::Const(c1)]))
+                                }
                             }
-                            // rule 7: c1 + (e1-c2) => e1 + (c1-c2)
-                            (FuncKind::Sub, [e1, Expr::Const(c2)]) => {
-                                FoldSub(c1, c2).fold()?.map(|c3| {
-                                    let e1 = mem::take(e1);
-                                    expr_add_const(e1, c3)
-                                })
-                            }
-                            // rule 7: c1 + (c2-e1) => (c1+c2) - e1
-                            (FuncKind::Sub, [Expr::Const(c2), e1]) => {
-                                FoldAdd(c1, c2).fold()?.map(|c3| {
-                                    let e1 = mem::take(e1);
-                                    const_sub_expr(c3, e1)
-                                })
-                            }
-                            // rule 5: c1 + e1 => e1 + c1
-                            _ => {
-                                let e1 = mem::take(e);
-                                let c1 = mem::take(c1);
-                                Some(Expr::func(FuncKind::Add, vec![e1, Expr::Const(c1)]))
-                            }
-                        },
+                        }
                         // rule 5
                         _ => {
                             let e1 = mem::take(e);
@@ -208,7 +207,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Add,
                         [e1, Expr::Const(c1)],
                         [e2, Expr::Const(c2)],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -220,7 +219,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [e1, Expr::Const(c1)],
                         [e2, Expr::Const(c2)],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -232,7 +231,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Add,
                         [e1, Expr::Const(c1)],
                         [e2, Expr::Const(c2)],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -244,7 +243,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [e1, Expr::Const(c1)],
                         [e2, Expr::Const(c2)],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -256,7 +255,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [Expr::Const(c1), e1],
                         [e2, Expr::Const(c2)],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e2, e1]);
@@ -268,7 +267,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Add,
                         [Expr::Const(c1), e1],
                         [e2, Expr::Const(c2)],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e2, e1]);
@@ -280,7 +279,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [Expr::Const(c1), e1],
                         [Expr::Const(c2), e2],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -292,7 +291,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [e1, Expr::Const(c1)],
                         [Expr::Const(c2), e2],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
@@ -304,7 +303,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [e1, Expr::Const(c1)],
                         [Expr::Const(c2), e2],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
@@ -317,7 +316,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
         },
         FuncKind::Sub => match f.args.as_mut() {
             // rule 3: 1-1 => 0
-            [Expr::Const(c1), Expr::Const(c2)] => FoldSub(c1, c2).fold()?.map(Expr::Const),
+            [Expr::Const(c1), Expr::Const(c2)] => fold_sub_const(c1, c2)?.map(Expr::Const),
             [e, Expr::Const(c1)] => {
                 if c1.is_zero().unwrap_or_default() {
                     // rule 4: e-0 => e
@@ -327,21 +326,21 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                     match (kind, args.as_mut()) {
                         // rule 6: (e1+c2)-c1 => e1 + (c2-c1)
                         (FuncKind::Add, [e1, Expr::Const(c2)]) => {
-                            FoldSub(c2, c1).fold()?.map(|c3| {
+                            fold_sub_const(c2, c1)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 expr_add_const(e1, c3)
                             })
                         }
                         // rule 6: (e1-c2)-c1 => e1 - (c2+c1)
                         (FuncKind::Sub, [e1, Expr::Const(c2)]) => {
-                            FoldAdd(c2, c1).fold()?.map(|c3| {
+                            fold_add_const(c2, c1)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 expr_sub_const(e1, c3)
                             })
                         }
                         // rule 6: (c2-e1)-c1 => (c2-c1) - e1
                         (FuncKind::Sub, [Expr::Const(c2), e1]) => {
-                            FoldSub(c2, c1).fold()?.map(|c3| {
+                            fold_sub_const(c2, c1)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 const_sub_expr(c3, e1)
                             })
@@ -357,21 +356,21 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                     Expr::Func(Func { kind, args }) => match (kind, args.as_mut()) {
                         // rule 7: c1 - (e1+c2) => (c1-c2) - e1
                         (FuncKind::Add, [e1, Expr::Const(c2)]) => {
-                            FoldSub(c1, c2).fold()?.map(|c3| {
+                            fold_sub_const(c1, c2)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 const_sub_expr(c3, e1)
                             })
                         }
                         // rule 7: c1 - (e1-c2) => (c1+c2) - e1
                         (FuncKind::Sub, [e1, Expr::Const(c2)]) => {
-                            FoldAdd(c1, c2).fold()?.map(|c3| {
+                            fold_add_const(c1, c2)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 const_sub_expr(c3, e1)
                             })
                         }
                         // rule 7: c1 - (c2-e1) => e1 + (c1-c2)
                         (FuncKind::Sub, [Expr::Const(c2), e1]) => {
-                            FoldSub(c1, c2).fold()?.map(|c3| {
+                            fold_sub_const(c1, c2)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 expr_add_const(e1, c3)
                             })
@@ -405,7 +404,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Add,
                         [e1, Expr::Const(c1)],
                         [e2, Expr::Const(c2)],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
@@ -417,7 +416,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Add,
                         [e1, Expr::Const(c1)],
                         [e2, Expr::Const(c2)],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
@@ -429,7 +428,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [e1, Expr::Const(c1)],
                         [e2, Expr::Const(c2)],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
@@ -441,7 +440,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [e1, Expr::Const(c1)],
                         [e2, Expr::Const(c2)],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
@@ -453,7 +452,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [Expr::Const(c1), e1],
                         [e2, Expr::Const(c2)],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -465,7 +464,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Add,
                         [Expr::Const(c1), e1],
                         [e2, Expr::Const(c2)],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -477,7 +476,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [Expr::Const(c1), e1],
                         [Expr::Const(c2), e2],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Sub, vec![e2, e1]);
@@ -489,7 +488,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [e1, Expr::Const(c1)],
                         [Expr::Const(c2), e2],
-                    ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                    ) => fold_add_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -501,7 +500,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
                         FuncKind::Sub,
                         [e1, Expr::Const(c1)],
                         [Expr::Const(c2), e2],
-                    ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                    ) => fold_sub_const(c1, c2)?.map(|c3| {
                         let e1 = mem::take(e1);
                         let e2 = mem::take(e2);
                         let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -600,7 +599,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                 Expr::Pred(Pred::Func(PredFunc { kind, args }))
             }),
             // 1.6
-            Expr::Const(c) => FoldNot(c).fold()?.map(Expr::Const),
+            Expr::Const(c) => fold_not_const(c)?.map(Expr::Const),
             // 1.7 todo
             Expr::Pred(Pred::Not(_e)) => None,
             _ => None,
@@ -608,17 +607,19 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
         Pred::Func(PredFunc { kind, args }) => {
             // 2.1 and 2.2
             let res = match kind {
-                PredFuncKind::Equal => FoldEqual(&args[0], &args[1]).fold()?,
-                PredFuncKind::Greater => FoldGreater(&args[0], &args[1]).fold()?,
-                PredFuncKind::GreaterEqual => FoldGreaterEqual(&args[0], &args[1]).fold()?,
-                PredFuncKind::Less => FoldLess(&args[0], &args[1]).fold()?,
-                PredFuncKind::LessEqual => FoldLessEqual(&args[0], &args[1]).fold()?,
-                PredFuncKind::NotEqual => FoldNotEqual(&args[0], &args[1]).fold()?,
-                PredFuncKind::SafeEqual => FoldSafeEqual(&args[0], &args[1]).fold()?,
-                PredFuncKind::IsNull => FoldIsNull(&args[0]).fold()?,
-                PredFuncKind::IsNotNull => FoldIsNotNull(&args[0]).fold()?,
-                PredFuncKind::IsTrue | PredFuncKind::IsNotFalse => FoldIsTrue(&args[0]).fold()?,
-                PredFuncKind::IsFalse | PredFuncKind::IsNotTrue => FoldIsFalse(&args[0]).fold()?,
+                PredFuncKind::Equal => fold_eq(&args[0], &args[1])?,
+                PredFuncKind::Greater => fold_gt(&args[0], &args[1])?,
+                PredFuncKind::GreaterEqual => fold_ge(&args[0], &args[1])?,
+                PredFuncKind::Less => fold_lt(&args[0], &args[1])?,
+                PredFuncKind::LessEqual => fold_le(&args[0], &args[1])?,
+                PredFuncKind::NotEqual => fold_ne(&args[0], &args[1])?,
+                PredFuncKind::SafeEqual => fold_safeeq(&args[0], &args[1])?,
+                PredFuncKind::IsNull => fold_isnull(&args[0])?,
+                PredFuncKind::IsNotNull => fold_isnotnull(&args[0])?,
+                PredFuncKind::IsTrue => fold_istrue(&args[0])?,
+                PredFuncKind::IsNotTrue => fold_isnottrue(&args[0])?,
+                PredFuncKind::IsFalse => fold_isfalse(&args[0])?,
+                PredFuncKind::IsNotFalse => fold_isnotfalse(&args[0])?,
                 _ => None, // todo
             }
             .map(Expr::Const);
@@ -632,7 +633,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                         kind: FuncKind::Add,
                         args: fargs,
                     }), Expr::Const(c2)] => match fargs.as_mut() {
-                        [e1, Expr::Const(c1)] => FoldSub(c2, c1).fold()?.map(|c3| {
+                        [e1, Expr::Const(c1)] => fold_sub_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             coerce_cmp_func(*kind, e1, Expr::Const(c3))
                         }),
@@ -643,14 +644,14 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                         args: fargs,
                     }), Expr::Const(c2)] => match fargs.as_mut() {
                         // 2.3: e1 - c1 cmp c2
-                        [e1, Expr::Const(c1)] => FoldAdd(c2, c1).fold()?.map(|c3| {
+                        [e1, Expr::Const(c1)] => fold_add_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             coerce_cmp_func(*kind, e1, Expr::Const(c3))
                         }),
                         // 2.3: c1 - e1 cmp c2
                         [Expr::Const(c1), e1] => {
                             // e1 flip_cmp (c1-c2)
-                            FoldSub(c1, c2).fold()?.map(|c3| {
+                            fold_sub_const(c1, c2)?.map(|c3| {
                                 let e1 = mem::take(e1);
                                 coerce_cmp_func(flipped_kind, e1, Expr::Const(c3))
                             })
@@ -662,7 +663,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                         kind: FuncKind::Add,
                         args: fargs,
                     })] => match fargs.as_mut() {
-                        [e1, Expr::Const(c2)] => FoldSub(c1, c2).fold()?.map(|c3| {
+                        [e1, Expr::Const(c2)] => fold_sub_const(c1, c2)?.map(|c3| {
                             let e1 = mem::take(e1);
                             coerce_cmp_func(flipped_kind, e1, Expr::Const(c3))
                         }),
@@ -673,12 +674,12 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                         args: fargs,
                     })] => match fargs.as_mut() {
                         // 2.4: c1 cmp e1 - c2 => e1 flip_cmp (c1+c2)
-                        [e1, Expr::Const(c2)] => FoldAdd(c1, c2).fold()?.map(|c3| {
+                        [e1, Expr::Const(c2)] => fold_add_const(c1, c2)?.map(|c3| {
                             let e1 = mem::take(e1);
                             coerce_cmp_func(flipped_kind, e1, Expr::Const(c3))
                         }),
                         // 2.4: c1 cmp c2 - e1 => e1 cmp (c2-c1)
-                        [Expr::Const(c2), e1] => FoldSub(c2, c1).fold()?.map(|c3| {
+                        [Expr::Const(c2), e1] => fold_sub_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             coerce_cmp_func(*kind, e1, Expr::Const(c3))
                         }),
@@ -703,7 +704,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Add,
                             [e1, Expr::Const(c1)],
                             [e2, Expr::Const(c2)],
-                        ) => FoldSub(c2, c1).fold()?.map(|c3| {
+                        ) => fold_sub_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let right = expr_add_const(e2, c3);
@@ -715,7 +716,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Sub,
                             [e1, Expr::Const(c1)],
                             [e2, Expr::Const(c2)],
-                        ) => FoldAdd(c2, c1).fold()?.map(|c3| {
+                        ) => fold_add_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let right = expr_sub_const(e2, c3);
@@ -727,7 +728,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Sub,
                             [e1, Expr::Const(c1)],
                             [Expr::Const(c2), e2],
-                        ) => FoldSub(c2, c1).fold()?.map(|c3| {
+                        ) => fold_sub_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -739,7 +740,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Add,
                             [e1, Expr::Const(c1)],
                             [e2, Expr::Const(c2)],
-                        ) => FoldAdd(c2, c1).fold()?.map(|c3| {
+                        ) => fold_add_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let right = expr_add_const(e2, c3);
@@ -751,7 +752,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Sub,
                             [e1, Expr::Const(c1)],
                             [e2, Expr::Const(c2)],
-                        ) => FoldSub(c2, c1).fold()?.map(|c3| {
+                        ) => fold_sub_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let right = expr_sub_const(e2, c3);
@@ -763,7 +764,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Sub,
                             [e1, Expr::Const(c1)],
                             [Expr::Const(c2), e2],
-                        ) => FoldAdd(c2, c1).fold()?.map(|c3| {
+                        ) => fold_add_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let e = Expr::func(FuncKind::Add, vec![e1, e2]);
@@ -775,7 +776,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Add,
                             [Expr::Const(c1), e1],
                             [e2, Expr::Const(c2)],
-                        ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let e = Expr::func(FuncKind::Add, vec![e2, e1]);
@@ -787,7 +788,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Sub,
                             [Expr::Const(c1), e1],
                             [e2, Expr::Const(c2)],
-                        ) => FoldAdd(c1, c2).fold()?.map(|c3| {
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let e = Expr::func(FuncKind::Add, vec![e2, e1]);
@@ -799,7 +800,7 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                             FuncKind::Sub,
                             [Expr::Const(c1), e1],
                             [Expr::Const(c2), e2],
-                        ) => FoldSub(c1, c2).fold()?.map(|c3| {
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
                             let e1 = mem::take(e1);
                             let e2 = mem::take(e2);
                             let right = expr_add_const(e2, c3);
@@ -1380,6 +1381,86 @@ mod tests {
             "select c1 from t1 where c0 <=> null",
             assert_eq_filt_expr,
         );
+        assert_j_plan2(
+            "select c1 from t1 where null is null",
+            "select c1 from t1 where true",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 1 is null",
+            "select c1 from t1 where false",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where null is not null",
+            "select c1 from t1 where false",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 1 is not null",
+            "select c1 from t1 where true",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where null is true",
+            "select c1 from t1 where false",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 1 is true",
+            "select c1 from t1 where true",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 0 is true",
+            "select c1 from t1 where false",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where null is not true",
+            "select c1 from t1 where true",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 1 is not true",
+            "select c1 from t1 where false",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 0 is not true",
+            "select c1 from t1 where true",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where null is false",
+            "select c1 from t1 where false",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 1 is false",
+            "select c1 from t1 where false",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 0 is false",
+            "select c1 from t1 where true",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where null is not false",
+            "select c1 from t1 where true",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 1 is not false",
+            "select c1 from t1 where true",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            "select c1 from t1 where 0 is not false",
+            "select c1 from t1 where false",
+            assert_eq_filt_expr,
+        );
     }
 
     // fold pred 2.2
@@ -1547,9 +1628,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_col_rejects_null() {
+        assert_j_plan("select c1 from t1 where c1 = 0", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where c1 > 0", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where c1 >= 0", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where c1 < 0", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where c1 <= 0", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where c1 <> 0", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where c1 <=> 0", assert_col_rejects_null);
+        assert_j_plan(
+            "select c1 from t1 where c1 is not null",
+            assert_col_rejects_null,
+        );
+        assert_j_plan(
+            "select c1 from t1 where c1 is true",
+            assert_col_rejects_null,
+        );
+        assert_j_plan(
+            "select c1 from t1 where c1 is false",
+            assert_col_rejects_null,
+        );
+        assert_j_plan("select c1 from t1 where c1 + 0", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where c1 - 0", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where not c1", assert_col_rejects_null);
+        assert_j_plan("select c1 from t1 where -c1", assert_col_rejects_null);
+    }
+
+    #[test]
+    fn test_col_not_rejects_null() {
+        assert_j_plan(
+            "select c1 from t1 where c1 <=> null",
+            assert_col_not_rejects_null,
+        );
+        assert_j_plan(
+            "select c1 from t1 where c1 is null",
+            assert_col_not_rejects_null,
+        );
+        assert_j_plan(
+            "select c1 from t1 where c1 is not true",
+            assert_col_not_rejects_null,
+        );
+        assert_j_plan(
+            "select c1 from t1 where c1 is not false",
+            assert_col_not_rejects_null,
+        );
+    }
+
     fn assert_eq_filt_expr(s1: &str, mut q1: QueryPlan, _s2: &str, q2: QueryPlan) {
         expr_simplify(&mut q1).unwrap();
         print_plan(s1, &q1);
         assert_eq!(get_filt_expr(&q1), get_filt_expr(&q2));
+    }
+
+    fn assert_col_rejects_null(s1: &str, q1: QueryPlan) {
+        print_plan(s1, &q1);
+        let filter = get_filt_expr(&q1).unwrap();
+        assert!(expr_rejects_null(&filter))
+    }
+
+    fn assert_col_not_rejects_null(s1: &str, q1: QueryPlan) {
+        print_plan(s1, &q1);
+        let filter = get_filt_expr(&q1).unwrap();
+        assert!(!expr_rejects_null(&filter))
+    }
+
+    // convert all columns in expressions to null and check if it rejects null
+    fn expr_rejects_null(e: &Expr) -> bool {
+        use std::borrow::Cow;
+        match e {
+            Expr::Func(f) => f.reject_null(|e| match e {
+                Expr::Col(_) => Cow::Owned(Expr::const_null()),
+                other => Cow::Borrowed(other),
+            }),
+            Expr::Pred(p) => p.reject_null(|e| match e {
+                Expr::Col(_) => Cow::Owned(Expr::const_null()),
+                other => Cow::Borrowed(other),
+            }),
+            _ => unimplemented!(),
+        }
+        .unwrap()
     }
 }
