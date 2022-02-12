@@ -53,13 +53,19 @@ pub struct Subquery {
     // scope contains information incrementally collected during
     // build phase
     pub scope: Scope,
+    // location of the subquery
+    pub location: Location,
 }
 
 impl Subquery {
     /// Construct a subquery using given root operator and scope.
     #[inline]
-    pub fn new(root: Op, scope: Scope) -> Self {
-        Subquery { root, scope }
+    pub fn new(root: Op, scope: Scope, location: Location) -> Self {
+        Subquery {
+            root,
+            scope,
+            location,
+        }
     }
 
     #[inline]
@@ -108,6 +114,14 @@ impl Subquery {
         out_cols.clear();
         let _ = self.root.walk(&mut CollectOutCols(out_cols));
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Location {
+    Intermediate,
+    Disk,
+    Memory,
+    Network,
 }
 
 /// QuerySet stores all sub-subqeries and provide lookup and update methods.

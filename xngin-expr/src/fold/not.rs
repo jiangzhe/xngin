@@ -6,7 +6,7 @@ pub fn fold_not(arg: &Expr) -> Result<Option<Const>> {
     match arg {
         Expr::Const(Const::Null) => Ok(Some(Const::Null)),
         Expr::Const(c) => fold_not_const(c),
-        _ => return Ok(None),
+        _ => Ok(None),
     }
 }
 

@@ -303,6 +303,31 @@ fn test_plan_build_subquery() {
     }
 }
 
+#[test]
+fn test_plan_build_location() {
+    use Location::*;
+    for (sql, expected) in vec![
+        ("select 1", vec![Memory]),
+        ("select 1 from t1", vec![Intermediate, Disk]),
+        (
+            "select 1 from t1, (select 1) t2",
+            vec![Intermediate, Disk, Memory],
+        ),
+        (
+            "select 1 from (select 1 from t1) t2",
+            vec![Intermediate, Intermediate, Disk],
+        ),
+    ] {
+        assert_j_plan(sql, |s, p| {
+            print_plan(s, &p);
+            let mut queries = vec![];
+            collect_queries(&p.queries, p.root, &mut queries);
+            let actual: Vec<_> = queries.into_iter().map(|subq| subq.location).collect();
+            assert_eq!(expected, actual)
+        })
+    }
+}
+
 pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("j").unwrap();
@@ -387,6 +412,19 @@ pub(crate) fn get_lvl_queries(plan: &QueryPlan, lvl: usize) -> Vec<&Subquery> {
         }
     }
     res
+}
+
+pub(crate) fn collect_queries<'a>(
+    qs: &'a QuerySet,
+    root: QueryID,
+    queries: &mut Vec<&'a Subquery>,
+) {
+    if let Some(root) = qs.get(&root) {
+        queries.push(root);
+        for (_, query_id) in root.scope.query_aliases.iter() {
+            collect_queries(qs, *query_id, queries)
+        }
+    }
 }
 
 pub(crate) fn get_filt_expr(plan: &QueryPlan) -> Option<xngin_expr::Expr> {
