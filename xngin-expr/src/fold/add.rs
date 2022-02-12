@@ -7,7 +7,7 @@ pub fn fold_add(lhs: &Expr, rhs: &Expr) -> Result<Option<Const>> {
     match (lhs, rhs) {
         (Expr::Const(Const::Null), _) | (_, Expr::Const(Const::Null)) => Ok(Some(Const::Null)),
         (Expr::Const(lhs), Expr::Const(rhs)) => fold_add_const(lhs, rhs),
-        _ => return Ok(None),
+        _ => Ok(None),
     }
 }
 

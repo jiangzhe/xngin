@@ -4,7 +4,7 @@ pub(crate) mod tests;
 use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
 use crate::op::{Join, JoinKind, JoinOp, Op, OpMutVisitor, SetopKind, SortItem};
-use crate::query::{QueryPlan, QuerySet, Subquery};
+use crate::query::{Location, QueryPlan, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
 use crate::scope::{Scope, Scopes};
 use smol_str::SmolStr;
@@ -62,7 +62,7 @@ impl PlanBuilder {
             self.setup_with(with, transitive)?
         }
         let mut phc = PlaceholderCollector::new(transitive);
-        let mut root = self.setup_query(query, &mut phc)?;
+        let (mut root, location) = self.setup_query(query, &mut phc)?;
         // first setup subqueries
         for PlaceholderQuery { uid, kind, qry, .. } in phc.subqueries {
             let QueryExpr { with, query } = qry;
@@ -81,7 +81,7 @@ impl PlanBuilder {
         // We can identify whether current subquery is correlated by check the size of cor_cols
         let correlated = !cor_cols.is_empty();
         scope.cor_cols = cor_cols;
-        let mut subquery = Subquery::new(root, scope);
+        let mut subquery = Subquery::new(root, scope, location);
         subquery.reset_out_cols();
         let query_id = self.qs.insert(subquery);
         Ok((query_id, correlated))
@@ -294,7 +294,7 @@ impl PlanBuilder {
         &mut self,
         query: &'a Query<'a>,
         phc: &mut PlaceholderCollector<'a>,
-    ) -> Result<Op> {
+    ) -> Result<(Op, Location)> {
         match query {
             Query::Row(row) => {
                 // todo: support correlated row
@@ -314,7 +314,7 @@ impl PlanBuilder {
                         }
                     }
                 }
-                Ok(Op::row(cols))
+                Ok((Op::row(cols), Location::Memory))
             }
             Query::Table(select_table) => self.setup_select_table(select_table, phc),
             Query::Set(select_set) => self.setup_select_set(select_set, phc),
@@ -335,7 +335,7 @@ impl PlanBuilder {
         &mut self,
         select_table: &'a SelectTable<'a>,
         phc: &mut PlaceholderCollector<'a>,
-    ) -> Result<Op> {
+    ) -> Result<(Op, Location)> {
         // 1. translate FROM clause
         let from = self.setup_table_refs(&select_table.from, phc)?;
         // After analyzing from clause, we have from aliases populated, then we need to make a copy
@@ -466,7 +466,7 @@ impl PlanBuilder {
         if let Some((start, end)) = limit {
             root = Op::limit(start, end, root);
         }
-        Ok(root)
+        Ok((root, Location::Intermediate))
     }
 
     #[inline]
@@ -474,7 +474,7 @@ impl PlanBuilder {
         &mut self,
         select_set: &'a SelectSet<'a>,
         phc: &mut PlaceholderCollector<'a>,
-    ) -> Result<Op> {
+    ) -> Result<(Op, Location)> {
         let kind = match select_set.op {
             SetOp::Union => SetopKind::Union,
             SetOp::Except => SetopKind::Except,
@@ -491,7 +491,7 @@ impl PlanBuilder {
             let (query_id, _) = self.build_subquery(&None, query, phc.allow_unknown_ident)?;
             sources.push(Op::subquery(query_id))
         }
-        Ok(Op::setop(kind, q, sources))
+        Ok((Op::setop(kind, q, sources), Location::Intermediate))
     }
 
     /// process ORDER BY clause and generate sort items.
@@ -866,7 +866,8 @@ impl PlanBuilder {
             ))
         }
         let proj = Op::proj(proj_cols, Op::table(schema_id, table_id));
-        let mut subquery = Subquery::new(proj, Scope::default());
+        // todo: currently we assume all tables are located on disk.
+        let mut subquery = Subquery::new(proj, Scope::default(), Location::Disk);
         subquery.reset_out_cols();
         let query_id = self.qs.insert(subquery);
         Ok(query_id)
