@@ -57,7 +57,7 @@ impl Explain for Op {
             Op::Table(_, table_id) => {
                 write!(f, "Table{{{}}}", table_id.value())
             }
-            Op::Subquery(_) => f.write_str("(subquery todo)"),
+            Op::Query(_) => f.write_str("(subquery todo)"),
             Op::Empty => f.write_str("Empty"),
         }
     }
@@ -102,12 +102,7 @@ impl Explain for Aggr {
         f.write_str("Aggr{")?;
         f.write_str("proj=[")?;
         write_exprs(f, self.proj.iter().map(|(e, _)| e), ", ")?;
-        f.write_char(']')?;
-        if let Some(filt) = &self.filt {
-            f.write_str(", filt=")?;
-            filt.explain(f)?
-        }
-        f.write_char('}')
+        f.write_str("]}")
     }
 }
 
@@ -333,7 +328,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
     #[inline]
     fn enter(&mut self, op: &Op) -> bool {
         // special handling Subquery
-        if let Op::Subquery(query_id) = op {
+        if let Op::Query(query_id) = op {
             let res = if let Some(subq) = self.queries.get(query_id) {
                 let mut qe = QueryExplain {
                     title: Some(format!("(q{}) ", **query_id)),
@@ -440,9 +435,10 @@ mod tests {
     fn test_explain_plan() {
         let cat = tpch_catalog();
         for sql in vec![
-            "select 1",
+            "select 1, true, 1.0e2",
             "with cte1 as (select 1), cte2 as (select 2) select * from cte1",
             "select l1.l_orderkey from lineitem l1, lineitem l2",
+            "select l_orderkey from lineitem union all select l_orderkey from lineitem",
         ] {
             let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
             let (_, qr) = parse_query(MySQL(sql)).unwrap();

@@ -113,13 +113,13 @@ fn test_plan_build_select_table() {
         ("select l_orderkey, count(*) from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
         ("select count(*), l_orderkey from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
         ("select l_orderkey, count(*) from lineitem where l_tax > 0.1 group by l_orderkey", 2, plan_shape![Aggr, Filt, Proj, Table]),
-        ("select l_orderkey from lineitem group by l_orderkey having count(*) > 1", 1, plan_shape![Aggr, Proj, Table]),
-        ("select l_orderkey from lineitem group by l_orderkey having sum(l_extendedprice * l_tax) > 1", 1, plan_shape![Aggr, Proj, Table]),
-        ("select l_orderkey from lineitem where l_shipdate is null group by l_orderkey having count(*) > 1", 1, plan_shape![Aggr, Filt, Proj, Table]),
-        ("select l_orderkey from lineitem having l_orderkey is not null", 1, plan_shape![Proj, Filt, Proj, Table]),
-        ("select count(*) from lineitem having sum(1) > 0", 1, plan_shape![Aggr, Proj, Table]),
-        ("select l_orderkey, count(*) from lineitem group by l_orderkey having l_orderkey > 0", 2, plan_shape![Aggr, Proj, Table]),
-        ("select l_orderkey from lineitem where l_tax > 0 having l_orderkey < 10", 1, plan_shape![Proj, Filt, Proj, Table]),
+        ("select l_orderkey from lineitem group by l_orderkey having count(*) > 1", 1, plan_shape![Filt, Aggr, Proj, Table]),
+        ("select l_orderkey from lineitem group by l_orderkey having sum(l_extendedprice * l_tax) > 1", 1, plan_shape![Filt, Aggr, Proj, Table]),
+        ("select l_orderkey from lineitem where l_shipdate is null group by l_orderkey having count(*) > 1", 1, plan_shape![Filt, Aggr, Filt, Proj, Table]),
+        ("select l_orderkey from lineitem having l_orderkey is not null", 1, plan_shape![Filt, Proj, Proj, Table]),
+        ("select count(*) from lineitem having sum(1) > 0", 1, plan_shape![Filt, Aggr, Proj, Table]),
+        ("select l_orderkey, count(*) from lineitem group by l_orderkey having l_orderkey > 0", 2, plan_shape![Filt, Aggr, Proj, Table]),
+        ("select l_orderkey from lineitem where l_tax > 0 having l_orderkey < 10", 1, plan_shape![Filt, Proj, Filt, Proj, Table]),
         ("select l_orderkey k, count(*) from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
         ("select l_orderkey from lineitem order by l_orderkey", 1, plan_shape![Sort, Proj, Proj, Table]),
         ("select l_orderkey from lineitem order by lineitem.l_orderkey", 1, plan_shape![Sort, Proj, Proj, Table]),
@@ -152,10 +152,10 @@ fn test_plan_build_select_table() {
                 panic!("{:?}", e)
             }
         };
+        print_plan(sql, &plan);
         assert_eq!(shape, plan.shape());
         let p = plan.queries.get(&plan.root).unwrap();
         assert_eq!(n_cols, p.scope.out_cols.len());
-        print_plan(sql, &plan)
     }
 }
 
@@ -308,11 +308,11 @@ fn test_plan_build_subquery() {
 fn test_plan_build_location() {
     use Location::*;
     for (sql, expected) in vec![
-        ("select 1", vec![Memory]),
+        ("select 1", vec![Virtual]),
         ("select 1 from t1", vec![Intermediate, Disk]),
         (
             "select 1 from t1, (select 1) t2",
-            vec![Intermediate, Disk, Memory],
+            vec![Intermediate, Disk, Virtual],
         ),
         (
             "select 1 from (select 1 from t1) t2",
@@ -382,12 +382,21 @@ pub(crate) fn assert_j_plan<F: FnOnce(&str, QueryPlan)>(sql: &str, f: F) {
     f(sql, plan)
 }
 
+pub(crate) fn assert_j_plan1<F: FnOnce(&str, QueryPlan)>(
+    cat: &Arc<dyn QueryCatalog>,
+    sql: &str,
+    f: F,
+) {
+    let plan = build_plan(&cat, sql);
+    f(sql, plan)
+}
+
 pub(crate) fn assert_j_plan2<F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
+    cat: &Arc<dyn QueryCatalog>,
     sql1: &str,
     sql2: &str,
     f: F,
 ) {
-    let cat = j_catalog();
     let p1 = build_plan(&cat, sql1);
     let p2 = build_plan(&cat, sql2);
     f(sql1, p1, sql2, p2)
@@ -429,16 +438,35 @@ pub(crate) fn collect_queries<'a>(
 }
 
 pub(crate) fn get_filt_expr(plan: &QueryPlan) -> Option<xngin_expr::Expr> {
-    plan.root_query().and_then(|subq| {
-        let mut cfe = CollectFiltExpr(None);
-        let _ = subq.root.walk(&mut cfe);
-        cfe.0
-    })
+    plan.root_query().and_then(|subq| get_subq_filt_expr(subq))
+}
+
+pub(crate) fn get_subq_filt_expr(subq: &Subquery) -> Option<xngin_expr::Expr> {
+    let mut cfe = CollectFiltExpr(None);
+    let _ = subq.root.walk(&mut cfe);
+    cfe.0
+}
+
+pub(crate) fn get_subq_by_location<'a>(
+    plan: &'a QueryPlan,
+    location: Location,
+) -> Vec<&'a Subquery> {
+    let mut subqs = vec![];
+    if let Some(subq) = plan.root_query() {
+        let mut csbl = CollectSubqByLocation {
+            qry_set: &plan.queries,
+            subqs: &mut subqs,
+            location,
+        };
+        let _ = subq.root.walk(&mut csbl);
+    }
+    subqs
 }
 
 struct CollectFiltExpr(Option<xngin_expr::Expr>);
 
 impl OpVisitor for CollectFiltExpr {
+    #[inline]
     fn enter(&mut self, op: &Op) -> bool {
         match op {
             Op::Filt(filt) => {
@@ -448,8 +476,28 @@ impl OpVisitor for CollectFiltExpr {
             _ => true,
         }
     }
+}
 
-    fn leave(&mut self, _op: &Op) -> bool {
+struct CollectSubqByLocation<'a, 'b> {
+    qry_set: &'a QuerySet,
+    subqs: &'b mut Vec<&'a Subquery>,
+    location: Location,
+}
+
+impl<'a, 'b> OpVisitor for CollectSubqByLocation<'a, 'b> {
+    #[inline]
+    fn enter(&mut self, op: &Op) -> bool {
+        match op {
+            Op::Query(qry_id) => {
+                if let Some(subq) = self.qry_set.get(qry_id) {
+                    if subq.location == self.location {
+                        self.subqs.push(subq);
+                    }
+                    let _ = subq.root.walk(self);
+                }
+            }
+            _ => (),
+        }
         true
     }
 }

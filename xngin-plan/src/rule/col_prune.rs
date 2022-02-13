@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Result, ToResult};
 use crate::op::{Op, OpMutVisitor, OpVisitor};
 use crate::query::{QueryPlan, QuerySet};
 use fnv::{FnvHashMap, FnvHashSet};
@@ -11,79 +11,92 @@ use xngin_expr::{Col, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 /// query, then apply the pruning to each of its child query.
 #[inline]
 pub fn col_prune(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> {
-    col_prune_rec(queries, *root);
-    Ok(())
+    prune_col(queries, *root)?;
+    reset_out_cols(queries, *root)
 }
 
-fn col_prune_rec(all_qry_set: &mut QuerySet, root: QueryID) {
-    let (mut use_set, children) = if let Some(subq) = all_qry_set.get(&root) {
-        let qry_set: FnvHashSet<_> = subq
-            .scope
-            .query_aliases
-            .iter()
-            .map(|(_, query_id)| *query_id)
-            .collect();
-        let children: Vec<QueryID> = subq
-            .scope
-            .query_aliases
-            .iter()
-            .map(|(_, query_id)| *query_id)
-            .collect();
-        let mut use_set: FnvHashMap<_, BTreeMap<_, _>> = FnvHashMap::default();
-        for (query_id, idx) in &subq.scope.cor_vars {
-            // should always be true
-            assert!(qry_set.contains(query_id));
-            use_set.entry(*query_id).or_default().insert(*idx, 0);
-        }
-        let mut cc = ColCollector {
-            qry_set: &qry_set,
-            use_set: &mut use_set,
-        };
-        subq.root.walk(&mut cc);
-        (use_set, children)
-    } else {
-        return;
+fn prune_col(all_qry_set: &mut QuerySet, root: QueryID) -> Result<()> {
+    let subq = all_qry_set.get(&root).must_ok()?;
+    let qry_set: FnvHashSet<_> = subq
+        .scope
+        .query_aliases
+        .iter()
+        .map(|(_, query_id)| *query_id)
+        .collect();
+    let mut use_set: FnvHashMap<_, BTreeMap<_, _>> = FnvHashMap::default();
+    for (query_id, idx) in &subq.scope.cor_vars {
+        // should always be true
+        assert!(qry_set.contains(query_id));
+        use_set.entry(*query_id).or_default().insert(*idx, 0);
+    }
+    let mut cc = ColCollector {
+        qry_set: &qry_set,
+        use_set: &mut use_set,
     };
+    let _ = subq.root.walk(&mut cc);
     // update the mapping of old column to new column.
     update_use_set(&mut use_set);
-    if !use_set.is_empty() {
-        // recursively modify all column references in current query and its correlated subqueries.
-        let mut subq_set = vec![];
-        // process root query
-        if let Some(subq) = all_qry_set.get_mut(&root) {
+    // recursively modify all column references in current query and its correlated subqueries.
+    all_qry_set.transform_op(root, |qry_set, op| {
+        let mut cm = ColModifier {
+            qry_set,
+            use_set: &use_set,
+            res: Ok(()),
+        };
+        let _ = op.walk_mut(&mut cm);
+    })
+}
+
+fn apply_use_set(
+    qry_set: &mut QuerySet,
+    qry_id: QueryID,
+    use_set: &FnvHashMap<QueryID, BTreeMap<u32, u32>>,
+) {
+    qry_set
+        .transform_op(qry_id, |qry_set, op| {
             let mut cm = ColModifier {
+                qry_set,
                 use_set: &use_set,
-                subq_set: &mut subq_set,
+                res: Ok(()),
             };
-            let _ = subq.root.walk_mut(&mut cm);
-        }
-        while let Some(query_id) = subq_set.pop() {
-            if let Some(subq) = all_qry_set.get_mut(&query_id) {
-                if !subq.scope.cor_cols.is_empty() {
-                    // only process correlated subquery
-                    let mut cm = ColModifier {
-                        use_set: &use_set,
-                        subq_set: &mut subq_set,
-                    };
-                    let _ = subq.root.walk_mut(&mut cm);
+            let _ = op.walk_mut(&mut cm);
+        })
+        .unwrap()
+}
+
+fn reset_out_cols(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
+    struct ResetOutCols<'a> {
+        qry_set: &'a mut QuerySet,
+        res: Result<()>,
+    }
+    impl OpVisitor for ResetOutCols<'_> {
+        fn enter(&mut self, op: &Op) -> bool {
+            match op {
+                Op::Query(qry_id) => {
+                    self.res = reset_out_cols(self.qry_set, *qry_id);
+                    self.res.is_ok()
                 }
+                _ => true,
             }
         }
-    }
-    // reset out cols to represent pruning result
-    if let Some(subq) = all_qry_set.get_mut(&root) {
-        subq.reset_out_cols()
-    }
-    // prune all children
-    for child in children {
-        let mapping = use_set.remove(&child).unwrap_or_default();
-        if let Some(subq) = all_qry_set.get_mut(&child) {
-            let mut cp = ColPruner { mapping };
-            subq.root.walk_mut(&mut cp);
-            // then prune recursively
-            col_prune_rec(all_qry_set, child)
+        fn leave(&mut self, _op: &Op) -> bool {
+            true
         }
     }
+    qry_set.transform(
+        qry_id,
+        |subq| {
+            subq.reset_out_cols();
+        },
+        |qry_set, op| {
+            let mut roc = ResetOutCols {
+                qry_set,
+                res: Ok(()),
+            };
+            let _ = op.walk(&mut roc);
+            roc.res
+        },
+    )?
 }
 
 /// Column collector to current query
@@ -102,11 +115,6 @@ impl ExprVisitor for ColCollector<'_> {
         }
         true
     }
-
-    #[inline]
-    fn leave(&mut self, _e: &xngin_expr::Expr) -> bool {
-        true
-    }
 }
 
 impl OpVisitor for ColCollector<'_> {
@@ -117,31 +125,39 @@ impl OpVisitor for ColCollector<'_> {
         }
         true
     }
-
-    #[inline]
-    fn leave(&mut self, _op: &Op) -> bool {
-        true
-    }
 }
 
 /// Column modifier to current query
 struct ColModifier<'a> {
+    qry_set: &'a mut QuerySet,
     use_set: &'a FnvHashMap<QueryID, BTreeMap<u32, u32>>,
-    subq_set: &'a mut Vec<QueryID>,
+    res: Result<()>,
 }
 
 impl OpMutVisitor for ColModifier<'_> {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> bool {
-        for e in op.exprs_mut() {
-            let _ = e.walk_mut(self);
+        match op {
+            Op::Query(qry_id) => {
+                let mapping = self.use_set.get(qry_id);
+                let res = self.qry_set.transform_op(*qry_id, |qry_set, op| {
+                    let mut cp = ColPruner { mapping };
+                    let _ = op.walk_mut(&mut cp);
+                    prune_col(qry_set, *qry_id)
+                });
+                match res {
+                    Ok(res) => self.res = res,
+                    Err(e) => self.res = Err(e),
+                }
+                self.res.is_ok()
+            }
+            _ => {
+                for e in op.exprs_mut() {
+                    let _ = e.walk_mut(self);
+                }
+                true
+            }
         }
-        true
-    }
-
-    #[inline]
-    fn leave(&mut self, _op: &mut Op) -> bool {
-        true
     }
 }
 
@@ -155,92 +171,84 @@ impl ExprMutVisitor for ColModifier<'_> {
                     *idx = new;
                 }
             }
-            Expr::Subq(_, query_id) => self.subq_set.push(*query_id),
+            Expr::Subq(_, query_id) => apply_use_set(self.qry_set, *query_id, self.use_set),
             _ => (),
         }
-        true
-    }
-
-    #[inline]
-    fn leave(&mut self, _e: &mut Expr) -> bool {
         true
     }
 }
 
 /// Column pruner to child query
-struct ColPruner {
-    mapping: BTreeMap<u32, u32>,
+struct ColPruner<'a> {
+    mapping: Option<&'a BTreeMap<u32, u32>>,
 }
 
-impl OpMutVisitor for ColPruner {
+impl OpMutVisitor for ColPruner<'_> {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> bool {
         match op {
             Op::Proj(proj) => {
-                if self.mapping.is_empty() {
-                    // no output needed, use Const(1) to replace all original output.
-                    proj.cols.clear();
-                    proj.cols.push((Expr::const_i64(1), SmolStr::new("1")));
-                } else {
+                println!("BEFORE proj cols {}", proj.cols.len());
+                if let Some(mapping) = self.mapping {
                     proj.cols = std::mem::take(&mut proj.cols)
                         .into_iter()
                         .enumerate()
                         .filter_map(|(i, e)| {
-                            if self.mapping.contains_key(&(i as u32)) {
+                            if mapping.contains_key(&(i as u32)) {
                                 Some(e)
                             } else {
                                 None
                             }
                         })
                         .collect();
+                } else {
+                    // no output needed, use Const(1) to replace all original output.
+                    proj.cols.clear();
+                    proj.cols.push((Expr::const_i64(1), SmolStr::new("1")));
                 }
+                println!("AFTER proj cols {}", proj.cols.len());
                 false
             }
             Op::Aggr(aggr) => {
-                if self.mapping.is_empty() {
-                    aggr.proj.clear();
-                    aggr.proj.push((Expr::const_i64(1), SmolStr::new("1")));
-                } else {
+                if let Some(mapping) = self.mapping {
                     aggr.proj = std::mem::take(&mut aggr.proj)
                         .into_iter()
                         .enumerate()
                         .filter_map(|(i, e)| {
-                            if self.mapping.contains_key(&(i as u32)) {
+                            if mapping.contains_key(&(i as u32)) {
                                 Some(e)
                             } else {
                                 None
                             }
                         })
                         .collect();
+                } else {
+                    aggr.proj.clear();
+                    aggr.proj.push((Expr::const_i64(1), SmolStr::new("1")));
                 }
                 false
             }
             Op::Row(row) => {
-                if self.mapping.is_empty() {
-                    row.clear();
-                    row.push((Expr::const_i64(1), SmolStr::new("1")));
-                } else {
+                if let Some(mapping) = self.mapping {
                     *row = std::mem::take(row)
                         .into_iter()
                         .enumerate()
                         .filter_map(|(i, e)| {
-                            if self.mapping.contains_key(&(i as u32)) {
+                            if mapping.contains_key(&(i as u32)) {
                                 Some(e)
                             } else {
                                 None
                             }
                         })
                         .collect();
+                } else {
+                    row.clear();
+                    row.push((Expr::const_i64(1), SmolStr::new("1")));
                 }
                 false
             }
             _ => true,
         }
-    }
-
-    #[inline]
-    fn leave(&mut self, _op: &mut Op) -> bool {
-        true
     }
 }
 

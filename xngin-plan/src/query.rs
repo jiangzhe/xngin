@@ -4,6 +4,7 @@ use crate::scope::Scope;
 use fnv::FnvHashMap;
 use slab::Slab;
 use smol_str::SmolStr;
+use std::mem;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::{Col, Expr, QueryID};
 
@@ -69,15 +70,22 @@ impl Subquery {
     }
 
     #[inline]
-    pub fn proj_table(&self) -> Option<(SchemaID, TableID)> {
-        match &self.root {
-            Op::Table(schema_id, table_id) => Some((*schema_id, *table_id)),
-            Op::Proj(proj) => match proj.source.as_ref() {
-                Op::Table(schema_id, table_id) => Some((*schema_id, *table_id)),
-                _ => None,
-            },
-            _ => None,
+    pub fn find_table(&self) -> Option<(SchemaID, TableID)> {
+        struct FindTable(Option<(SchemaID, TableID)>);
+        impl OpVisitor for FindTable {
+            fn enter(&mut self, op: &Op) -> bool {
+                match op {
+                    Op::Table(schema_id, table_id) => {
+                        self.0 = Some((*schema_id, *table_id));
+                        false
+                    }
+                    _ => true,
+                }
+            }
         }
+        let mut ft = FindTable(None);
+        let _ = self.root.walk(&mut ft);
+        ft.0
     }
 
     // This method will search down the operator tree and find first Aggr or Proj operator.
@@ -122,6 +130,8 @@ pub enum Location {
     Disk,
     Memory,
     Network,
+    // virtual table which is computed directly by expression
+    Virtual,
 }
 
 /// QuerySet stores all sub-subqeries and provide lookup and update methods.
@@ -141,8 +151,69 @@ impl QuerySet {
     }
 
     #[inline]
-    pub fn get_mut(&mut self, query_id: &QueryID) -> Option<&mut Subquery> {
-        self.0.get_mut(**query_id as usize)
+    pub fn transform_scope<T, F>(&mut self, query_id: QueryID, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Scope) -> T,
+    {
+        if let Some(subq) = self.0.get_mut(*query_id as usize) {
+            return Ok(f(&mut subq.scope));
+        }
+        Err(Error::InternalError(format!(
+            "Query {} not found",
+            *query_id
+        )))
+    }
+
+    #[inline]
+    pub fn transform_subq<T, F>(&mut self, query_id: QueryID, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Subquery) -> T,
+    {
+        if let Some(subq) = self.0.get_mut(*query_id as usize) {
+            return Ok(f(subq));
+        }
+        Err(Error::InternalError(format!(
+            "Query {} not found",
+            *query_id
+        )))
+    }
+
+    #[inline]
+    pub fn transform_op<T, F>(&mut self, query_id: QueryID, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut QuerySet, &mut Op) -> T,
+    {
+        if let Some(subq) = self.0.get_mut(*query_id as usize) {
+            let mut root = mem::take(&mut subq.root);
+            let res = f(self, &mut root);
+            // update root back, this always succeed because query set does not allow deletion.
+            self.0[*query_id as usize].root = root;
+            return Ok(res);
+        }
+        Err(Error::InternalError(format!(
+            "Query {} not found",
+            *query_id
+        )))
+    }
+
+    #[inline]
+    pub fn transform<T, F1, F2>(&mut self, query_id: QueryID, f1: F1, f2: F2) -> Result<T>
+    where
+        F1: FnOnce(&mut Subquery),
+        F2: FnOnce(&mut QuerySet, &mut Op) -> T,
+    {
+        if let Some(subq) = self.0.get_mut(*query_id as usize) {
+            f1(subq);
+            let mut root = mem::take(&mut subq.root);
+            let res = f2(self, &mut root);
+            // update root back, this always succeed because query set does not allow deletion.
+            self.0[*query_id as usize].root = root;
+            return Ok(res);
+        }
+        Err(Error::InternalError(format!(
+            "Query {} not found",
+            *query_id
+        )))
     }
 
     /// Deep copy a query given its id.
@@ -196,7 +267,7 @@ impl UpsertQuery<'_> {
     #[inline]
     fn modify_join_op(&mut self, jo: &mut JoinOp) {
         match jo {
-            JoinOp::Subquery(query_id) => {
+            JoinOp::Query(query_id) => {
                 let query = self.qs.get(query_id).cloned().unwrap(); // won't fail
                 let new_query_id = self.qs.upsert_query(query);
                 self.mapping.insert(*query_id, new_query_id);
@@ -226,13 +297,10 @@ impl UpsertQuery<'_> {
 }
 
 impl<'a> OpMutVisitor for UpsertQuery<'a> {
-    fn enter(&mut self, _op: &mut Op) -> bool {
-        true
-    }
-
+    #[inline]
     fn leave(&mut self, op: &mut Op) -> bool {
         match op {
-            Op::Subquery(query_id) => {
+            Op::Query(query_id) => {
                 // only perform additional copy to subquery
                 let query = self.qs.get(query_id).cloned().unwrap(); // won't fail
                 let new_query_id = self.qs.upsert_query(query);
@@ -271,16 +339,11 @@ struct ShapeGen<'a> {
 impl OpVisitor for ShapeGen<'_> {
     #[inline]
     fn enter(&mut self, op: &Op) -> bool {
-        if let Op::Subquery(query_id) = op {
+        if let Op::Query(query_id) = op {
             generate_shape(self.qs, query_id, self.shape);
         } else {
             self.shape.push(op.kind());
         }
-        true
-    }
-
-    #[inline]
-    fn leave(&mut self, _op: &Op) -> bool {
         true
     }
 }
