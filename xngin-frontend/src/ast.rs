@@ -1097,7 +1097,8 @@ impl<'a> Query<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectSet<'a> {
     pub op: SetOp,
-    pub children: Vec<Query<'a>>,
+    pub left: Box<Query<'a>>,
+    pub right: Box<Query<'a>>,
     pub distinct: bool,
 }
 

@@ -4,6 +4,7 @@
 
 pub mod col_prune;
 pub mod expr_simplify;
+pub mod op_eliminate;
 
 pub use col_prune::col_prune;
 pub use expr_simplify::expr_simplify;
