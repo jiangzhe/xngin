@@ -803,7 +803,7 @@ impl PrettyFormat for OrderElement<'_> {
 impl PrettyFormat for SelectSet<'_> {
     fn pretty_fmt<F: Write>(&self, f: &mut F, conf: &PrettyConf, indent: usize) -> fmt::Result {
         let all_str = if conf.upper_kw { "ALL" } else { "all" };
-        self.children[0].pretty_fmt(f, conf, indent)?;
+        self.left.pretty_fmt(f, conf, indent)?;
         write_sp(f, conf.newline, indent)?;
         f.write_str(self.op.kw_str(conf.upper_kw))?;
         if !self.distinct {
@@ -811,7 +811,7 @@ impl PrettyFormat for SelectSet<'_> {
             f.write_str(all_str)?;
         }
         write_sp(f, conf.newline, indent)?;
-        self.children[1].pretty_fmt(f, conf, indent)
+        self.right.pretty_fmt(f, conf, indent)
     }
 }
 

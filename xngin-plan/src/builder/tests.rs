@@ -1,6 +1,7 @@
 use super::*;
 use crate::op::OpKind;
 use crate::op::OpVisitor;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
 use xngin_catalog::ColumnAttr;
@@ -586,4 +587,27 @@ pub(crate) fn print_plan(sql: &str, plan: &QueryPlan) {
     let mut s = String::new();
     plan.explain(&mut s).unwrap();
     println!("Plan:\n{}", s)
+}
+
+// helper method to create function that impl OpVisitor
+pub(crate) fn op_visit_fn<F: Fn(&Op)>(f: F) -> impl OpVisitor {
+    struct OpVisitFn<F> {
+        f: F,
+        _marker: PhantomData<F>,
+    }
+    // preorder is enough
+    impl<F: Fn(&Op)> OpVisitor for OpVisitFn<F> {
+        fn enter(&mut self, op: &Op) -> bool {
+            (self.f)(op);
+            true
+        }
+        fn leave(&mut self, _op: &Op) -> bool {
+            true
+        }
+    }
+
+    OpVisitFn {
+        f,
+        _marker: PhantomData,
+    }
 }

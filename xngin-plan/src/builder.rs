@@ -314,7 +314,7 @@ impl PlanBuilder {
                         }
                     }
                 }
-                Ok((Op::row(cols), Location::Memory))
+                Ok((Op::Row(cols), Location::Memory))
             }
             Query::Table(select_table) => self.setup_select_table(select_table, phc),
             Query::Set(select_set) => self.setup_select_set(select_set, phc),
@@ -424,7 +424,7 @@ impl PlanBuilder {
         // a) build root operator
         let mut root = if from.len() == 1 {
             match from.into_iter().next().unwrap() {
-                JoinOp::Subquery(query_id) => Op::subquery(query_id),
+                JoinOp::Subquery(query_id) => Op::Subquery(query_id),
                 JoinOp::Join(j) => Op::Join(j),
                 _ => unreachable!("FROM clause only generate operators subquery and join"),
             }
@@ -485,13 +485,14 @@ impl PlanBuilder {
         } else {
             Setq::All
         };
-        let mut sources = Vec::with_capacity(select_set.children.len());
-        for query in &select_set.children {
-            // todo: handle correlated subquery
-            let (query_id, _) = self.build_subquery(&None, query, phc.allow_unknown_ident)?;
-            sources.push(Op::subquery(query_id))
-        }
-        Ok((Op::setop(kind, q, sources), Location::Intermediate))
+        // todo: handle correlated subquery
+        let (query_id, _) =
+            self.build_subquery(&None, &select_set.left, phc.allow_unknown_ident)?;
+        let left = Op::Subquery(query_id);
+        let (query_id, _) =
+            self.build_subquery(&None, &select_set.right, phc.allow_unknown_ident)?;
+        let right = Op::Subquery(query_id);
+        Ok((Op::setop(kind, q, left, right), Location::Intermediate))
     }
 
     /// process ORDER BY clause and generate sort items.
@@ -865,7 +866,7 @@ impl PlanBuilder {
                 c.name,
             ))
         }
-        let proj = Op::proj(proj_cols, Op::table(schema_id, table_id));
+        let proj = Op::proj(proj_cols, Op::Table(schema_id, table_id));
         // todo: currently we assume all tables are located on disk.
         let mut subquery = Subquery::new(proj, Scope::default(), Location::Disk);
         subquery.reset_out_cols();

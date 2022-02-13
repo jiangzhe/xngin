@@ -58,6 +58,7 @@ impl Explain for Op {
                 write!(f, "Table{{{}}}", table_id.value())
             }
             Op::Subquery(_) => f.write_str("(subquery todo)"),
+            Op::Empty => f.write_str("Empty"),
         }
     }
 }
