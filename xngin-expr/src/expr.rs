@@ -22,6 +22,8 @@ pub enum Expr {
     /// Placeholder can represent any intermediate value
     /// generated in building phase. It should be
     /// resolved as a normal expression later.
+    /// Placeholder is also used in optimization, such as
+    /// predicate pushdown.
     Plhd(Plhd),
     /// Predefined function argument.
     Farg(Farg),
@@ -77,6 +79,27 @@ impl Expr {
     #[inline]
     pub fn pred_func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
         Expr::Pred(Pred::func(kind, args))
+    }
+
+    #[inline]
+    pub fn pred_and(lhs: Expr, rhs: Expr) -> Self {
+        match (lhs, rhs) {
+            (Expr::Pred(Pred::Conj(mut lhs)), Expr::Pred(Pred::Conj(rhs))) => {
+                lhs.extend(rhs);
+                Expr::Pred(Pred::Conj(lhs))
+            }
+            (Expr::Pred(Pred::Conj(mut lhs)), rhs) => {
+                lhs.push(rhs);
+                Expr::Pred(Pred::Conj(lhs))
+            }
+            (lhs, Expr::Pred(Pred::Conj(rhs))) => {
+                let mut vs = Vec::with_capacity(rhs.len() + 1);
+                vs.push(lhs);
+                vs.extend(rhs);
+                Expr::Pred(Pred::Conj(vs))
+            }
+            (lhs, rhs) => Expr::Pred(Pred::Conj(vec![lhs, rhs])),
+        }
     }
 
     #[inline]
@@ -220,9 +243,28 @@ impl Expr {
         matches!(self, Expr::Const(_))
     }
 
-    /// Most expression has two children so we use SmallVec<[&Expr; 2]>.
     #[inline]
-    pub fn children(&self) -> smallvec::IntoIter<[&Expr; 2]> {
+    pub fn n_args(&self) -> usize {
+        match self {
+            Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => 0,
+            Expr::Aggf(_) => 1,
+            Expr::Func(f) => f.args.len(),
+            Expr::Pred(p) => match p {
+                // Pred::True | Pred::False => smallvec![],
+                Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => es.len(),
+                Pred::Not(_) => 1,
+                Pred::Func(f) => f.args.len(),
+                Pred::InSubquery(..) | Pred::NotInSubquery(..) => 2,
+                Pred::Exists(_) | Pred::NotExists(_) => 1,
+            },
+            Expr::Tuple(es) => es.len(),
+        }
+    }
+
+    /// Return arguments of current expression.
+    /// Many expressions has two arguments so we use SmallVec<[&Expr; 2]>.
+    #[inline]
+    pub fn args(&self) -> smallvec::IntoIter<[&Expr; 2]> {
         match self {
             Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => {
                 smallvec![]
@@ -244,8 +286,9 @@ impl Expr {
         .into_iter()
     }
 
+    /// Returns mutable arguments of current expression.
     #[inline]
-    pub fn children_mut(&mut self) -> smallvec::IntoIter<[&mut Expr; 2]> {
+    pub fn args_mut(&mut self) -> smallvec::IntoIter<[&mut Expr; 2]> {
         match self {
             Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => {
                 smallvec![]
@@ -273,7 +316,7 @@ impl Expr {
         if !visitor.enter(self) {
             return false;
         }
-        for c in self.children() {
+        for c in self.args() {
             if !c.walk(visitor) {
                 return false;
             }
@@ -285,7 +328,7 @@ impl Expr {
         if !visitor.enter(self) {
             return false;
         }
-        for c in self.children_mut() {
+        for c in self.args_mut() {
             if !c.walk_mut(visitor) {
                 return false;
             }
@@ -357,6 +400,13 @@ pub struct Aggf {
     pub arg: Box<Expr>,
 }
 
+impl Aggf {
+    #[inline]
+    pub fn n_args(&self) -> usize {
+        1
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggKind {
     Count,
@@ -412,18 +462,30 @@ pub const INVALID_QUERY_ID: QueryID = QueryID(!0);
 
 pub trait ExprVisitor {
     /// Returns true if continue
-    fn enter(&mut self, e: &Expr) -> bool;
+    #[inline]
+    fn enter(&mut self, _e: &Expr) -> bool {
+        true
+    }
 
     /// Returns true if continue
-    fn leave(&mut self, e: &Expr) -> bool;
+    #[inline]
+    fn leave(&mut self, _e: &Expr) -> bool {
+        true
+    }
 }
 
 pub trait ExprMutVisitor {
     /// Returns true if continue
-    fn enter(&mut self, e: &mut Expr) -> bool;
+    #[inline]
+    fn enter(&mut self, _e: &mut Expr) -> bool {
+        true
+    }
 
     /// Returns true if continue
-    fn leave(&mut self, e: &mut Expr) -> bool;
+    #[inline]
+    fn leave(&mut self, _e: &mut Expr) -> bool {
+        true
+    }
 }
 
 pub(crate) struct CollectNonAggrCols<'a> {
@@ -469,11 +531,6 @@ impl ExprVisitor for ContainsAggrFunc {
             self.0 = true;
             return false;
         }
-        true
-    }
-
-    #[inline]
-    fn leave(&mut self, _e: &Expr) -> bool {
         true
     }
 }

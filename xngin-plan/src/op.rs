@@ -22,7 +22,7 @@ pub enum OpKind {
     Limit,
     Apply,
     Row,
-    Subquery,
+    Query,
     Table,
     Setop,
     Empty,
@@ -48,9 +48,9 @@ pub enum Op {
     Apply(Box<Apply>),
     /// Row represents a single select without source table. e.g. "SELECT 1"
     Row(Vec<(Expr, SmolStr)>),
-    /// Subquery node represents a single row, a concrete table or
+    /// Query node represents a single row, a concrete table or
     /// a sub-tree containing one or more operators.
-    Subquery(QueryID),
+    Query(QueryID),
     /// Table node.
     Table(SchemaID, TableID),
     /// Set operations include union, except, intersect.
@@ -79,7 +79,7 @@ impl Op {
             Op::Limit(_) => OpKind::Limit,
             Op::Apply(_) => OpKind::Apply,
             Op::Row(_) => OpKind::Row,
-            Op::Subquery(_) => OpKind::Subquery,
+            Op::Query(_) => OpKind::Query,
             Op::Table(..) => OpKind::Table,
             Op::Setop(_) => OpKind::Setop,
             Op::Empty => OpKind::Empty,
@@ -120,7 +120,6 @@ impl Op {
     pub fn aggr(groups: Vec<Expr>, source: Op) -> Self {
         Op::Aggr(Box::new(Aggr {
             groups,
-            filt: None,
             proj: vec![],
             source,
         }))
@@ -155,6 +154,46 @@ impl Op {
         matches!(self, Op::Empty)
     }
 
+    #[inline]
+    pub fn contains_qry(&self, qry_id: QueryID) -> bool {
+        struct ContainsQry(QueryID, bool);
+        impl OpVisitor for ContainsQry {
+            #[inline]
+            fn enter(&mut self, op: &Op) -> bool {
+                match op {
+                    Op::Query(qry_id) if qry_id == &self.0 => {
+                        self.1 = true;
+                        false
+                    }
+                    _ => true,
+                }
+            }
+        }
+
+        let mut cq = ContainsQry(qry_id, false);
+        let _ = self.walk(&mut cq);
+        cq.1
+    }
+
+    /// Returns single source of the operator
+    #[inline]
+    pub fn source_mut(&mut self) -> Option<&mut Op> {
+        match self {
+            Op::Proj(proj) => Some(&mut proj.source),
+            Op::Filt(filt) => Some(&mut filt.source),
+            Op::Sort(sort) => Some(&mut sort.source),
+            Op::Limit(limit) => Some(&mut limit.source),
+            Op::Aggr(aggr) => Some(&mut aggr.source),
+            Op::Join(_)
+            | Op::Setop(_)
+            | Op::Apply(_)
+            | Op::Row(_)
+            | Op::Table(..)
+            | Op::Query(_)
+            | Op::Empty => None,
+        }
+    }
+
     /// Returns children under current operator until row/table/join/subquery
     #[inline]
     pub fn children(&self) -> SmallVec<[&Op; 2]> {
@@ -173,7 +212,7 @@ impl Op {
                 let Setop { left, right, .. } = set.as_ref();
                 smallvec![left, right]
             }
-            Op::Subquery(_) | Op::Row(_) | Op::Table(..) | Op::Empty => smallvec![],
+            Op::Query(_) | Op::Row(_) | Op::Table(..) | Op::Empty => smallvec![],
         }
     }
 
@@ -194,7 +233,7 @@ impl Op {
                 let Setop { left, right, .. } = set.as_mut();
                 smallvec![left, right]
             }
-            Op::Subquery(_) | Op::Row(_) | Op::Table(..) | Op::Empty => smallvec![],
+            Op::Query(_) | Op::Row(_) | Op::Table(..) | Op::Empty => smallvec![],
         }
     }
 
@@ -206,11 +245,10 @@ impl Op {
             Op::Aggr(aggr) => aggr
                 .groups
                 .iter()
-                .chain(aggr.filt.iter())
                 .chain(aggr.proj.iter().map(|(e, _)| e))
                 .collect(),
             Op::Sort(sort) => sort.items.iter().map(|si| &si.expr).collect(),
-            Op::Limit(_) | Op::Subquery(_) | Op::Table(..) | Op::Setop(_) | Op::Empty => {
+            Op::Limit(_) | Op::Query(_) | Op::Table(..) | Op::Setop(_) | Op::Empty => {
                 smallvec![]
             }
             Op::Apply(apply) => apply.vars.iter().collect(),
@@ -230,11 +268,10 @@ impl Op {
             Op::Aggr(aggr) => aggr
                 .groups
                 .iter_mut()
-                .chain(aggr.filt.iter_mut())
                 .chain(aggr.proj.iter_mut().map(|(e, _)| e))
                 .collect(),
             Op::Sort(sort) => sort.items.iter_mut().map(|si| &mut si.expr).collect(),
-            Op::Limit(_) | Op::Subquery(_) | Op::Table(..) | Op::Setop(_) | Op::Empty => {
+            Op::Limit(_) | Op::Query(_) | Op::Table(..) | Op::Setop(_) | Op::Empty => {
                 smallvec![]
             }
             Op::Apply(apply) => apply.vars.iter_mut().collect(),
@@ -301,7 +338,6 @@ pub enum AggrKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Aggr {
     pub groups: Vec<Expr>,
-    pub filt: Option<Expr>,
     pub proj: Vec<(Expr, SmolStr)>,
     pub source: Op,
 }
@@ -459,7 +495,9 @@ pub struct Col {
 
 pub trait OpVisitor {
     /// Returns true if continue
-    fn enter(&mut self, op: &Op) -> bool;
+    fn enter(&mut self, _op: &Op) -> bool {
+        true
+    }
 
     /// Returns true if continue
     fn leave(&mut self, _op: &Op) -> bool {
@@ -469,10 +507,14 @@ pub trait OpVisitor {
 
 pub trait OpMutVisitor {
     /// Returns true if continue
-    fn enter(&mut self, op: &mut Op) -> bool;
+    fn enter(&mut self, _op: &mut Op) -> bool {
+        true
+    }
 
     /// Returns true if continue
-    fn leave(&mut self, op: &mut Op) -> bool;
+    fn leave(&mut self, _op: &mut Op) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -123,7 +123,7 @@ pub trait ExprResolve {
             Some(query_id) => query_id,
             None => return Ok(Resolution::Unknown(vec![schema_name, tbl_alias, col_alias])),
         };
-        if let Some((schema_id, _)) = subquery.proj_table() {
+        if let Some((schema_id, _)) = subquery.find_table() {
             if schema_id != schema.id {
                 return Err(Error::unknown_column_full_name(
                     &schema_name,
@@ -214,7 +214,7 @@ pub trait ExprResolve {
                 let (query_id, subquery) = self
                     .find_query(&tbl_alias)
                     .ok_or_else(|| Error::unknown_asterisk_column(q, location))?;
-                if let Some((schema_id, _)) = subquery.proj_table() {
+                if let Some((schema_id, _)) = subquery.find_table() {
                     if schema_id != schema.id {
                         return Err(Error::UnknownTable(format!(
                             "{}.{}",
@@ -615,19 +615,6 @@ impl<'a> PlaceholderCollector<'a> {
         self.ident_id_gen += 1;
         expr::Expr::ph_ident(uid)
     }
-
-    // #[inline]
-    // pub fn add_subquery(
-    //     &mut self,
-    //     kind: expr::SubqKind,
-    //     subquery: &'a QueryExpr<'a>,
-    //     location: &'static str,
-    // ) -> expr::Expr {
-    //     let uid = self.subquery_id_gen;
-    //     self.subqueries.push((uid, kind, subquery, location));
-    //     self.subquery_id_gen += 1;
-    //     expr::Expr::ph_subquery(uid)
-    // }
 
     #[inline]
     pub fn add_subquery(

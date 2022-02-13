@@ -11,64 +11,54 @@ use xngin_expr::{
 /// Simplify expressions.
 #[inline]
 pub fn expr_simplify(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> {
-    let mut subqueries = vec![*root];
-    while let Some(qry_id) = subqueries.pop() {
-        simplify_single(queries, qry_id, &mut subqueries)?
-    }
-    Ok(())
+    simplify_expr(queries, *root)
 }
 
-fn simplify_single(
-    qry_set: &mut QuerySet,
-    qry_id: QueryID,
-    subqueries: &mut Vec<QueryID>,
-) -> Result<()> {
-    if let Some(subq) = qry_set.get_mut(&qry_id) {
-        for (_, subq_id) in subq.scope.query_aliases.iter().rev() {
-            subqueries.push(*subq_id)
-        }
-        let mut es = ExprSimplify { res: Ok(()) };
-        let _ = subq.root.walk_mut(&mut es);
-        es.res?
-    }
-    Ok(())
+fn simplify_expr(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
+    qry_set.transform_op(qry_id, |qry_set, op| {
+        let mut es = ExprSimplify {
+            qry_set,
+            res: Ok(()),
+        };
+        let _ = op.walk_mut(&mut es);
+        es.res
+    })?
 }
 
-struct ExprSimplify {
+struct ExprSimplify<'a> {
+    qry_set: &'a mut QuerySet,
     res: Result<()>,
 }
 
-impl OpMutVisitor for ExprSimplify {
+impl OpMutVisitor for ExprSimplify<'_> {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> bool {
-        for e in op.exprs_mut() {
-            let _ = e.walk_mut(self);
+        match op {
+            Op::Query(qry_id) => {
+                self.res = simplify_expr(self.qry_set, *qry_id);
+                self.res.is_ok()
+            }
+            _ => {
+                for e in op.exprs_mut() {
+                    let _ = e.walk_mut(self);
+                }
+                self.res.is_ok()
+            }
         }
-        self.res.is_ok()
-    }
-
-    #[inline]
-    fn leave(&mut self, _op: &mut Op) -> bool {
-        true
     }
 }
 
-impl ExprMutVisitor for ExprSimplify {
-    #[inline]
-    fn enter(&mut self, _e: &mut Expr) -> bool {
-        true
-    }
-
+impl ExprMutVisitor for ExprSimplify<'_> {
     /// simplify expression bottom up.
     #[inline]
     fn leave(&mut self, e: &mut Expr) -> bool {
-        self.res = const_fold(e);
+        self.res = simplify_single(e);
         self.res.is_ok()
     }
 }
 
-/// Fold constants such as 1 + 1, 2 < 3, etc.
-fn const_fold(e: &mut Expr) -> Result<()> {
+/// Simplify expression.
+pub(super) fn simplify_single(e: &mut Expr) -> Result<()> {
     match e {
         Expr::Func(f) => {
             if let Some(new) = simplify_func(f)? {
@@ -827,12 +817,16 @@ fn coerce_cmp_func(kind: PredFuncKind, e1: Expr, e2: Expr) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{assert_j_plan, assert_j_plan2, get_filt_expr, print_plan};
+    use crate::builder::tests::{
+        assert_j_plan, assert_j_plan2, get_filt_expr, j_catalog, print_plan,
+    };
 
     // fold func 1
     #[test]
     fn test_expr_simplify1() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where --c1",
             "select c1 from t1 where c1",
             assert_eq_filt_expr,
@@ -842,7 +836,9 @@ mod tests {
     // fold func 2
     #[test]
     fn test_expr_simplify2() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where -(2)",
             "select c1 from t1 where -2",
             assert_eq_filt_expr,
@@ -852,7 +848,9 @@ mod tests {
     // fold func 3
     #[test]
     fn test_expr_simplify3() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1+1",
             "select c1 from t1 where 2",
             assert_eq_filt_expr,
@@ -862,12 +860,15 @@ mod tests {
     // fold func 4
     #[test]
     fn test_expr_simplify4() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c1+0",
             "select c1 from t1 where c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c1-0",
             "select c1 from t1 where c1",
             assert_eq_filt_expr,
@@ -877,22 +878,27 @@ mod tests {
     // fold func 4
     #[test]
     fn test_expr_simplify5() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 0+c1",
             "select c1 from t1 where c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 0-c1",
             "select c1 from t1 where -c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where 0-(c1+c2)",
             "select c1 from t2 where -(c1+c2)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where 0-(c1-c2)",
             "select c1 from t2 where -(c1-c2)",
             assert_eq_filt_expr,
@@ -902,17 +908,21 @@ mod tests {
     // fold func 5
     #[test]
     fn test_expr_simplify6() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1+c1",
             "select c1 from t1 where c1+1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1+(c1+c0)",
             "select c1 from t1 where (c1+c0)+1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1-c1",
             "select c1 from t1 where 1-c1",
             assert_eq_filt_expr,
@@ -922,32 +932,39 @@ mod tests {
     // fold func 6
     #[test]
     fn test_expr_simplify7() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c1+1+2",
             "select c1 from t1 where c1+3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c1+1-2",
             "select c1 from t1 where c1+(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c1-1+2",
             "select c1 from t1 where c1-(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c1-1-2",
             "select c1 from t1 where c1-3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1-c1-2",
             "select c1 from t1 where -1-c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1-c1+2",
             "select c1 from t1 where 3-c1",
             assert_eq_filt_expr,
@@ -957,37 +974,45 @@ mod tests {
     // fold func 7
     #[test]
     fn test_expr_simplify8() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1+(c1+2)",
             "select c1 from t1 where c1+3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1+(2+c1)",
             "select c1 from t1 where c1+3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1+(c1-2)",
             "select c1 from t1 where c1+(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1+(2-c1)",
             "select c1 from t1 where 3-c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1-(c1+2)",
             "select c1 from t1 where -1-c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1-(c1-2)",
             "select c1 from t1 where 3-c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1-(2-c1)",
             "select c1 from t1 where c1+(-1)",
             assert_eq_filt_expr,
@@ -997,52 +1022,63 @@ mod tests {
     // fold func 8
     #[test]
     fn test_expr_simplify9() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1+1)+(c2+2)",
             "select c1 from t2 where (c1+c2)+3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1-1)+(c2+2)",
             "select c1 from t2 where (c1+c2)-(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (1-c1)+(c2+2)",
             "select c1 from t2 where (c2-c1)+3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1+1)+(c2-2)",
             "select c1 from t2 where (c1+c2)+(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1-1)+(c2-2)",
             "select c1 from t2 where (c1+c2)-3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (1-c1)+(c2-2)",
             "select c1 from t2 where (c2-c1)+(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1+1)+(2-c2)",
             "select c1 from t2 where (c1-c2)+3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1-1)+(2-c2)",
             "select c1 from t2 where (c1-c2)-(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (1-c1)+(2-c2)",
             "select c1 from t2 where 3-(c1+c2)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (1-c1)+(c1-c2)",
             "select c1 from t2 where (1-c1)+(c1-c2)",
             assert_eq_filt_expr,
@@ -1052,52 +1088,63 @@ mod tests {
     // fold func 8
     #[test]
     fn test_expr_simplify10() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1+1)-(c2+2)",
             "select c1 from t2 where (c1-c2)+(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1-1)-(c2+2)",
             "select c1 from t2 where (c1-c2)-3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (1-c1)-(c2+2)",
             "select c1 from t2 where -1-(c1+c2)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1+1)-(c2-2)",
             "select c1 from t2 where (c1-c2)+3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1-1)-(c2-2)",
             "select c1 from t2 where (c1-c2)-(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (1-c1)-(c2-2)",
             "select c1 from t2 where 3-(c1+c2)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1+1)-(2-c2)",
             "select c1 from t2 where (c1+c2)+(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (c1-1)-(2-c2)",
             "select c1 from t2 where (c1+c2)-3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (1-c1)-(2-c2)",
             "select c1 from t2 where (c2-c1)+(-1)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t2 where (1-c1)-(c1-c2)",
             "select c1 from t2 where (1-c1)-(c1-c2)",
             assert_eq_filt_expr,
@@ -1150,7 +1197,9 @@ mod tests {
                 }
             },
         );
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c1 in (select c1 from t2)",
             "select c1 from t1 where c1 not in (select c1 from t2)",
             assert_eq_filt_expr,
@@ -1171,7 +1220,9 @@ mod tests {
                 }
             },
         );
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c1 not in (select c1 from t2)",
             "select c1 from t1 where c1 in (select c1 from t2)",
             assert_eq_filt_expr,
@@ -1181,32 +1232,39 @@ mod tests {
     // fold pred 1.5
     #[test]
     fn test_expr_simplify15() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 = c1",
             "select c1 from t1 where c0 <> c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 > c1",
             "select c1 from t1 where c0 <= c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 >= c1",
             "select c1 from t1 where c0 < c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 < c1",
             "select c1 from t1 where c0 >= c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 <= c1",
             "select c1 from t1 where c0 > c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 <> c1",
             "select c1 from t1 where c0 = c1",
             assert_eq_filt_expr,
@@ -1216,32 +1274,39 @@ mod tests {
     // fold pred 1.5
     #[test]
     fn test_expr_simplify16() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 is null",
             "select c1 from t1 where c0 is not null",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 is not null",
             "select c1 from t1 where c0 is null",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 is true",
             "select c1 from t1 where c0 is not true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 is not true",
             "select c1 from t1 where c0 is true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 is false",
             "select c1 from t1 where c0 is not false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 is not false",
             "select c1 from t1 where c0 is false",
             assert_eq_filt_expr,
@@ -1251,22 +1316,27 @@ mod tests {
     // fold pred 1.5
     #[test]
     fn test_expr_simplify17() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 like '1'",
             "select c1 from t1 where c0 not like '1'",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 not like '1'",
             "select c1 from t1 where c0 like '1'",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 regexp '1'",
             "select c1 from t1 where c0 not regexp '1'",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 not regexp '1'",
             "select c1 from t1 where c0 regexp '1'",
             assert_eq_filt_expr,
@@ -1276,22 +1346,27 @@ mod tests {
     // fold pred 1.5
     #[test]
     fn test_expr_simplify18() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 in (1,2,3)",
             "select c1 from t1 where c0 not in (1,2,3)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 not in (1,2,3)",
             "select c1 from t1 where c0 in (1,2,3)",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 between 0 and 2",
             "select c1 from t1 where c0 not between 0 and 2",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not c0 not between 0 and 2",
             "select c1 from t1 where c0 between 0 and 2",
             assert_eq_filt_expr,
@@ -1301,37 +1376,45 @@ mod tests {
     // fold pred 1.6
     #[test]
     fn test_expr_simplify19() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not 1",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not 2",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not 1.5",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not 1.5e5",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not 0",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not 0.0",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where not 0.0e-1",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
@@ -1341,122 +1424,147 @@ mod tests {
     // fold pred 2.1
     #[test]
     fn test_expr_simplify20() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 = null",
             "select c1 from t1 where null",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null = 1",
             "select c1 from t1 where null",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null = null",
             "select c1 from t1 where null",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 = null",
             "select c1 from t1 where null",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null = c0",
             "select c1 from t1 where null",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null <=> null",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 <=> null",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 <=> null",
             "select c1 from t1 where c0 <=> null",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null is null",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 is null",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null is not null",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 is not null",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null is true",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 is true",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 0 is true",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null is not true",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 is not true",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 0 is not true",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null is false",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 is false",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 0 is false",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where null is not false",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 is not false",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 0 is not false",
             "select c1 from t1 where false",
             assert_eq_filt_expr,
@@ -1466,22 +1574,27 @@ mod tests {
     // fold pred 2.2
     #[test]
     fn test_expr_simplify21() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 = 1",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1.0 = true",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where '1.0' = 1",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 'abc' = 0",
             "select c1 from t1 where true",
             assert_eq_filt_expr,
@@ -1491,17 +1604,21 @@ mod tests {
     // fold pred 2.3
     #[test]
     fn test_expr_simplify22() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 + 1 = 2",
             "select c1 from t1 where c0 = 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 - 1 = 2",
             "select c1 from t1 where c0 = 3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 - c0 >= 2",
             "select c1 from t1 where c0 <= -1",
             assert_eq_filt_expr,
@@ -1511,17 +1628,21 @@ mod tests {
     // fold pred 2.4
     #[test]
     fn test_expr_simplify23() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 = c0 + 2",
             "select c1 from t1 where c0 = -1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 = c0 - 2",
             "select c1 from t1 where c0 = 3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 >= 2 - c0",
             "select c1 from t1 where c0 >= 1",
             assert_eq_filt_expr,
@@ -1531,42 +1652,51 @@ mod tests {
     // fold pred 2.5
     #[test]
     fn test_expr_simplify24() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 = c0",
             "select c1 from t1 where c0 = 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 > c0",
             "select c1 from t1 where c0 < 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 >= c0",
             "select c1 from t1 where c0 <= 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 < c0",
             "select c1 from t1 where c0 > 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 < c0",
             "select c1 from t1 where c0 > 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 <= c0",
             "select c1 from t1 where c0 >= 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 <> c0",
             "select c1 from t1 where c0 <> 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 + 1 = c0",
             "select c1 from t1 where c0 = 2",
             assert_eq_filt_expr,
@@ -1576,52 +1706,63 @@ mod tests {
     // fold pred 2.6
     #[test]
     fn test_expr_simplify25() {
+        let cat = j_catalog();
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 + 1 = c1 + 1",
             "select c1 from t1 where c0 = c1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 + 1 = c1 + 2",
             "select c1 from t1 where c0 = c1 + 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 - 1 = c1 + 2",
             "select c1 from t1 where c0 = c1 + 3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 - c0 > c1 + 2",
             "select c1 from t1 where c1 + c0 < -1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 + 1 >= c1 - 2",
             "select c1 from t1 where c0 >= c1 - 3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 - 1 < c1 - 2",
             "select c1 from t1 where c0 < c1 - 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 - c0 > c1 - 2",
             "select c1 from t1 where c1 + c0 < 3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 + 1 <= 2 - c1",
             "select c1 from t1 where c0 + c1 <= 1",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where c0 - 1 < 2 - c1",
             "select c1 from t1 where c0 + c1 < 3",
             assert_eq_filt_expr,
         );
         assert_j_plan2(
+            &cat,
             "select c1 from t1 where 1 - c0 >= 2 - c1",
             "select c1 from t1 where c0 <= c1 + (-1)",
             assert_eq_filt_expr,
@@ -1695,18 +1836,11 @@ mod tests {
 
     // convert all columns in expressions to null and check if it rejects null
     fn expr_rejects_null(e: &Expr) -> bool {
-        use std::borrow::Cow;
-        match e {
-            Expr::Func(f) => f.reject_null(|e| match e {
-                Expr::Col(_) => Cow::Owned(Expr::const_null()),
-                other => Cow::Borrowed(other),
-            }),
-            Expr::Pred(p) => p.reject_null(|e| match e {
-                Expr::Col(_) => Cow::Owned(Expr::const_null()),
-                other => Cow::Borrowed(other),
-            }),
-            _ => unimplemented!(),
-        }
-        .unwrap()
+        e.clone()
+            .reject_null(|e| match e {
+                Expr::Col(_) => *e = Expr::const_null(),
+                _ => (),
+            })
+            .unwrap()
     }
 }

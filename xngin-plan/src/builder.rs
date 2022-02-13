@@ -137,7 +137,7 @@ impl PlanBuilder {
                 if from_alias == tbl_alias {
                     // found table by alias
                     let subquery = self.qs.get(query_id).must_ok()?;
-                    let (schema_id, _) = subquery.proj_table().ok_or_else(|| {
+                    let (schema_id, _) = subquery.find_table().ok_or_else(|| {
                         Error::unknown_column_full_name(schema_name, tbl_alias, col_alias, location)
                     })?;
                     if schema_id != schema.id {
@@ -231,21 +231,6 @@ impl PlanBuilder {
         Err(Error::unknown_column_name(col_alias, location))
     }
 
-    /// Subqueries can be correlated.
-    // #[inline]
-    // fn setup_subqueries<'a>(
-    //     &mut self,
-    //     root: &mut Op,
-    //     subqueries: Vec<(u32, SubqKind, &'a QueryExpr<'a>, &'static str)>,
-    // ) -> Result<()> {
-    //     for (uid, kind, subq, _) in subqueries {
-    //         let QueryExpr { with, query } = subq;
-    //         let query_id = self.build_subquery(with, query, true)?;
-    //         let _ = root.walk_mut(&mut ReplaceSubquery(uid, kind, query_id));
-    //     }
-    //     Ok(())
-    // }
-
     /// Setup with clause.
     ///
     /// Recursive CTE is not supported.
@@ -272,13 +257,15 @@ impl PlanBuilder {
             if !elem.cols.is_empty() {
                 // as output columns aliases are explicit specified,
                 // we need to update the output alias list of generated tree.
-                let subquery = self.qs.get_mut(&query_id).must_ok()?;
-                if elem.cols.len() != subquery.scope.out_cols.len() {
-                    return Err(Error::ColumnCountMismatch);
-                }
-                for ((_, alias), new) in subquery.scope.out_cols.iter_mut().zip(elem.cols.iter()) {
-                    *alias = new.to_lower();
-                }
+                self.qs.transform_scope(query_id, |scope| {
+                    if elem.cols.len() != scope.out_cols.len() {
+                        return Err(Error::ColumnCountMismatch);
+                    }
+                    for ((_, alias), new) in scope.out_cols.iter_mut().zip(elem.cols.iter()) {
+                        *alias = new.to_lower();
+                    }
+                    Ok(())
+                })??
             }
             // add to CTE aliases of current scope, with duplication check
             self.scopes
@@ -314,7 +301,7 @@ impl PlanBuilder {
                         }
                     }
                 }
-                Ok((Op::Row(cols), Location::Memory))
+                Ok((Op::Row(cols), Location::Virtual))
             }
             Query::Table(select_table) => self.setup_select_table(select_table, phc),
             Query::Set(select_set) => self.setup_select_set(select_set, phc),
@@ -424,7 +411,7 @@ impl PlanBuilder {
         // a) build root operator
         let mut root = if from.len() == 1 {
             match from.into_iter().next().unwrap() {
-                JoinOp::Subquery(query_id) => Op::Subquery(query_id),
+                JoinOp::Query(query_id) => Op::Query(query_id),
                 JoinOp::Join(j) => Op::Join(j),
                 _ => unreachable!("FROM clause only generate operators subquery and join"),
             }
@@ -439,23 +426,16 @@ impl PlanBuilder {
         if !groups.is_empty() || scalar_aggr {
             root = Op::aggr(groups, root);
         }
-        // d) merge HAVING into Aggr or Filt
-        if let Some(pred) = having {
-            match &mut root {
-                Op::Aggr(aggr) => aggr.filt = Some(pred),
-                Op::Filt(filt) => {
-                    let orig = std::mem::replace(&mut filt.pred, expr::Expr::const_bool(true));
-                    filt.pred = expr::Expr::Pred(Pred::Conj(vec![orig, pred]));
-                }
-                _ => root = Op::filt(pred, root),
-            }
-        }
-        // e) build Proj operator or merge into Aggr
+        // d) build Proj operator or merge into Aggr
         match &mut root {
             Op::Aggr(aggr) => aggr.proj = proj_cols,
             _ => {
                 root = Op::proj(proj_cols, root);
             }
+        }
+        // e) build Filter operator from HAVING clause
+        if let Some(pred) = having {
+            root = Op::filt(pred, root);
         }
         // f) build Sort operator
         if !order.is_empty() {
@@ -488,10 +468,10 @@ impl PlanBuilder {
         // todo: handle correlated subquery
         let (query_id, _) =
             self.build_subquery(&None, &select_set.left, phc.allow_unknown_ident)?;
-        let left = Op::Subquery(query_id);
+        let left = Op::Query(query_id);
         let (query_id, _) =
             self.build_subquery(&None, &select_set.right, phc.allow_unknown_ident)?;
-        let right = Op::Subquery(query_id);
+        let right = Op::Query(query_id);
         Ok((Op::setop(kind, q, left, right), Location::Intermediate))
     }
 
@@ -817,7 +797,7 @@ impl PlanBuilder {
                     .curr_scope_mut()
                     .query_aliases
                     .insert_query(tbl_alias.clone(), query_id)?;
-                (JoinOp::Subquery(query_id), tbl_alias)
+                (JoinOp::Query(query_id), tbl_alias)
             }
             TablePrimitive::Derived(subq, alias) => {
                 // Non-lateral derived table can not refer to outer values.
@@ -831,7 +811,7 @@ impl PlanBuilder {
                     .curr_scope_mut()
                     .query_aliases
                     .insert_query(alias.clone(), query_id)?;
-                (JoinOp::Subquery(query_id), alias)
+                (JoinOp::Query(query_id), alias)
             }
         };
         Ok((plan, vec![alias]))
@@ -1185,6 +1165,7 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
 struct ReplaceCorrelatedCol(u32, expr::Expr);
 
 impl OpMutVisitor for ReplaceCorrelatedCol {
+    #[inline]
     fn enter(&mut self, op: &mut Op) -> bool {
         for e in op.exprs_mut() {
             if let expr::Expr::Plhd(Plhd::Ident(uid)) = e {
@@ -1193,10 +1174,6 @@ impl OpMutVisitor for ReplaceCorrelatedCol {
                 }
             }
         }
-        true
-    }
-
-    fn leave(&mut self, _op: &mut Op) -> bool {
         true
     }
 }
@@ -1228,9 +1205,9 @@ impl OpMutVisitor for ReplaceSubq {
                 }
             }
             Op::Aggr(aggr) => {
-                if let Some(filt) = &mut aggr.filt {
-                    let _ = filt.walk_mut(self);
-                }
+                // if let Some(filt) = &mut aggr.filt {
+                //     let _ = filt.walk_mut(self);
+                // }
                 if self.updated {
                     return false;
                 }
@@ -1253,11 +1230,6 @@ impl OpMutVisitor for ReplaceSubq {
         }
         true
     }
-
-    #[inline]
-    fn leave(&mut self, _op: &mut Op) -> bool {
-        true
-    }
 }
 
 impl ExprMutVisitor for ReplaceSubq {
@@ -1270,11 +1242,6 @@ impl ExprMutVisitor for ReplaceSubq {
             }
             _ => (),
         }
-        true
-    }
-
-    #[inline]
-    fn leave(&mut self, _e: &mut expr::Expr) -> bool {
         true
     }
 }

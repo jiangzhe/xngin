@@ -2,9 +2,7 @@ use crate::error::Result;
 use crate::op::{
     Filt, Join, JoinKind, Limit, Op, OpMutVisitor, Proj, QualifiedJoin, Setop, SetopKind, Sort,
 };
-use crate::query::QueryPlan;
-use indexmap::IndexSet;
-use std::collections::{HashMap, VecDeque};
+use crate::query::{QueryPlan, QuerySet};
 use std::mem;
 use xngin_expr::{Const, Expr, QueryID, Setq};
 
@@ -18,64 +16,31 @@ use xngin_expr::{Const, Expr, QueryID, Setq};
 /// 7. ORDER BY in subquery without LIMIT can be removed.
 #[inline]
 pub fn op_eliminate(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> {
-    if let Some(subq) = queries.get_mut(root) {
-        let mut subq_ids = VecDeque::new();
-        let mut parent_map = HashMap::new();
-        let mut empty_subqs = IndexSet::new();
-        // 1. walk root plan and see if it's empty now
-        let mut eo = EliminateOp::new(*root, false, &mut subq_ids, &mut parent_map);
-        let _ = subq.root.walk_mut(&mut eo);
-        if subq.root.is_empty() {
-            // entire tree is empty now
-            return Ok(());
-        }
-        // 2. try all the child queries
-        while let Some(subq_id) = subq_ids.pop_front() {
-            if let Some(subq) = queries.get_mut(&subq_id) {
-                let mut eo = EliminateOp::new(subq_id, true, &mut subq_ids, &mut parent_map);
-                let _ = subq.root.walk_mut(&mut eo);
-                if subq.root.is_empty() {
-                    empty_subqs.insert(subq_id);
-                }
-            }
-        }
-        // 3. try parents of all empty queries
-        while let Some(em_qid) = empty_subqs.pop() {
-            if let Some(parent_qid) = parent_map.get(&em_qid) {
-                if let Some(subq) = queries.get_mut(parent_qid) {
-                    let mut ec = EliminateByEmptyChild::new(em_qid);
-                    let _ = subq.root.walk_mut(&mut ec);
-                    if subq.root.is_empty() {
-                        empty_subqs.insert(*parent_qid);
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
+    eliminate_op(queries, *root, false)
+}
+
+fn eliminate_op(qry_set: &mut QuerySet, qry_id: QueryID, is_subq: bool) -> Result<()> {
+    qry_set.transform_op(qry_id, |qry_set, op| {
+        let mut eo = EliminateOp::new(qry_set, is_subq);
+        let _ = op.walk_mut(&mut eo);
+        eo.res
+    })?
 }
 
 struct EliminateOp<'a> {
-    query_id: QueryID,
+    qry_set: &'a mut QuerySet,
     is_subq: bool,
     has_limit: bool,
-    subq_ids: &'a mut VecDeque<QueryID>,
-    parent_map: &'a mut HashMap<QueryID, QueryID>,
+    res: Result<()>,
 }
 
 impl<'a> EliminateOp<'a> {
-    fn new(
-        query_id: QueryID,
-        is_subq: bool,
-        subq_ids: &'a mut VecDeque<QueryID>,
-        parent_map: &'a mut HashMap<QueryID, QueryID>,
-    ) -> Self {
+    fn new(qry_set: &'a mut QuerySet, is_subq: bool) -> Self {
         EliminateOp {
-            query_id,
+            qry_set,
             is_subq,
             has_limit: false,
-            subq_ids,
-            parent_map,
+            res: Ok(()),
         }
     }
 }
@@ -122,9 +87,9 @@ impl OpMutVisitor for EliminateOp<'_> {
                     return self.enter(op);
                 }
             }
-            Op::Subquery(query_id) => {
-                self.parent_map.insert(*query_id, self.query_id);
-                self.subq_ids.push_back(*query_id);
+            Op::Query(query_id) => {
+                self.res = eliminate_op(self.qry_set, *query_id, true);
+                return self.res.is_ok();
             }
             _ => (),
         };
@@ -136,14 +101,21 @@ impl OpMutVisitor for EliminateOp<'_> {
     #[inline]
     fn leave(&mut self, op: &mut Op) -> bool {
         match op {
-            Op::Subquery(_) | Op::Table(..) | Op::Row(_) => (),
-            _ => eliminate_tree_bottom_up(op),
+            Op::Query(qry_id) => {
+                if let Some(subq) = self.qry_set.get(qry_id) {
+                    if subq.root.is_empty() {
+                        *op = Op::Empty;
+                    }
+                }
+            }
+            Op::Table(..) | Op::Row(_) => (),
+            _ => bottom_up(op),
         }
         true
     }
 }
 
-fn eliminate_tree_bottom_up(op: &mut Op) {
+fn bottom_up(op: &mut Op) {
     match op {
         Op::Join(j) => match j.as_mut() {
             Join::Cross(tbls) => {
@@ -223,38 +195,8 @@ fn eliminate_tree_bottom_up(op: &mut Op) {
             }
         }
         Op::Apply(_) => unimplemented!(),
-        Op::Subquery(_) | Op::Table(..) | Op::Row(_) => unreachable!(),
+        Op::Query(_) | Op::Table(..) | Op::Row(_) => unreachable!(),
         Op::Empty => (),
-    }
-}
-
-struct EliminateByEmptyChild {
-    em_qid: QueryID,
-}
-
-impl EliminateByEmptyChild {
-    fn new(em_qid: QueryID) -> Self {
-        EliminateByEmptyChild { em_qid }
-    }
-}
-
-impl OpMutVisitor for EliminateByEmptyChild {
-    #[inline]
-    fn enter(&mut self, _op: &mut Op) -> bool {
-        true
-    }
-
-    #[inline]
-    fn leave(&mut self, op: &mut Op) -> bool {
-        match op {
-            Op::Subquery(query_id) => {
-                if *query_id == self.em_qid {
-                    *op = Op::Empty
-                }
-            }
-            _ => eliminate_tree_bottom_up(op),
-        }
-        true
     }
 }
 
@@ -277,7 +219,7 @@ mod tests {
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
             if let Op::Proj(proj) = &subq.root {
-                assert!(matches!(proj.source.as_ref(), Op::Subquery(..)))
+                assert!(matches!(proj.source.as_ref(), Op::Query(..)))
             } else {
                 panic!("fail")
             }

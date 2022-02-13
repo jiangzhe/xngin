@@ -5,128 +5,90 @@ mod not;
 mod sub;
 
 use crate::error::Result;
-use crate::{Const, Expr, Func, FuncKind, Pred, PredFunc, PredFuncKind};
+use crate::{Const, Expr, ExprMutVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind};
 
 pub use add::*;
 pub use cmp::*;
 pub use neg::*;
 pub use not::*;
-use std::borrow::Cow;
 pub use sub::*;
 
 /// General trait to wrap expressions to perform constant folding,
 /// as well as checking whether an expression rejects null given
 /// specific condition.
-pub trait ConstFold: Sized {
+pub trait Fold: Sized {
     /// fold consumes self and returns any error if folding can
     /// be performed but fails.
-    fn fold(&self) -> Result<Option<Const>> {
-        self.transform_fold(|e| Cow::Borrowed(e))
+    fn fold(self) -> Result<Expr> {
+        self.replace_fold(|_| {})
     }
 
-    fn transform_fold<T: Fn(&Expr) -> Cow<'_, Expr>>(&self, transform: T) -> Result<Option<Const>>;
+    fn replace_fold<F: Fn(&mut Expr)>(self, f: F) -> Result<Expr>;
 
-    fn reject_null<T: Fn(&Expr) -> Cow<'_, Expr>>(&self, transform: T) -> Result<bool> {
-        self.transform_fold(transform).map(|res| match res {
-            Some(Const::Null) => true,
-            Some(c) => c.is_zero().unwrap_or_default(),
+    fn reject_null<F: Fn(&mut Expr)>(self, f: F) -> Result<bool> {
+        self.replace_fold(f).map(|res| match res {
+            Expr::Const(Const::Null) => true,
+            Expr::Const(c) => c.is_zero().unwrap_or_default(),
             _ => false,
         })
     }
 }
 
-impl ConstFold for Func {
-    fn transform_fold<T: Fn(&Expr) -> Cow<'_, Expr>>(&self, transform: T) -> Result<Option<Const>> {
-        match self.kind {
-            FuncKind::Neg => {
-                let arg = transform(&self.args[0]);
-                fold_neg(&arg)
+impl Fold for Expr {
+    fn replace_fold<F: Fn(&mut Expr)>(mut self, f: F) -> Result<Expr> {
+        let mut fe = FoldExpr(Ok(()), &f);
+        let _ = self.walk_mut(&mut fe);
+        fe.0.map(|_| self)
+    }
+}
+
+struct FoldExpr<'a, F>(Result<()>, &'a F);
+
+impl<'a, F> FoldExpr<'a, F> {
+    fn update(&mut self, res: Result<Option<Const>>, e: &mut Expr) -> bool {
+        match res {
+            Err(e) => {
+                self.0 = Err(e);
+                false
             }
-            FuncKind::Add => {
-                let lhs = transform(&self.args[0]);
-                let rhs = transform(&self.args[1]);
-                fold_add(&lhs, &rhs)
+            Ok(Some(c)) => {
+                *e = Expr::Const(c);
+                true
             }
-            FuncKind::Sub => {
-                let lhs = transform(&self.args[0]);
-                let rhs = transform(&self.args[1]);
-                fold_sub(&lhs, &rhs)
-            }
-            _ => Ok(None),
+            Ok(None) => true,
         }
     }
 }
 
-impl ConstFold for Pred {
-    fn transform_fold<T: Fn(&Expr) -> Cow<'_, Expr>>(&self, transform: T) -> Result<Option<Const>> {
-        match self {
-            Pred::Not(e) => {
-                let arg = transform(e);
-                fold_not(&arg)
-            }
-            Pred::Func(PredFunc { kind, args }) => match kind {
-                PredFuncKind::Equal => {
-                    let lhs = transform(&args[0]);
-                    let rhs = transform(&args[1]);
-                    fold_eq(&lhs, &rhs)
-                }
-                PredFuncKind::Greater => {
-                    let lhs = transform(&args[0]);
-                    let rhs = transform(&args[1]);
-                    fold_gt(&lhs, &rhs)
-                }
-                PredFuncKind::GreaterEqual => {
-                    let lhs = transform(&args[0]);
-                    let rhs = transform(&args[1]);
-                    fold_ge(&lhs, &rhs)
-                }
-                PredFuncKind::Less => {
-                    let lhs = transform(&args[0]);
-                    let rhs = transform(&args[1]);
-                    fold_lt(&lhs, &rhs)
-                }
-                PredFuncKind::LessEqual => {
-                    let lhs = transform(&args[0]);
-                    let rhs = transform(&args[1]);
-                    fold_le(&lhs, &rhs)
-                }
-                PredFuncKind::NotEqual => {
-                    let lhs = transform(&args[0]);
-                    let rhs = transform(&args[1]);
-                    fold_ne(&lhs, &rhs)
-                }
-                PredFuncKind::SafeEqual => {
-                    let lhs = transform(&args[0]);
-                    let rhs = transform(&args[1]);
-                    fold_safeeq(&lhs, &rhs)
-                }
-                PredFuncKind::IsNull => {
-                    let arg = transform(&args[0]);
-                    fold_isnull(&arg)
-                }
-                PredFuncKind::IsNotNull => {
-                    let arg = transform(&args[0]);
-                    fold_isnotnull(&arg)
-                }
-                PredFuncKind::IsTrue => {
-                    let arg = transform(&args[0]);
-                    fold_istrue(&arg)
-                }
-                PredFuncKind::IsNotTrue => {
-                    let arg = transform(&args[0]);
-                    fold_isnottrue(&arg)
-                }
-                PredFuncKind::IsFalse => {
-                    let arg = transform(&args[0]);
-                    fold_isfalse(&arg)
-                }
-                PredFuncKind::IsNotFalse => {
-                    let arg = transform(&args[0]);
-                    fold_isnotfalse(&arg)
-                }
-                _ => Ok(None),
+impl<'a, F: Fn(&mut Expr)> ExprMutVisitor for FoldExpr<'a, F> {
+    fn leave(&mut self, e: &mut Expr) -> bool {
+        (self.1)(e);
+        match e {
+            Expr::Const(_) => true,
+            Expr::Func(Func { kind, args }) => match kind {
+                FuncKind::Neg => self.update(fold_neg(&args[0]), e),
+                FuncKind::Add => self.update(fold_add(&args[0], &args[1]), e),
+                FuncKind::Sub => self.update(fold_sub(&args[0], &args[1]), e),
+                _ => true, // todo: fold more functions
             },
-            _ => Ok(None),
+            Expr::Pred(Pred::Not(arg)) => self.update(fold_not(arg), e),
+            Expr::Pred(Pred::Func(PredFunc { kind, args })) => match kind {
+                PredFuncKind::Equal => self.update(fold_eq(&args[0], &args[1]), e),
+                PredFuncKind::Greater => self.update(fold_gt(&args[0], &args[1]), e),
+                PredFuncKind::GreaterEqual => self.update(fold_ge(&args[0], &args[1]), e),
+                PredFuncKind::Less => self.update(fold_lt(&args[0], &args[1]), e),
+                PredFuncKind::LessEqual => self.update(fold_le(&args[0], &args[1]), e),
+                PredFuncKind::NotEqual => self.update(fold_ne(&args[0], &args[1]), e),
+                PredFuncKind::SafeEqual => self.update(fold_safeeq(&args[0], &args[1]), e),
+                PredFuncKind::IsNull => self.update(fold_isnull(&args[0]), e),
+                PredFuncKind::IsNotNull => self.update(fold_isnotnull(&args[0]), e),
+                PredFuncKind::IsTrue => self.update(fold_istrue(&args[0]), e),
+                PredFuncKind::IsNotTrue => self.update(fold_isnottrue(&args[0]), e),
+                PredFuncKind::IsFalse => self.update(fold_isfalse(&args[0]), e),
+                PredFuncKind::IsNotFalse => self.update(fold_isnotfalse(&args[0]), e),
+                _ => true,
+            },
+            _ => true, // todo: fold other expressions
         }
     }
 }
