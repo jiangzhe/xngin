@@ -3,16 +3,15 @@ pub(crate) mod tests;
 
 use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
-use crate::op::{Join, JoinKind, JoinOp, Op, OpMutVisitor, SetopKind, SortItem};
+use crate::join::{Join, JoinKind, JoinOp};
+use crate::op::{Op, OpMutVisitor, SetopKind, SortItem};
 use crate::query::{Location, QueryPlan, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
 use crate::scope::{Scope, Scopes};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
-use xngin_expr::{
-    self as expr, Col, ExprMutVisitor, Plhd, Pred, PredFuncKind, QueryID, Setq, SubqKind,
-};
+use xngin_expr::{self as expr, Col, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind};
 use xngin_frontend::ast::*;
 
 pub struct PlanBuilder {
@@ -66,12 +65,11 @@ impl PlanBuilder {
         // first setup subqueries
         for PlaceholderQuery { uid, kind, qry, .. } in phc.subqueries {
             let QueryExpr { with, query } = qry;
-            let (query_id, correlated) = self.build_subquery(with, query, true)?;
+            let (query_id, _) = self.build_subquery(with, query, true)?;
             let _ = root.walk_mut(&mut ReplaceSubq {
                 uid,
                 kind,
                 query_id,
-                correlated,
                 updated: false,
             });
         }
@@ -410,17 +408,13 @@ impl PlanBuilder {
         // build the whole operator tree
         // a) build root operator
         let mut root = if from.len() == 1 {
-            match from.into_iter().next().unwrap() {
-                JoinOp::Query(query_id) => Op::Query(query_id),
-                JoinOp::Join(j) => Op::Join(j),
-                _ => unreachable!("FROM clause only generate operators subquery and join"),
-            }
+            from.into_iter().next().unwrap().into()
         } else {
             Op::cross_join(from)
         };
         // b) build Filt operator
         if let Some(pred) = filter {
-            root = Op::filt(pred, root);
+            root = Op::filt(pred.into_conj(), root);
         }
         // c) build Aggr operator
         if !groups.is_empty() || scalar_aggr {
@@ -435,7 +429,7 @@ impl PlanBuilder {
         }
         // e) build Filter operator from HAVING clause
         if let Some(pred) = having {
-            root = Op::filt(pred, root);
+            root = Op::filt(pred.into_conj(), root);
         }
         // f) build Sort operator
         if !order.is_empty() {
@@ -600,7 +594,7 @@ impl PlanBuilder {
                     let (left, mut aliases) = self.setup_table_ref(&cj.left, phc)?;
                     let (right, right_aliases) = self.setup_table_primitive(&cj.right, phc)?;
                     aliases.extend(right_aliases);
-                    (JoinOp::join(Join::Cross(vec![left, right])), aliases)
+                    (JoinOp::cross(vec![left, right]), aliases)
                 }
                 TableJoin::Natural(_) => {
                     // Currently natural join not supported.
@@ -693,12 +687,7 @@ impl PlanBuilder {
                                     ));
                                 }
                                 left_aliases.extend(right_aliases);
-                                let pred = if preds.len() == 1 {
-                                    preds.pop().must_ok()?
-                                } else {
-                                    expr::Expr::Pred(Pred::Conj(preds))
-                                };
-                                (pred, left_aliases)
+                                (preds, left_aliases)
                             }
                             JoinCondition::Conds(e) => {
                                 left_aliases.extend(right_aliases);
@@ -713,28 +702,28 @@ impl PlanBuilder {
                                 };
                                 let pred =
                                     resolver.resolve_expr(e, "join condition", phc, false)?;
-                                (pred, left_aliases)
+                                (pred.into_conj(), left_aliases)
                             }
                         }
                     } else {
                         left_aliases.extend(right_aliases);
-                        (expr::Expr::const_bool(true), left_aliases)
+                        (vec![], left_aliases)
                     };
                     // join type in JOIN clause only support INNER, LEFT, RIGHT, FULL.
                     let op = match qj.ty {
                         JoinType::Inner => {
-                            JoinOp::join(Join::qualified(JoinKind::Inner, left, right, cond))
+                            JoinOp::qualified(JoinKind::Inner, left, right, cond, vec![])
                         }
                         JoinType::Left => {
-                            JoinOp::join(Join::qualified(JoinKind::Left, left, right, cond))
+                            JoinOp::qualified(JoinKind::Left, left, right, cond, vec![])
                         }
                         // It's safe to convert right join to left join because the query aliases stores tables in original sequence,
                         // and the projection list is generated using that sequence.
                         JoinType::Right => {
-                            JoinOp::join(Join::qualified(JoinKind::Left, right, left, cond))
+                            JoinOp::qualified(JoinKind::Left, right, left, cond, vec![])
                         }
                         JoinType::Full => {
-                            JoinOp::join(Join::qualified(JoinKind::Full, left, right, cond))
+                            JoinOp::qualified(JoinKind::Full, left, right, cond, vec![])
                         }
                     };
                     (op, aliases)
@@ -797,7 +786,7 @@ impl PlanBuilder {
                     .curr_scope_mut()
                     .query_aliases
                     .insert_query(tbl_alias.clone(), query_id)?;
-                (JoinOp::Query(query_id), tbl_alias)
+                (JoinOp::query(query_id), tbl_alias)
             }
             TablePrimitive::Derived(subq, alias) => {
                 // Non-lateral derived table can not refer to outer values.
@@ -811,7 +800,7 @@ impl PlanBuilder {
                     .curr_scope_mut()
                     .query_aliases
                     .insert_query(alias.clone(), query_id)?;
-                (JoinOp::Query(query_id), alias)
+                (JoinOp::query(query_id), alias)
             }
         };
         Ok((plan, vec![alias]))
@@ -1182,7 +1171,6 @@ struct ReplaceSubq {
     uid: u32,
     kind: SubqKind,
     query_id: QueryID,
-    correlated: bool,
     updated: bool,
 }
 
@@ -1199,7 +1187,9 @@ impl OpMutVisitor for ReplaceSubq {
                 }
             }
             Op::Filt(filt) => {
-                let _ = filt.pred.walk_mut(self);
+                for e in &mut filt.pred {
+                    let _ = e.walk_mut(self);
+                }
                 if self.updated {
                     return false;
                 }
@@ -1220,7 +1210,9 @@ impl OpMutVisitor for ReplaceSubq {
             }
             Op::Join(join) => {
                 if let Join::Qualified(qj) = join.as_mut() {
-                    let _ = qj.cond.walk_mut(self);
+                    for e in qj.cond.iter_mut().chain(qj.filt.iter_mut()) {
+                        let _ = e.walk_mut(self);
+                    }
                     if self.updated {
                         return false;
                     }

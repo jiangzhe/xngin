@@ -1,5 +1,6 @@
 use smol_str::SmolStr;
 use thiserror::Error;
+use xngin_expr::QueryID;
 use xngin_frontend::ast::Ident;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -70,6 +71,14 @@ pub enum Error {
     MustOK,
     #[error(transparent)]
     ExprError(#[from] xngin_expr::error::Error),
+    #[error("Too many tables to join")]
+    TooManyTablesToJoin,
+    #[error("Query {0} not found")]
+    QueryNotFound(QueryID),
+    #[error("Invalid join vertex set")]
+    InvalidJoinVertexSet,
+    #[error("Invalid join transformation")]
+    InvalidJoinTransformation,
 }
 
 impl Error {

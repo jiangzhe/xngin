@@ -15,7 +15,7 @@ pub fn expr_simplify(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> 
 }
 
 fn simplify_expr(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
-    qry_set.transform_op(qry_id, |qry_set, op| {
+    qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut es = ExprSimplify {
             qry_set,
             res: Ok(()),
@@ -58,7 +58,15 @@ impl ExprMutVisitor for ExprSimplify<'_> {
 }
 
 /// Simplify expression.
+#[inline]
 pub(super) fn simplify_single(e: &mut Expr) -> Result<()> {
+    update_simplify_single(e, |_| {})
+}
+
+/// Try updating the expression, and then simplify it.
+#[inline]
+pub(super) fn update_simplify_single<F: Fn(&mut Expr)>(e: &mut Expr, f: F) -> Result<()> {
+    f(e);
     match e {
         Expr::Func(f) => {
             if let Some(new) = simplify_func(f)? {
@@ -1159,8 +1167,8 @@ mod tests {
             |s1, mut q1| {
                 expr_simplify(&mut q1).unwrap();
                 print_plan(s1, &q1);
-                match get_filt_expr(&q1) {
-                    Some(Expr::Pred(Pred::NotExists(_))) => (),
+                match get_filt_expr(&q1).as_slice() {
+                    [Expr::Pred(Pred::NotExists(_))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
@@ -1175,8 +1183,8 @@ mod tests {
             |s1, mut q1| {
                 expr_simplify(&mut q1).unwrap();
                 print_plan(s1, &q1);
-                match get_filt_expr(&q1) {
-                    Some(Expr::Pred(Pred::Exists(_))) => (),
+                match get_filt_expr(&q1).as_slice() {
+                    [Expr::Pred(Pred::Exists(_))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
@@ -1191,8 +1199,8 @@ mod tests {
             |s1, mut q1| {
                 expr_simplify(&mut q1).unwrap();
                 print_plan(s1, &q1);
-                match get_filt_expr(&q1) {
-                    Some(Expr::Pred(Pred::NotInSubquery(..))) => (),
+                match get_filt_expr(&q1).as_slice() {
+                    [Expr::Pred(Pred::NotInSubquery(..))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
@@ -1214,8 +1222,8 @@ mod tests {
             |s1, mut q1| {
                 expr_simplify(&mut q1).unwrap();
                 print_plan(s1, &q1);
-                match get_filt_expr(&q1) {
-                    Some(Expr::Pred(Pred::InSubquery(..))) => (),
+                match get_filt_expr(&q1).as_slice() {
+                    [Expr::Pred(Pred::InSubquery(..))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
@@ -1824,14 +1832,14 @@ mod tests {
 
     fn assert_col_rejects_null(s1: &str, q1: QueryPlan) {
         print_plan(s1, &q1);
-        let filter = get_filt_expr(&q1).unwrap();
-        assert!(expr_rejects_null(&filter))
+        let filter = get_filt_expr(&q1);
+        assert!(expr_rejects_null(&Expr::pred_conj(filter)))
     }
 
     fn assert_col_not_rejects_null(s1: &str, q1: QueryPlan) {
         print_plan(s1, &q1);
-        let filter = get_filt_expr(&q1).unwrap();
-        assert!(!expr_rejects_null(&filter))
+        let filter = get_filt_expr(&q1);
+        assert!(!expr_rejects_null(&Expr::pred_conj(filter)))
     }
 
     // convert all columns in expressions to null and check if it rejects null

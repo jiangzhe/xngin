@@ -1,9 +1,8 @@
-use crate::op::{
-    Aggr, Apply, Filt, Join, Limit, Op, OpVisitor, Proj, QualifiedJoin, Setop, Sort, SortItem,
-};
+use crate::join::{Join, JoinEdge, JoinGraph, QualifiedJoin};
+use crate::op::{Aggr, Apply, Filt, Limit, Op, OpVisitor, Proj, Setop, Sort, SortItem};
 use crate::query::{QueryPlan, QuerySet};
 use std::fmt::{self, Write};
-use xngin_expr::{AggKind, Aggf, Col, Const, Expr, Func, Pred, PredFunc, Setq};
+use xngin_expr::{AggKind, Aggf, Col, Const, Expr, Func, Pred, PredFunc, QueryID, Setq};
 
 const INDENT: usize = 4;
 const BRANCH_1: char = '└';
@@ -46,6 +45,7 @@ impl Explain for Op {
             Op::Aggr(aggr) => aggr.explain(f),
             Op::Sort(sort) => sort.explain(f),
             Op::Join(join) => join.explain(f),
+            Op::JoinGraph(graph) => graph.explain(f),
             Op::Setop(setop) => setop.explain(f),
             Op::Limit(limit) => limit.explain(f),
             Op::Apply(apply) => apply.explain(f),
@@ -74,7 +74,10 @@ impl Explain for Proj {
 impl Explain for Filt {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Filt{")?;
-        self.pred.explain(f)?;
+        if !self.pred.is_empty() {
+            write_exprs(f, &self.pred, " and ")?;
+        }
+
         f.write_char('}')
     }
 }
@@ -111,14 +114,57 @@ impl Explain for Join {
         f.write_str("Join{")?;
         match self {
             Join::Cross(_) => f.write_str("cross")?,
-            Join::Qualified(QualifiedJoin { kind, cond, .. }) => {
-                f.write_str("qualified, ")?;
+            Join::Qualified(QualifiedJoin {
+                kind, cond, filt, ..
+            }) => {
                 f.write_str(kind.to_lower())?;
-                f.write_str(", cond=")?;
-                cond.explain(f)?
+                if !cond.is_empty() {
+                    f.write_str(", cond=[")?;
+                    write_exprs(f, cond, " and ")?;
+                    f.write_char(']')?
+                }
+                if !filt.is_empty() {
+                    f.write_str(", filt=[")?;
+                    write_exprs(f, filt, " and ")?;
+                    f.write_char(']')?
+                }
             }
         }
         f.write_char('}')
+    }
+}
+
+impl Explain for JoinGraph {
+    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+        f.write_str("JoinGraph{vs=[")?;
+        write_exprs(f, &self.queries(), ", ")?;
+        f.write_str("]")?;
+        if !self.edges.is_empty() {
+            f.write_str(", es=[{")?;
+            write_exprs(f, self.edges.values(), "}, {")?;
+            f.write_str("}]")?
+        }
+        f.write_char('}')
+    }
+}
+
+impl Explain for QueryID {
+    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+        write!(f, "q{}", **self)
+    }
+}
+
+impl Explain for JoinEdge {
+    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+        f.write_str(self.kind.to_lower())?;
+        // currently do not support display left, right and arbitrary
+        f.write_str(", cond=[")?;
+        write_exprs(f, &self.cond, " and ")?;
+        if !self.filt.is_empty() {
+            f.write_str("], filt=[")?;
+            write_exprs(f, &self.filt, " and ")?;
+        }
+        f.write_char(']')
     }
 }
 
@@ -435,7 +481,7 @@ mod tests {
     fn test_explain_plan() {
         let cat = tpch_catalog();
         for sql in vec![
-            "select 1, true, 1.0e2",
+            "select 1, true, 1.0e2, 1 & 2, 1 | 2, 1 << 2, 1 >> 2, 1 and 2, 1 or 2, 1 xor 2",
             "with cte1 as (select 1), cte2 as (select 2) select * from cte1",
             "select l1.l_orderkey from lineitem l1, lineitem l2",
             "select l_orderkey from lineitem union all select l_orderkey from lineitem",
