@@ -1,13 +1,10 @@
 use crate::error::{Error, Result};
-use crate::op::{Aggr, Filt, Join, JoinKind, Op, OpMutVisitor, QualifiedJoin};
+use crate::op::{Filt, Op, OpMutVisitor};
 use crate::query::{QueryPlan, QuerySet};
 use crate::rule::expr_simplify::simplify_single;
 use indexmap::IndexSet;
 use smol_str::SmolStr;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 use std::mem;
-use xngin_expr::fold::Fold;
 use xngin_expr::{Col, Const, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Pushdown predicates.
@@ -17,7 +14,7 @@ pub fn pred_pushdown(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> 
 }
 
 fn pushdown_pred(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
-    qry_set.transform_op(qry_id, |qry_set, op| {
+    qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut ppd = PredPushdown {
             qry_set,
             res: Ok(()),
@@ -36,36 +33,32 @@ impl OpMutVisitor for PredPushdown<'_> {
     fn enter(&mut self, op: &mut Op) -> bool {
         match op {
             Op::Filt(Filt { pred, source }) => {
-                // 1. Collect QueryID from predicate
-                // do not take care of const predicate, which is handle
-                // by operator eliminate rule.
-                let mut pred_item = ExprItem::new(mem::take(pred));
-                let attr = pred_item.load_attr();
-                if !attr.has_aggf && attr.qry_ids.len() == 1 {
-                    // 2. Only involve single table and no aggregation function,
-                    // try pushing down entire predicate
-                    match push_single(self.qry_set, source, pred_item) {
-                        Ok(None) => {
-                            // the only predicate is pushed down,
-                            // current filter can be removed.
-                            let source = mem::take(source.as_mut());
-                            *op = source;
-                            return self.enter(op);
-                        }
+                let mut fallback = vec![];
+                for e in mem::take(pred) {
+                    let item = ExprItem::new(e);
+                    match push_single(self.qry_set, source, item) {
+                        Ok(None) => (),
                         Ok(Some(p)) => {
-                            // child rejects the predicate, update it back
-                            *pred = p.e;
+                            // child rejects the predicate, add it to fallback
+                            fallback.push(p.e);
                         }
                         Err(e) => {
                             self.res = Err(e);
                             return false;
                         }
                     }
-                } else {
-                    // 3. Split CNF predicates and recursively push down each of them.
-                    todo!()
                 }
-                true
+                if fallback.is_empty() {
+                    // all predicates are pushed down, current operator can be removed.
+                    let source = mem::take(source.as_mut());
+                    *op = source;
+                    self.enter(op)
+                } else {
+                    // still have certain predicates can not be pushed down,
+                    // update them back
+                    *pred = fallback;
+                    true
+                }
             }
             _ => true,
         }
@@ -97,16 +90,11 @@ struct ExprItem {
     e: Expr,
     // lazy field
     attr: Option<ExprAttr>,
-    reject_nulls: Option<HashMap<QueryID, bool>>,
 }
 
 impl ExprItem {
     fn new(e: Expr) -> Self {
-        ExprItem {
-            e,
-            attr: None,
-            reject_nulls: None,
-        }
+        ExprItem { e, attr: None }
     }
 
     fn load_attr(&mut self) -> &ExprAttr {
@@ -120,41 +108,9 @@ impl ExprItem {
 
     fn reset(&mut self) {
         self.attr = None;
-        self.reject_nulls = None;
-    }
-
-    // check if the expression rejects null on given query id
-    fn load_reject_null(&mut self, qry_id: QueryID) -> Result<bool> {
-        if self.reject_nulls.is_none() {
-            let mut m = HashMap::new();
-            let e = self.e.clone(); // current approach is to try folding entire expression, so clone() is necessary.
-            let res = e.reject_null(|e| match e {
-                Expr::Col(Col::QueryCol(qid, _)) if *qid == qry_id => *e = Expr::const_null(),
-                _ => (),
-            })?;
-            m.insert(qry_id, res);
-            Ok(res)
-        } else {
-            let m = self.reject_nulls.as_mut().unwrap();
-            match m.entry(qry_id) {
-                Entry::Occupied(ent) => Ok(*ent.get()),
-                Entry::Vacant(vac) => {
-                    let e = self.e.clone();
-                    let res = e.reject_null(|e| match e {
-                        Expr::Col(Col::QueryCol(qid, _)) if *qid == qry_id => {
-                            *e = Expr::const_null()
-                        }
-                        _ => (),
-                    })?;
-                    vac.insert(res);
-                    Ok(res)
-                }
-            }
-        }
     }
 }
 
-// recursively push pred to its child.
 fn push_single(
     qry_set: &mut QuerySet,
     op: &mut Op,
@@ -181,7 +137,7 @@ fn push_single(
                     }
                     _ => (),
                 }
-                qry_set.transform_op(*qry_id, |qry_set, op| {
+                qry_set.transform_op(*qry_id, |qry_set, _, op| {
                     assert!(push_single(qry_set, op, pred)?.is_none()); // this push must succeed
                     Ok::<_, Error>(())
                 })??;
@@ -202,15 +158,21 @@ fn push_single(
             if pred.load_attr().has_aggf {
                 Some(pred)
             } else {
-                // after the validation, all expression that does not hold aggregate
+                // after the validation, all expressions containing no aggregate
                 // functions can be pushed down through Aggr operator, as they can
                 // only be composite of group columns, constants and functions.
                 match push_single(qry_set, &mut aggr.source, pred)? {
                     Some(pred) => {
-                        // we cannot simply return None, because Aggr operator may be the root
-                        // operator of a query, so we replace itself with the filter
-                        let old = mem::take(op);
-                        *op = Op::filt(pred.e, old);
+                        // always accept the pushed predicates as post-filter
+                        let mut old = mem::take(&mut aggr.filt);
+                        old.push(pred.e);
+                        if old.len() > 1 {
+                            let mut new = Expr::pred_conj(old);
+                            simplify_single(&mut new)?;
+                            aggr.filt = new.into_conj();
+                        } else {
+                            aggr.filt = old;
+                        }
                         None
                     }
                     None => None,
@@ -219,10 +181,11 @@ fn push_single(
         }
         Op::Filt(filt) => match push_single(qry_set, &mut filt.source, pred)? {
             Some(pred) => {
-                let old = mem::take(&mut filt.pred);
-                let mut new = Expr::pred_and(old, pred.e);
+                let mut old = mem::take(&mut filt.pred);
+                old.push(pred.e);
+                let mut new = Expr::pred_conj(old);
                 simplify_single(&mut new)?;
-                filt.pred = new;
+                filt.pred = new.into_conj();
                 None
             }
             None => None,
@@ -233,112 +196,24 @@ fn push_single(
             assert!(push_single(qry_set, &mut so.right, pred)?.is_none());
             None
         }
-        Op::Join(join) => {
-            let attr = pred.load_attr();
-            if attr.has_aggf {
-                Some(pred)
-            } else {
-                match attr.qry_ids.len() {
-                    0 => unreachable!(),
-                    1 => {
-                        let qry_id = attr.qry_ids.first().cloned().unwrap();
-                        // push down to single table
-                        match join.as_mut() {
-                            Join::Cross(tbls) => {
-                                let tbl = tbls
-                                    .iter_mut()
-                                    .find(|t| t.contains_qry(qry_id))
-                                    .ok_or_else(|| {
-                                        Error::InternalError(format!("Query {} not found", *qry_id))
-                                    })?;
-                                // push must succeed
-                                assert!(push_single(qry_set, tbl, pred)?.is_none());
-                                None
-                            }
-                            Join::Qualified(QualifiedJoin {
-                                kind, left, right, ..
-                            }) => match kind {
-                                JoinKind::Inner => {
-                                    if left.contains_qry(qry_id) {
-                                        assert!(push_single(qry_set, left, pred)?.is_none());
-                                        None
-                                    } else if right.contains_qry(qry_id) {
-                                        assert!(push_single(qry_set, right, pred)?.is_none());
-                                        None
-                                    } else {
-                                        return Err(Error::InternalError(format!(
-                                            "Query {} not found",
-                                            *qry_id
-                                        )));
-                                    }
-                                }
-                                JoinKind::Left => {
-                                    if left.contains_qry(qry_id) {
-                                        // predicate on left table in left join can be directly pushed down.
-                                        assert!(push_single(qry_set, left, pred)?.is_none());
-                                        None
-                                    } else if right.contains_qry(qry_id) {
-                                        // predicate on right table in left join may or may not change the join type,
-                                        // depending on whether the expression rejects null.
-                                        if pred.load_reject_null(qry_id)? {
-                                            // convert outer join to inner join and push to right side
-                                            *kind = JoinKind::Inner;
-                                            assert!(push_single(qry_set, right, pred)?.is_none());
-                                            None
-                                        } else {
-                                            // can neither convert join type nor push
-                                            Some(pred)
-                                        }
-                                    } else {
-                                        return Err(Error::InternalError(format!(
-                                            "Query {} not found",
-                                            *qry_id
-                                        )));
-                                    }
-                                }
-                                JoinKind::Full => {
-                                    if left.contains_qry(qry_id) {
-                                        if pred.load_reject_null(qry_id)? {
-                                            // convert full join to left join and push to left side
-                                            *kind = JoinKind::Left;
-                                            assert!(push_single(qry_set, left, pred)?.is_none());
-                                            None
-                                        } else {
-                                            Some(pred)
-                                        }
-                                    } else if right.contains_qry(qry_id) {
-                                        if pred.load_reject_null(qry_id)? {
-                                            // convert full join to right join, but we don't have right join,
-                                            // so convert to left join and swap left and right children, push to left side.
-                                            *kind = JoinKind::Left;
-                                            mem::swap(left, right);
-                                            assert!(push_single(qry_set, left, pred)?.is_none());
-                                            None
-                                        } else {
-                                            Some(pred)
-                                        }
-                                    } else {
-                                        return Err(Error::InternalError(format!(
-                                            "Query {} not found",
-                                            *qry_id
-                                        )));
-                                    }
-                                }
-                                JoinKind::Semi
-                                | JoinKind::AntiSemi
-                                | JoinKind::Mark
-                                | JoinKind::Single => todo!(),
-                            },
-                        }
+        Op::Join(_) => {
+            unreachable!("Directly push down to join operator not supported")
+        }
+        Op::JoinGraph(graph) => {
+            let extra = graph.add_single_filt(pred.e)?;
+            for (e, qry_id) in extra {
+                // try pushing extra expressions
+                qry_set.transform_op(qry_id, |qry_set, _, op| {
+                    match push_single(qry_set, op, ExprItem::new(e)) {
+                        Ok(None) => Ok(()),
+                        Err(e) => Err(e),
+                        _ => Err(Error::InternalError(
+                            "Predicate pushdown failed on subquery".to_string(),
+                        )),
                     }
-                    2 => {
-                        todo!()
-                    }
-                    _ => {
-                        todo!()
-                    }
-                }
+                })??;
             }
+            None
         }
     };
     Ok(res)
@@ -349,7 +224,7 @@ fn push_or_accept(qry_set: &mut QuerySet, op: &mut Op, pred: ExprItem) -> Result
     match push_single(qry_set, source, pred)? {
         Some(pred) => {
             let child = mem::take(source);
-            let new_filt = Op::filt(pred.e, child);
+            let new_filt = Op::filt(vec![pred.e], child);
             *source = new_filt;
             Ok(None)
         }
@@ -370,12 +245,9 @@ struct RewriteOutExpr<'a> {
 impl ExprMutVisitor for RewriteOutExpr<'_> {
     #[inline]
     fn leave(&mut self, e: &mut Expr) -> bool {
-        match e {
-            Expr::Col(Col::QueryCol(_, idx)) => {
-                let (new_e, _) = &self.out[*idx as usize];
-                *e = new_e.clone();
-            }
-            _ => (),
+        if let Expr::Col(Col::QueryCol(_, idx)) = e {
+            let (new_e, _) = &self.out[*idx as usize];
+            *e = new_e.clone();
         }
         true
     }
@@ -387,11 +259,13 @@ mod tests {
     use crate::builder::tests::{
         assert_j_plan1, get_subq_by_location, get_subq_filt_expr, j_catalog, print_plan,
     };
+    use crate::join::{JoinGraph, JoinKind};
+    use crate::op::OpVisitor;
     use crate::query::Location;
+    use crate::rule::joingraph_initialize;
 
-    // push single table
     #[test]
-    fn test_pred_pushdown1() {
+    fn test_pred_pushdown_single_table() {
         let cat = j_catalog();
         assert_j_plan1(
             &cat,
@@ -420,9 +294,8 @@ mod tests {
         );
     }
 
-    // push cross join
     #[test]
-    fn test_pred_pushdown2() {
+    fn test_pred_pushdown_cross_join() {
         let cat = j_catalog();
         assert_j_plan1(
             &cat,
@@ -446,9 +319,8 @@ mod tests {
         );
     }
 
-    // push inner join
     #[test]
-    fn test_pred_pushdown3() {
+    fn test_pred_pushdown_inner_join() {
         let cat = j_catalog();
         assert_j_plan1(
             &cat,
@@ -477,34 +349,250 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_pred_pushdown_left_join() {
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 left join t2 where t1.c1 = 0",
+            assert_filt_on_disk_table1,
+        );
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 left join t2 where c2 = 0",
+            assert_filt_on_disk_table1r,
+        );
+        // filter expression NOT rejects null, so cannot be pushed
+        // to table scan.
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 left join t2 where c2 is null",
+            assert_no_filt_on_disk_table,
+        );
+        // involve both sides, cannot be pushed to table scan,
+        // join type will be converted to inner join.
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 left join t2 where t1.c1 = c2",
+            assert_no_filt_on_disk_table,
+        );
+        assert_j_plan1(
+            &cat,
+            "select t1.c1 from t1 left join t2 having t1.c1 = 0 order by c1",
+            assert_filt_on_disk_table1,
+        );
+        assert_j_plan1(
+            &cat,
+            "select 1 from (select t1.c1 from t1 left join t2) x1 where x1.c1 = 0",
+            assert_filt_on_disk_table1,
+        );
+        assert_j_plan1(
+            &cat,
+            "select t1.c1, c2, count(*) from t1 left join t2 where t1.c1 = 0 group by t1.c1, t2.c2 having c2 > 100",
+            assert_filt_on_disk_table2,
+        );
+        // one left join converted to inner join
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 left join t2 left join t3 on t1.c1 = t3.c3 where t1.c1 = t2.c2",
+            |s1: &str, mut q1: QueryPlan| {
+                joingraph_initialize(&mut q1).unwrap();
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let g = extract_join_graph(&subq.root).unwrap();
+                // one inner join, one left join
+                assert_eq!(2, g.edges.len());
+                assert_eq!(
+                    1,
+                    g.edges
+                        .values()
+                        .filter(|e| e.kind == JoinKind::Inner)
+                        .count()
+                );
+                assert_eq!(
+                    1,
+                    g.edges
+                        .values()
+                        .filter(|e| e.kind == JoinKind::Left)
+                        .count()
+                );
+            },
+        );
+        // both left joins converted to inner joins, and one more inner join added.
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 left join t2 left join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c3 where t2.c2 = t3.c3",
+            |s1: &str, mut q1: QueryPlan| {
+                joingraph_initialize(&mut q1).unwrap();
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let g = extract_join_graph(&subq.root).unwrap();
+                // one inner join, one left join
+                assert_eq!(3, g.edges.len());
+                assert!(g.edges.values().all(|e| e.kind == JoinKind::Inner));
+            }
+        );
+        // both left joins converted to inner joins, and remove as no join condition,
+        // one more inner join added.
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 left join t2 left join t3 where t2.c2 = t3.c3",
+            |s1: &str, mut q1: QueryPlan| {
+                joingraph_initialize(&mut q1).unwrap();
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let g = extract_join_graph(&subq.root).unwrap();
+                // one inner join, one left join
+                assert_eq!(1, g.edges.len());
+                assert!(g.edges.values().all(|e| e.kind == JoinKind::Inner));
+            },
+        );
+        // one is pushed as join condition, one is pushed as filter
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 join t2 left join t3 left join t4 where t1.c1 = t2.c2 and t3.c3 is null",
+            |s1: &str, mut q1: QueryPlan| {
+                joingraph_initialize(&mut q1).unwrap();
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let g = extract_join_graph(&subq.root).unwrap();
+                // one inner join, one left join
+                assert_eq!(3, g.edges.len());
+                assert_eq!(1usize, g.edges.values().map(|e| e.cond.len()).sum());
+                assert_eq!(1usize, g.edges.values().map(|e| e.filt.len()).sum());
+            }
+        );
+    }
+
+    #[test]
+    fn test_pred_pushdown_right_join() {
+        let cat = j_catalog();
+        // right join is replaced by left join, so right table 2 is t1.
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 right join t2 where t1.c1 = 0",
+            assert_filt_on_disk_table1r,
+        );
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 right join t2 where t2.c2 = 0",
+            assert_filt_on_disk_table1,
+        );
+    }
+
+    #[test]
+    fn test_pred_pushdown_full_join() {
+        let cat = j_catalog();
+        // full join converted to left join
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 full join t2 where t1.c1 = 0",
+            assert_filt_on_disk_table1,
+        );
+        // full join converted to right join, then left join
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 full join t2 where t2.c2 = 0",
+            assert_filt_on_disk_table1r,
+        );
+        // full join converted to inner join
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 full join t2 where t1.c1 = t2.c2",
+            |s1: &str, mut q1: QueryPlan| {
+                joingraph_initialize(&mut q1).unwrap();
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let g = extract_join_graph(&subq.root).unwrap();
+                assert_eq!(1, g.edges.len());
+                assert!(g.edges.values().all(|e| e.kind == JoinKind::Inner));
+            },
+        );
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 full join t2 on t1.c1 = t2.c2 where t1.c1 is null and t2.c2 is null",
+            |s1: &str, mut q1: QueryPlan| {
+                joingraph_initialize(&mut q1).unwrap();
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let g = extract_join_graph(&subq.root).unwrap();
+                assert_eq!(1, g.edges.len());
+                assert_eq!(2usize, g.edges.values().map(|e| e.filt.len()).sum());
+            },
+        );
+        // convert to left join and add one filt
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1 full join t2 on t1.c1 = t2.c2 where t1.c0 > 0 and t2.c2 is null",
+            |s1: &str, mut q1: QueryPlan| {
+                joingraph_initialize(&mut q1).unwrap();
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let g = extract_join_graph(&subq.root).unwrap();
+                assert_eq!(1, g.edges.len());
+                assert!(g.edges.values().all(|e| e.kind == JoinKind::Left));
+                assert_eq!(1usize, g.edges.values().map(|e| e.filt.len()).sum());
+            },
+        );
+    }
+
     fn assert_filt_on_disk_table1(s1: &str, mut q1: QueryPlan) {
+        joingraph_initialize(&mut q1).unwrap();
         pred_pushdown(&mut q1).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(get_subq_filt_expr(&subq1[0]).is_some());
+        assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
     }
 
     fn assert_filt_on_disk_table1r(s1: &str, mut q1: QueryPlan) {
+        joingraph_initialize(&mut q1).unwrap();
         pred_pushdown(&mut q1).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(get_subq_filt_expr(&subq1[1]).is_some());
+        assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
     }
 
     fn assert_filt_on_disk_table2(s1: &str, mut q1: QueryPlan) {
+        joingraph_initialize(&mut q1).unwrap();
         pred_pushdown(&mut q1).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(get_subq_filt_expr(&subq1[0]).is_some());
-        assert!(get_subq_filt_expr(&subq1[1]).is_some());
+        assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
+        assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
     }
 
     fn assert_no_filt_on_disk_table(s1: &str, mut q1: QueryPlan) {
+        joingraph_initialize(&mut q1).unwrap();
         pred_pushdown(&mut q1).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(subq1
             .into_iter()
-            .all(|subq| get_subq_filt_expr(subq).is_none()));
+            .all(|subq| get_subq_filt_expr(subq).is_empty()));
+    }
+
+    fn extract_join_graph(op: &Op) -> Option<JoinGraph> {
+        struct ExtractJoinGraph(Option<JoinGraph>);
+        impl OpVisitor for ExtractJoinGraph {
+            fn enter(&mut self, op: &Op) -> bool {
+                match op {
+                    Op::JoinGraph(g) => {
+                        self.0 = Some(g.as_ref().clone());
+                        false
+                    }
+                    _ => true,
+                }
+            }
+        }
+        let mut ex = ExtractJoinGraph(None);
+        let _ = op.walk(&mut ex);
+        ex.0
     }
 }

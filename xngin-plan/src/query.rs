@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
-use crate::op::{Join, JoinOp, Op, OpKind, OpMutVisitor, OpVisitor};
+use crate::join::{Join, JoinOp};
+use crate::op::{Op, OpKind, OpMutVisitor, OpVisitor};
 use crate::scope::Scope;
 use fnv::FnvHashMap;
 use slab::Slab;
@@ -141,79 +142,68 @@ pub struct QuerySet(Slab<Subquery>);
 impl QuerySet {
     #[inline]
     pub fn insert(&mut self, query: Subquery) -> QueryID {
-        let query_id = self.0.insert(query);
-        QueryID::from(query_id as u32)
+        let qry_id = self.0.insert(query);
+        QueryID::from(qry_id as u32)
     }
 
     #[inline]
-    pub fn get(&self, query_id: &QueryID) -> Option<&Subquery> {
-        self.0.get(**query_id as usize)
+    pub fn get(&self, qry_id: &QueryID) -> Option<&Subquery> {
+        self.0.get(**qry_id as usize)
     }
 
     #[inline]
-    pub fn transform_scope<T, F>(&mut self, query_id: QueryID, f: F) -> Result<T>
+    pub fn transform_scope<T, F>(&mut self, qry_id: QueryID, f: F) -> Result<T>
     where
         F: FnOnce(&mut Scope) -> T,
     {
-        if let Some(subq) = self.0.get_mut(*query_id as usize) {
+        if let Some(subq) = self.0.get_mut(*qry_id as usize) {
             return Ok(f(&mut subq.scope));
         }
-        Err(Error::InternalError(format!(
-            "Query {} not found",
-            *query_id
-        )))
+        Err(Error::QueryNotFound(qry_id))
     }
 
     #[inline]
-    pub fn transform_subq<T, F>(&mut self, query_id: QueryID, f: F) -> Result<T>
+    pub fn transform_subq<T, F>(&mut self, qry_id: QueryID, f: F) -> Result<T>
     where
         F: FnOnce(&mut Subquery) -> T,
     {
-        if let Some(subq) = self.0.get_mut(*query_id as usize) {
+        if let Some(subq) = self.0.get_mut(*qry_id as usize) {
             return Ok(f(subq));
         }
-        Err(Error::InternalError(format!(
-            "Query {} not found",
-            *query_id
-        )))
+        Err(Error::QueryNotFound(qry_id))
     }
 
     #[inline]
-    pub fn transform_op<T, F>(&mut self, query_id: QueryID, f: F) -> Result<T>
+    pub fn transform_op<T, F>(&mut self, qry_id: QueryID, f: F) -> Result<T>
     where
-        F: FnOnce(&mut QuerySet, &mut Op) -> T,
+        F: FnOnce(&mut QuerySet, Location, &mut Op) -> T,
     {
-        if let Some(subq) = self.0.get_mut(*query_id as usize) {
+        if let Some(subq) = self.0.get_mut(*qry_id as usize) {
+            let location = subq.location;
             let mut root = mem::take(&mut subq.root);
-            let res = f(self, &mut root);
+            let res = f(self, location, &mut root);
             // update root back, this always succeed because query set does not allow deletion.
-            self.0[*query_id as usize].root = root;
+            self.0[*qry_id as usize].root = root;
             return Ok(res);
         }
-        Err(Error::InternalError(format!(
-            "Query {} not found",
-            *query_id
-        )))
+        Err(Error::QueryNotFound(qry_id))
     }
 
     #[inline]
-    pub fn transform<T, F1, F2>(&mut self, query_id: QueryID, f1: F1, f2: F2) -> Result<T>
+    pub fn transform<T, F1, F2>(&mut self, qry_id: QueryID, f1: F1, f2: F2) -> Result<T>
     where
         F1: FnOnce(&mut Subquery),
         F2: FnOnce(&mut QuerySet, &mut Op) -> T,
     {
-        if let Some(subq) = self.0.get_mut(*query_id as usize) {
+        if let Some(subq) = self.0.get_mut(*qry_id as usize) {
             f1(subq);
             let mut root = mem::take(&mut subq.root);
             let res = f2(self, &mut root);
             // update root back, this always succeed because query set does not allow deletion.
-            self.0[*query_id as usize].root = root;
+            self.0[*qry_id as usize].root = root;
             return Ok(res);
         }
-        Err(Error::InternalError(format!(
-            "Query {} not found",
-            *query_id
-        )))
+        Err(Error::QueryNotFound(qry_id))
     }
 
     /// Deep copy a query given its id.
@@ -223,12 +213,12 @@ impl QuerySet {
     /// NOTE: Inner scope contains variables referring changed query ids.
     ///       We should also change them.
     #[inline]
-    pub fn copy_query(&mut self, query_id: &QueryID) -> Result<QueryID> {
-        if let Some(sq) = self.get(query_id) {
+    pub fn copy_query(&mut self, qry_id: &QueryID) -> Result<QueryID> {
+        if let Some(sq) = self.get(qry_id) {
             let sq = sq.clone();
             Ok(self.upsert_query(sq))
         } else {
-            Err(Error::InternalError("Query not found".to_string()))
+            Err(Error::QueryNotFound(*qry_id))
         }
     }
 
@@ -266,14 +256,14 @@ struct UpsertQuery<'a> {
 impl UpsertQuery<'_> {
     #[inline]
     fn modify_join_op(&mut self, jo: &mut JoinOp) {
-        match jo {
-            JoinOp::Query(query_id) => {
+        match jo.as_mut() {
+            Op::Query(query_id) => {
                 let query = self.qs.get(query_id).cloned().unwrap(); // won't fail
                 let new_query_id = self.qs.upsert_query(query);
                 self.mapping.insert(*query_id, new_query_id);
                 *query_id = new_query_id;
             }
-            JoinOp::Join(j) => {
+            Op::Join(j) => {
                 self.modify_join(j);
             }
             _ => unreachable!(),

@@ -1,6 +1,7 @@
 use crate::func::{Func, FuncKind};
 use crate::pred::{Pred, PredFuncKind};
 use smallvec::{smallvec, SmallVec};
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -82,23 +83,33 @@ impl Expr {
     }
 
     #[inline]
+    pub fn pred_conj(mut exprs: Vec<Expr>) -> Self {
+        assert!(!exprs.is_empty());
+        if exprs.len() == 1 {
+            exprs.pop().unwrap()
+        } else {
+            Expr::pred_conj(exprs)
+        }
+    }
+
+    #[inline]
     pub fn pred_and(lhs: Expr, rhs: Expr) -> Self {
         match (lhs, rhs) {
             (Expr::Pred(Pred::Conj(mut lhs)), Expr::Pred(Pred::Conj(rhs))) => {
                 lhs.extend(rhs);
-                Expr::Pred(Pred::Conj(lhs))
+                Expr::pred_conj(lhs)
             }
             (Expr::Pred(Pred::Conj(mut lhs)), rhs) => {
                 lhs.push(rhs);
-                Expr::Pred(Pred::Conj(lhs))
+                Expr::pred_conj(lhs)
             }
             (lhs, Expr::Pred(Pred::Conj(rhs))) => {
                 let mut vs = Vec::with_capacity(rhs.len() + 1);
                 vs.push(lhs);
                 vs.extend(rhs);
-                Expr::Pred(Pred::Conj(vs))
+                Expr::pred_conj(vs)
             }
-            (lhs, rhs) => Expr::Pred(Pred::Conj(vec![lhs, rhs])),
+            (lhs, rhs) => Expr::pred_conj(vec![lhs, rhs]),
         }
     }
 
@@ -244,13 +255,20 @@ impl Expr {
     }
 
     #[inline]
+    pub fn into_conj(self) -> Vec<Expr> {
+        match self {
+            Expr::Pred(Pred::Conj(es)) => es,
+            _ => vec![self],
+        }
+    }
+
+    #[inline]
     pub fn n_args(&self) -> usize {
         match self {
             Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => 0,
             Expr::Aggf(_) => 1,
             Expr::Func(f) => f.args.len(),
             Expr::Pred(p) => match p {
-                // Pred::True | Pred::False => smallvec![],
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => es.len(),
                 Pred::Not(_) => 1,
                 Pred::Func(f) => f.args.len(),
@@ -272,7 +290,6 @@ impl Expr {
             Expr::Aggf(af) => smallvec![af.arg.as_ref()],
             Expr::Func(f) => SmallVec::from_iter(f.args.iter()),
             Expr::Pred(p) => match p {
-                // Pred::True | Pred::False => smallvec![],
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => SmallVec::from_iter(es.iter()),
                 Pred::Not(e) => smallvec![e.as_ref()],
                 Pred::Func(f) => SmallVec::from_iter(f.args.iter()),
@@ -296,7 +313,6 @@ impl Expr {
             Expr::Aggf(af) => smallvec![af.arg.as_mut()],
             Expr::Func(f) => SmallVec::from_iter(f.args.iter_mut()),
             Expr::Pred(p) => match p {
-                // Pred::True | Pred::False => smallvec![],
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => {
                     SmallVec::from_iter(es.iter_mut())
                 }
@@ -346,27 +362,107 @@ impl Expr {
     /// Collect non-aggr columns and returns true if aggr function exists
     #[inline]
     pub fn collect_non_aggr_cols_into(&self, cols: &mut Vec<Col>) -> bool {
-        let mut collector = CollectNonAggrCols {
+        struct Collect<'a> {
+            aggr_lvl: usize,
+            has_aggr: bool,
+            cols: &'a mut Vec<Col>,
+        }
+        impl ExprVisitor for Collect<'_> {
+            #[inline]
+            fn enter(&mut self, e: &Expr) -> bool {
+                match e {
+                    Expr::Aggf(_) => {
+                        self.aggr_lvl += 1;
+                        self.has_aggr = true
+                    }
+                    Expr::Col(col) => {
+                        if self.aggr_lvl == 0 {
+                            self.cols.push(*col)
+                        }
+                    }
+                    _ => (),
+                }
+                true
+            }
+
+            #[inline]
+            fn leave(&mut self, e: &Expr) -> bool {
+                if let Expr::Aggf(_) = e {
+                    self.aggr_lvl -= 1
+                }
+                true
+            }
+        }
+        let mut c = Collect {
             aggr_lvl: 0,
             cols,
             has_aggr: false,
         };
-        let _ = self.walk(&mut collector);
-        collector.has_aggr
+        let _ = self.walk(&mut c);
+        c.has_aggr
     }
 
     #[inline]
     pub fn contains_aggr_func(&self) -> bool {
-        let mut contains = ContainsAggrFunc::default();
-        let _ = self.walk(&mut contains);
-        contains.0
+        struct Contains(bool);
+        impl ExprVisitor for Contains {
+            #[inline]
+            fn enter(&mut self, e: &Expr) -> bool {
+                if let Expr::Aggf(_) = e {
+                    self.0 = true;
+                    return false;
+                }
+                true
+            }
+        }
+        let mut c = Contains(false);
+        let _ = self.walk(&mut c);
+        c.0
     }
 
     #[inline]
     pub fn contains_non_aggr_cols(&self) -> bool {
-        let mut contains = ContainsNonAggrCols::default();
-        let _ = self.walk(&mut contains);
-        contains.has_non_aggr_cols
+        struct Contains {
+            aggr_lvl: usize,
+            has_non_aggr_cols: bool,
+        }
+
+        impl ExprVisitor for Contains {
+            fn enter(&mut self, e: &Expr) -> bool {
+                match e {
+                    Expr::Aggf(_) => self.aggr_lvl += 1,
+                    Expr::Col(_) => {
+                        if self.aggr_lvl == 0 {
+                            self.has_non_aggr_cols = true;
+                            return false;
+                        }
+                    }
+                    _ => (),
+                }
+                true
+            }
+
+            fn leave(&mut self, e: &Expr) -> bool {
+                if let Expr::Aggf(_) = e {
+                    self.aggr_lvl -= 1
+                }
+                true
+            }
+        }
+
+        let mut c = Contains {
+            aggr_lvl: 0,
+            has_non_aggr_cols: false,
+        };
+        let _ = self.walk(&mut c);
+        c.has_non_aggr_cols
+    }
+
+    #[inline]
+    pub fn collect_query_ids(&self) -> HashSet<QueryID> {
+        let mut c = CollectQryIDs(HashSet::new());
+        let _ = self.walk(&mut c);
+        c.0
     }
 }
 
@@ -458,6 +554,13 @@ impl Deref for QueryID {
     }
 }
 
+impl std::fmt::Display for QueryID {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "q{}", self.0)
+    }
+}
+
 pub const INVALID_QUERY_ID: QueryID = QueryID(!0);
 
 pub trait ExprVisitor {
@@ -488,77 +591,20 @@ pub trait ExprMutVisitor {
     }
 }
 
-pub(crate) struct CollectNonAggrCols<'a> {
-    aggr_lvl: usize,
-    has_aggr: bool,
-    cols: &'a mut Vec<Col>,
+#[derive(Debug, Clone, Default)]
+pub struct CollectQryIDs(HashSet<QueryID>);
+
+impl CollectQryIDs {
+    #[inline]
+    pub fn res(self) -> HashSet<QueryID> {
+        self.0
+    }
 }
 
-impl ExprVisitor for CollectNonAggrCols<'_> {
-    #[inline]
-    fn enter(&mut self, e: &Expr) -> bool {
-        match e {
-            Expr::Aggf(_) => {
-                self.aggr_lvl += 1;
-                self.has_aggr = true
-            }
-            Expr::Col(col) => {
-                if self.aggr_lvl == 0 {
-                    self.cols.push(*col)
-                }
-            }
-            _ => (),
-        }
-        true
-    }
-
-    #[inline]
+impl ExprVisitor for CollectQryIDs {
     fn leave(&mut self, e: &Expr) -> bool {
-        if let Expr::Aggf(_) = e {
-            self.aggr_lvl -= 1
-        }
-        true
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct ContainsAggrFunc(bool);
-
-impl ExprVisitor for ContainsAggrFunc {
-    #[inline]
-    fn enter(&mut self, e: &Expr) -> bool {
-        if let Expr::Aggf(_) = e {
-            self.0 = true;
-            return false;
-        }
-        true
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct ContainsNonAggrCols {
-    aggr_lvl: usize,
-    has_non_aggr_cols: bool,
-}
-
-impl ExprVisitor for ContainsNonAggrCols {
-    fn enter(&mut self, e: &Expr) -> bool {
-        match e {
-            Expr::Aggf(_) => self.aggr_lvl += 1,
-            Expr::Col(_) => {
-                if self.aggr_lvl == 0 {
-                    self.has_non_aggr_cols = true;
-                    return false;
-                }
-            }
-            _ => (),
-        }
-        true
-    }
-
-    fn leave(&mut self, e: &Expr) -> bool {
-        if let Expr::Aggf(_) = e {
-            self.aggr_lvl -= 1
+        if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
+            self.0.insert(*qry_id);
         }
         true
     }

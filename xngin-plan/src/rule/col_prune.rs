@@ -37,7 +37,7 @@ fn prune_col(all_qry_set: &mut QuerySet, root: QueryID) -> Result<()> {
     // update the mapping of old column to new column.
     update_use_set(&mut use_set);
     // recursively modify all column references in current query and its correlated subqueries.
-    all_qry_set.transform_op(root, |qry_set, op| {
+    all_qry_set.transform_op(root, |qry_set, _, op| {
         let mut cm = ColModifier {
             qry_set,
             use_set: &use_set,
@@ -53,10 +53,10 @@ fn apply_use_set(
     use_set: &FnvHashMap<QueryID, BTreeMap<u32, u32>>,
 ) {
     qry_set
-        .transform_op(qry_id, |qry_set, op| {
+        .transform_op(qry_id, |qry_set, _, op| {
             let mut cm = ColModifier {
                 qry_set,
-                use_set: &use_set,
+                use_set,
                 res: Ok(()),
             };
             let _ = op.walk_mut(&mut cm);
@@ -140,7 +140,7 @@ impl OpMutVisitor for ColModifier<'_> {
         match op {
             Op::Query(qry_id) => {
                 let mapping = self.use_set.get(qry_id);
-                let res = self.qry_set.transform_op(*qry_id, |qry_set, op| {
+                let res = self.qry_set.transform_op(*qry_id, |qry_set, _, op| {
                     let mut cp = ColPruner { mapping };
                     let _ = op.walk_mut(&mut cp);
                     prune_col(qry_set, *qry_id)

@@ -1,7 +1,6 @@
 use super::*;
 use crate::op::OpKind;
 use crate::op::OpVisitor;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
 use xngin_catalog::ColumnAttr;
@@ -237,6 +236,10 @@ fn test_plan_build_join() {
             "select t1.c0 from t1 join t2 using (c0, c1)",
             plan_shape![Proj, Join, Proj, Table, Proj, Table],
         ),
+        (
+            "select t1.c0 from t1 join t2 left join t3 on t1.c1 = t2.c1 or t1.c1 = t3.c1",
+            plan_shape![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+        ),
     ] {
         let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
         let (_, qr) = parse_query(MySQL(sql)).unwrap();
@@ -372,6 +375,19 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
             ],
         )
         .unwrap();
+    builder
+        .add_table(
+            "j",
+            "t4",
+            &vec![
+                ColumnSpec::new("c0", DataType::I32, ColumnAttr::empty()),
+                ColumnSpec::new("c1", DataType::I32, ColumnAttr::empty()),
+                ColumnSpec::new("c2", DataType::I32, ColumnAttr::empty()),
+                ColumnSpec::new("c3", DataType::I32, ColumnAttr::empty()),
+                ColumnSpec::new("c4", DataType::I32, ColumnAttr::empty()),
+            ],
+        )
+        .unwrap();
     let cat = builder.build();
     Arc::new(cat)
 }
@@ -437,12 +453,15 @@ pub(crate) fn collect_queries<'a>(
     }
 }
 
-pub(crate) fn get_filt_expr(plan: &QueryPlan) -> Option<xngin_expr::Expr> {
-    plan.root_query().and_then(|subq| get_subq_filt_expr(subq))
+pub(crate) fn get_filt_expr(plan: &QueryPlan) -> Vec<xngin_expr::Expr> {
+    match plan.root_query() {
+        Some(subq) => get_subq_filt_expr(subq),
+        None => vec![],
+    }
 }
 
-pub(crate) fn get_subq_filt_expr(subq: &Subquery) -> Option<xngin_expr::Expr> {
-    let mut cfe = CollectFiltExpr(None);
+pub(crate) fn get_subq_filt_expr(subq: &Subquery) -> Vec<xngin_expr::Expr> {
+    let mut cfe = CollectFiltExpr(vec![]);
     let _ = subq.root.walk(&mut cfe);
     cfe.0
 }
@@ -463,14 +482,14 @@ pub(crate) fn get_subq_by_location<'a>(
     subqs
 }
 
-struct CollectFiltExpr(Option<xngin_expr::Expr>);
+struct CollectFiltExpr(Vec<xngin_expr::Expr>);
 
 impl OpVisitor for CollectFiltExpr {
     #[inline]
     fn enter(&mut self, op: &Op) -> bool {
         match op {
             Op::Filt(filt) => {
-                self.0 = Some(filt.pred.clone());
+                self.0 = filt.pred.clone();
                 false
             }
             _ => true,
@@ -635,27 +654,4 @@ pub(crate) fn print_plan(sql: &str, plan: &QueryPlan) {
     let mut s = String::new();
     plan.explain(&mut s).unwrap();
     println!("Plan:\n{}", s)
-}
-
-// helper method to create function that impl OpVisitor
-pub(crate) fn op_visit_fn<F: Fn(&Op)>(f: F) -> impl OpVisitor {
-    struct OpVisitFn<F> {
-        f: F,
-        _marker: PhantomData<F>,
-    }
-    // preorder is enough
-    impl<F: Fn(&Op)> OpVisitor for OpVisitFn<F> {
-        fn enter(&mut self, op: &Op) -> bool {
-            (self.f)(op);
-            true
-        }
-        fn leave(&mut self, _op: &Op) -> bool {
-            true
-        }
-    }
-
-    OpVisitFn {
-        f,
-        _marker: PhantomData,
-    }
 }
