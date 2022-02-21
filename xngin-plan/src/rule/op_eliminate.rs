@@ -1,8 +1,9 @@
 use crate::error::Result;
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::op::{Filt, Limit, Op, OpMutVisitor, Proj, Setop, SetopKind, Sort};
+use crate::op::{Filt, Limit, Op, OpMutVisitor, Proj, Sort};
 use crate::query::{QueryPlan, QuerySet};
 use crate::rule::expr_simplify::update_simplify_single;
+use crate::setop::{Setop, SetopKind};
 use std::collections::HashSet;
 use std::mem;
 use xngin_expr::{Col, Const, Expr, ExprMutVisitor, QueryID, Setq};
@@ -16,8 +17,8 @@ use xngin_expr::{Col, Const, Expr, ExprMutVisitor, QueryID, Setq};
 /// 6. LIMIT 0 can eliminiate entire tree.
 /// 7. ORDER BY in subquery without LIMIT can be removed.
 #[inline]
-pub fn op_eliminate(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> {
-    eliminate_op(queries, *root, false)
+pub fn op_eliminate(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+    eliminate_op(qry_set, *root, false)
 }
 
 fn eliminate_op(qry_set: &mut QuerySet, qry_id: QueryID, is_subq: bool) -> Result<()> {
@@ -108,7 +109,7 @@ impl<'a> EliminateOp<'a> {
                     left,
                     right,
                 } = so.as_mut();
-                match (left, right) {
+                match (left.as_mut(), right.as_mut()) {
                     (Op::Empty, Op::Empty) => *op = Op::Empty,
                     (Op::Empty, right) => match (kind, q) {
                         (SetopKind::Union, Setq::All) => *op = mem::take(right),
@@ -146,9 +147,7 @@ impl<'a> EliminateOp<'a> {
             }
             Op::Apply(_) => unimplemented!(),
             Op::Query(_) | Op::Table(..) | Op::Row(_) => unreachable!(),
-            // JoinGraph should be transformed away before this rule executes,
-            // or generated after the rule finishes.
-            Op::JoinGraph(_) => unreachable!(),
+            Op::JoinGraph(_) => todo!(),
             Op::Empty => (),
         }
         if !op.is_empty() && !self.empty_qs.is_empty() {
@@ -341,6 +340,15 @@ mod tests {
             let subq = q.root_query().unwrap();
             assert!(matches!(subq.root, Op::Empty));
         });
+        assert_j_plan(
+            "select c1 from t1 where null order by c1 limit 10",
+            |s, mut q| {
+                op_eliminate(&mut q).unwrap();
+                print_plan(s, &q);
+                let subq = q.root_query().unwrap();
+                assert!(matches!(subq.root, Op::Empty));
+            },
+        );
         // do NOT eliminate if LIMIT non-zero
         assert_j_plan("select c1 from t1 limit 1", |s, mut q| {
             op_eliminate(&mut q).unwrap();

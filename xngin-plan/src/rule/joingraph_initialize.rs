@@ -15,8 +15,8 @@ use xngin_expr::QueryID;
 /// From the topmost join operator, collect all queries to be joined.
 /// Then replace the topmost join with the generated graph.
 #[inline]
-pub fn joingraph_initialize(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> {
-    init_joingraph(queries, *root)
+pub fn joingraph_initialize(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+    init_joingraph(qry_set, *root)
 }
 
 fn init_joingraph(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {

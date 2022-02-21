@@ -1,123 +1,60 @@
-use crate::error::{Result, ToResult};
+use crate::error::{Error, Result};
 use crate::op::{Op, OpMutVisitor, OpVisitor};
-use crate::query::{QueryPlan, QuerySet};
-use fnv::{FnvHashMap, FnvHashSet};
+use crate::query::{Location, QueryPlan, QuerySet, Subquery};
+use fnv::FnvHashMap;
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
+use std::mem;
 use xngin_expr::{Col, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Column pruning will remove unnecessary columns from the given plan.
 /// It is invoked top down. First collect all output columns from current
 /// query, then apply the pruning to each of its child query.
 #[inline]
-pub fn col_prune(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> {
-    prune_col(queries, *root)?;
-    reset_out_cols(queries, *root)
+pub fn col_prune(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+    let mut use_set = FnvHashMap::default();
+    prune_col(qry_set, *root, &mut use_set)
 }
 
-fn prune_col(all_qry_set: &mut QuerySet, root: QueryID) -> Result<()> {
-    let subq = all_qry_set.get(&root).must_ok()?;
-    let qry_set: FnvHashSet<_> = subq
-        .scope
-        .query_aliases
-        .iter()
-        .map(|(_, query_id)| *query_id)
-        .collect();
-    let mut use_set: FnvHashMap<_, BTreeMap<_, _>> = FnvHashMap::default();
-    for (query_id, idx) in &subq.scope.cor_vars {
-        // should always be true
-        assert!(qry_set.contains(query_id));
-        use_set.entry(*query_id).or_default().insert(*idx, 0);
-    }
-    let mut cc = ColCollector {
-        qry_set: &qry_set,
-        use_set: &mut use_set,
-    };
-    let _ = subq.root.walk(&mut cc);
-    // update the mapping of old column to new column.
-    update_use_set(&mut use_set);
-    // recursively modify all column references in current query and its correlated subqueries.
-    all_qry_set.transform_op(root, |qry_set, _, op| {
-        let mut cm = ColModifier {
-            qry_set,
-            use_set: &use_set,
-            res: Ok(()),
-        };
-        let _ = op.walk_mut(&mut cm);
-    })
-}
-
-fn apply_use_set(
+fn prune_col(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
-    use_set: &FnvHashMap<QueryID, BTreeMap<u32, u32>>,
-) {
-    qry_set
-        .transform_op(qry_id, |qry_set, _, op| {
-            let mut cm = ColModifier {
-                qry_set,
-                use_set,
-                res: Ok(()),
-            };
-            let _ = op.walk_mut(&mut cm);
-        })
-        .unwrap()
-}
-
-fn reset_out_cols(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
-    struct ResetOutCols<'a> {
-        qry_set: &'a mut QuerySet,
-        res: Result<()>,
-    }
-    impl OpVisitor for ResetOutCols<'_> {
-        fn enter(&mut self, op: &Op) -> bool {
-            match op {
-                Op::Query(qry_id) => {
-                    self.res = reset_out_cols(self.qry_set, *qry_id);
-                    self.res.is_ok()
-                }
-                _ => true,
-            }
+    use_set: &mut FnvHashMap<QueryID, BTreeMap<u32, u32>>,
+) -> Result<()> {
+    if let Some(subq) = qry_set.get_mut(&qry_id) {
+        if subq.location != Location::Intermediate {
+            // skip other types of queries
+            return Ok(());
         }
-        fn leave(&mut self, _op: &Op) -> bool {
-            true
+        let mut curr_use_set = FnvHashMap::default();
+        let mut c = Collect(&mut curr_use_set);
+        let _ = subq.root.walk(&mut c);
+        // add variables used in correlated subqueries
+        for (query_id, idx) in &subq.scope.cor_vars {
+            curr_use_set.entry(*query_id).or_default().insert(*idx, 0);
         }
-    }
-    qry_set.transform(
-        qry_id,
-        |subq| {
-            subq.reset_out_cols();
-        },
-        |qry_set, op| {
-            let mut roc = ResetOutCols {
-                qry_set,
-                res: Ok(()),
-            };
-            let _ = op.walk(&mut roc);
-            roc.res
-        },
-    )?
-}
-
-/// Column collector to current query
-struct ColCollector<'a> {
-    qry_set: &'a FnvHashSet<QueryID>,
-    use_set: &'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>,
-}
-
-impl ExprVisitor for ColCollector<'_> {
-    #[inline]
-    fn enter(&mut self, e: &Expr) -> bool {
-        if let Expr::Col(Col::QueryCol(query_id, idx)) = e {
-            if self.qry_set.contains(query_id) {
-                self.use_set.entry(*query_id).or_default().insert(*idx, 0);
-            }
+        update_use_set(&mut curr_use_set);
+        // merge into global use set
+        for (k, v) in curr_use_set {
+            use_set.insert(k, v);
         }
-        true
+        let mut op = mem::take(&mut subq.root);
+        let mut m = Modify {
+            qry_set,
+            use_set,
+            res: Ok(()),
+        };
+        let _ = op.walk_mut(&mut m);
+        let res = m.res;
+        qry_set.get_mut(&qry_id).unwrap().root = op; // update back
+        res
+    } else {
+        Err(Error::QueryNotFound(qry_id))
     }
 }
 
-impl OpVisitor for ColCollector<'_> {
+struct Collect<'a>(&'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>);
+impl OpVisitor for Collect<'_> {
     #[inline]
     fn enter(&mut self, op: &Op) -> bool {
         for e in op.exprs() {
@@ -126,29 +63,37 @@ impl OpVisitor for ColCollector<'_> {
         true
     }
 }
+impl ExprVisitor for Collect<'_> {
+    #[inline]
+    fn enter(&mut self, e: &Expr) -> bool {
+        if let Expr::Col(Col::QueryCol(qry_id, idx)) = e {
+            self.0.entry(*qry_id).or_default().insert(*idx, 0);
+        }
+        true
+    }
+}
 
-/// Column modifier to current query
-struct ColModifier<'a> {
+struct Modify<'a> {
     qry_set: &'a mut QuerySet,
-    use_set: &'a FnvHashMap<QueryID, BTreeMap<u32, u32>>,
+    use_set: &'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>,
     res: Result<()>,
 }
 
-impl OpMutVisitor for ColModifier<'_> {
+impl OpMutVisitor for Modify<'_> {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> bool {
         match op {
             Op::Query(qry_id) => {
+                // modify child query
                 let mapping = self.use_set.get(qry_id);
-                let res = self.qry_set.transform_op(*qry_id, |qry_set, _, op| {
-                    let mut cp = ColPruner { mapping };
-                    let _ = op.walk_mut(&mut cp);
-                    prune_col(qry_set, *qry_id)
-                });
-                match res {
-                    Ok(res) => self.res = res,
-                    Err(e) => self.res = Err(e),
+                self.res = self
+                    .qry_set
+                    .transform_subq(*qry_id, |subq| modify_subq(subq, mapping));
+                if self.res.is_err() {
+                    return false;
                 }
+                // recursively prune child
+                self.res = prune_col(self.qry_set, *qry_id, self.use_set);
                 self.res.is_ok()
             }
             _ => {
@@ -161,94 +106,76 @@ impl OpMutVisitor for ColModifier<'_> {
     }
 }
 
-impl ExprMutVisitor for ColModifier<'_> {
+impl ExprMutVisitor for Modify<'_> {
     #[inline]
     fn enter(&mut self, e: &mut Expr) -> bool {
         match e {
-            Expr::Col(Col::QueryCol(query_id, idx))
-            | Expr::Col(Col::CorrelatedCol(query_id, idx)) => {
-                if let Some(new) = self.use_set.get(query_id).and_then(|m| m.get(idx).cloned()) {
+            Expr::Col(Col::QueryCol(qry_id, idx)) | Expr::Col(Col::CorrelatedCol(qry_id, idx)) => {
+                if let Some(new) = self.use_set.get(qry_id).and_then(|m| m.get(idx).cloned()) {
                     *idx = new;
                 }
             }
-            Expr::Subq(_, query_id) => apply_use_set(self.qry_set, *query_id, self.use_set),
+            Expr::Subq(_, qry_id) => {
+                self.res = prune_col(self.qry_set, *qry_id, self.use_set);
+                return self.res.is_ok();
+            }
             _ => (),
         }
         true
     }
 }
 
-/// Column pruner to child query
-struct ColPruner<'a> {
-    mapping: Option<&'a BTreeMap<u32, u32>>,
+fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<u32, u32>>) {
+    match &mut subq.root {
+        Op::Proj(proj) => {
+            proj.cols = retain(mem::take(&mut proj.cols), mapping);
+        }
+        Op::Aggr(aggr) => {
+            aggr.proj = retain(mem::take(&mut aggr.proj), mapping);
+        }
+        Op::Row(row) => {
+            *row = retain(mem::take(row), mapping);
+        }
+        _ => {
+            let cols: Vec<_> = if let Some(mapping) = mapping {
+                subq.out_cols()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, (expr, alias))| {
+                        if mapping.contains_key(&(i as u32)) {
+                            Some((expr.clone(), alias.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+            let old = mem::take(&mut subq.root);
+            subq.root = Op::proj(cols, old);
+        }
+    }
 }
 
-impl OpMutVisitor for ColPruner<'_> {
-    #[inline]
-    fn enter(&mut self, op: &mut Op) -> bool {
-        match op {
-            Op::Proj(proj) => {
-                println!("BEFORE proj cols {}", proj.cols.len());
-                if let Some(mapping) = self.mapping {
-                    proj.cols = std::mem::take(&mut proj.cols)
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(i, e)| {
-                            if mapping.contains_key(&(i as u32)) {
-                                Some(e)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
+/// retain outputs in provided mapping
+fn retain<I>(cols: I, mapping: Option<&BTreeMap<u32, u32>>) -> Vec<(Expr, SmolStr)>
+where
+    I: IntoIterator<Item = (Expr, SmolStr)>,
+{
+    if let Some(mapping) = mapping {
+        cols.into_iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                if mapping.contains_key(&(i as u32)) {
+                    Some(e)
                 } else {
-                    // no output needed, use Const(1) to replace all original output.
-                    proj.cols.clear();
-                    proj.cols.push((Expr::const_i64(1), SmolStr::new("1")));
+                    None
                 }
-                println!("AFTER proj cols {}", proj.cols.len());
-                false
-            }
-            Op::Aggr(aggr) => {
-                if let Some(mapping) = self.mapping {
-                    aggr.proj = std::mem::take(&mut aggr.proj)
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(i, e)| {
-                            if mapping.contains_key(&(i as u32)) {
-                                Some(e)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                } else {
-                    aggr.proj.clear();
-                    aggr.proj.push((Expr::const_i64(1), SmolStr::new("1")));
-                }
-                false
-            }
-            Op::Row(row) => {
-                if let Some(mapping) = self.mapping {
-                    *row = std::mem::take(row)
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(i, e)| {
-                            if mapping.contains_key(&(i as u32)) {
-                                Some(e)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                } else {
-                    row.clear();
-                    row.push((Expr::const_i64(1), SmolStr::new("1")));
-                }
-                false
-            }
-            _ => true,
-        }
+            })
+            .collect()
+    } else {
+        vec![]
     }
 }
 
@@ -266,240 +193,251 @@ mod tests {
     use crate::builder::tests::{assert_j_plan, get_lvl_queries, print_plan};
 
     #[test]
-    fn test_col_prune1() {
+    fn test_col_prune_const() {
         assert_j_plan("select 1 from t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
-            assert_eq!(4, subq[0].scope.out_cols.len());
+            assert_eq!(4, subq[0].out_cols().len());
             col_prune(&mut plan).unwrap();
+            print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(1, subq.len());
-            assert_eq!(1, subq[0].scope.out_cols.len());
-            print_plan(sql, &plan)
+            // no columns required, should be specially handled in execution phase
+            assert_eq!(0, subq[0].out_cols().len());
         })
     }
 
     #[test]
-    fn test_col_prune2() {
+    fn test_col_prune_multi_cols() {
         assert_j_plan("select c1, c3 from t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
-            assert_eq!(4, subq[0].scope.out_cols.len());
+            assert_eq!(4, subq[0].out_cols().len());
             col_prune(&mut plan).unwrap();
+            print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(1, subq.len());
-            assert_eq!(2, subq[0].scope.out_cols.len());
-            print_plan(sql, &plan)
+            assert_eq!(2, subq[0].out_cols().len());
         })
     }
 
     #[test]
-    fn test_col_prune3() {
+    fn test_col_prune_simple_col_order() {
         assert_j_plan("select c3, c1 from t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
-            assert_eq!(4, subq[0].scope.out_cols.len());
+            assert_eq!(4, subq[0].out_cols().len());
             col_prune(&mut plan).unwrap();
+            print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
-            assert_eq!(2, subq[0].scope.out_cols.len());
-            print_plan(sql, &plan)
+            assert_eq!(2, subq[0].out_cols().len());
         })
     }
 
     #[test]
-    fn test_col_prune4() {
+    fn test_col_prune_dup_cols() {
         assert_j_plan("select c2, c2, c2 from t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
-            assert_eq!(4, subq[0].scope.out_cols.len());
+            assert_eq!(4, subq[0].out_cols().len());
             col_prune(&mut plan).unwrap();
+            print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             // remove duplicates and keep 1 column from source
-            assert_eq!(1, subq[0].scope.out_cols.len());
-            print_plan(sql, &plan)
+            assert_eq!(1, subq[0].out_cols().len());
         })
     }
 
     #[test]
-    fn test_col_prune5() {
+    fn test_col_prune_cross_join() {
         assert_j_plan("select t2.c0 from t2, t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(2, subq.len());
-            assert_eq!(3, subq[0].scope.out_cols.len());
-            assert_eq!(4, subq[1].scope.out_cols.len());
+            assert_eq!(3, subq[0].out_cols().len());
+            assert_eq!(4, subq[1].out_cols().len());
             col_prune(&mut plan).unwrap();
+            print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
-            assert_eq!(1, subq[0].scope.out_cols.len());
-            // although no columns required from t3, still
-            // keep 1 const value.
-            assert_eq!(1, subq[1].scope.out_cols.len());
-            print_plan(sql, &plan)
+            assert_eq!(1, subq[0].out_cols().len());
+            assert_eq!(0, subq[1].out_cols().len());
         })
     }
 
     #[test]
-    fn test_col_prune6() {
+    fn test_col_prune_implicit_join() {
         assert_j_plan(
             "select t2.c0 from t2, t3 where t2.c1 = t3.c1",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 // additional column is requied from t2 for filter
-                assert_eq!(2, subq[0].scope.out_cols.len());
-                assert_eq!(1, subq[1].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(2, subq[0].out_cols().len());
+                assert_eq!(1, subq[1].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune7() {
+    fn test_col_prune_inner_join() {
         assert_j_plan(
             "select t2.c0 from t2 join t3 on t2.c1 = t3.c1 and t2.c2 = t3.c2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 // additional column is required from t2 for join
-                assert_eq!(3, subq[0].scope.out_cols.len());
+                assert_eq!(3, subq[0].out_cols().len());
                 // additional column is required from t3 for join
-                assert_eq!(2, subq[1].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(2, subq[1].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune8() {
+    fn test_col_prune_row() {
         assert_j_plan(
             "select t1.c0, tmp.x from t1, (select 1 as x, 2 as y) tmp",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(1, subq[0].scope.out_cols.len());
-                assert_eq!(1, subq[1].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(1, subq[0].out_cols().len());
+                assert_eq!(1, subq[1].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune9() {
+    fn test_col_prune_aggr_col() {
         assert_j_plan("select sum(c2) from t2", |sql, mut plan| {
             col_prune(&mut plan).unwrap();
+            print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
-            assert_eq!(1, subq[0].scope.out_cols.len());
-            print_plan(sql, &plan)
+            assert_eq!(1, subq[0].out_cols().len());
         })
     }
 
     #[test]
-    fn test_col_prune10() {
+    fn test_col_prune_aggr_asterisk() {
         assert_j_plan("select count(*) from t2", |sql, mut plan| {
             col_prune(&mut plan).unwrap();
+            print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
-            assert_eq!(1, subq[0].scope.out_cols.len());
-            print_plan(sql, &plan)
+            assert_eq!(0, subq[0].out_cols().len());
         })
     }
 
     #[test]
-    fn test_col_prune11() {
+    fn test_col_prune_join_aggr() {
         assert_j_plan(
             "select count(*) from t2, t3 where t2.c2 = t3.c2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(1, subq[0].scope.out_cols.len());
-                assert_eq!(1, subq[1].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(1, subq[0].out_cols().len());
+                assert_eq!(1, subq[1].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune12() {
+    fn test_col_prune_cor_subq_simple() {
         assert_j_plan(
             "select (select c0 from t3 where t3.c1 = t2.c1) from t2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(1, subq[0].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(1, subq[0].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune13() {
+    fn test_col_prune_cor_subq_proj() {
         assert_j_plan(
             "select (select sum(c0) from t3 where t3.c1 = t2.c1 and t3.c2 = t2.c2) from t2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(2, subq[0].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(2, subq[0].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune14() {
+    fn test_col_prune_cor_subq_cross() {
         assert_j_plan(
             "select (select sum(c0) from t3 where t3.c1 = t2.c1 and t3.c2 = t2.c2), c0 from t2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(3, subq[0].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(3, subq[0].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune15() {
+    fn test_col_prune_derived_dup_cols() {
         assert_j_plan(
             "select (select sum(c0) from t3 where t3.c1 = t2.c1 and t3.c2 = t2.c2), c1 from t2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(2, subq[0].scope.out_cols.len());
+                assert_eq!(2, subq[0].out_cols().len());
                 print_plan(sql, &plan)
             },
         )
     }
 
     #[test]
-    fn test_col_prune16() {
+    fn test_col_prune_derived_aggr() {
         assert_j_plan(
             "select s1 from (select sum(c1) as s1, sum(c2) as s2 from t2) x2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(1, subq[0].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(1, subq[0].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune17() {
+    fn test_col_prune_single_derived_row() {
         assert_j_plan(
             "select s1 from (select 1 as s1, 2 as s2) x2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(1, subq[0].scope.out_cols.len());
-                print_plan(sql, &plan)
+                assert_eq!(1, subq[0].out_cols().len());
             },
         )
     }
 
     #[test]
-    fn test_col_prune18() {
+    fn test_col_prune_nested_aggr() {
         assert_j_plan(
             "select count(*) from (select count(*) as c from t1) x2",
             |sql, mut plan| {
                 col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
-                assert_eq!(1, subq[0].scope.out_cols.len());
-                assert!(subq[0].scope.out_cols[0].0.is_const());
-                print_plan(sql, &plan)
+                assert_eq!(0, subq[0].out_cols().len());
+            },
+        )
+    }
+
+    #[test]
+    fn test_col_prune_derived_filt() {
+        assert_j_plan(
+            "select x from (select c1+1 as x from t1 where c1 > 0) t",
+            |sql, mut plan| {
+                col_prune(&mut plan).unwrap();
+                print_plan(sql, &plan);
+                let subq = get_lvl_queries(&plan, 2);
+                assert_eq!(1, subq[0].out_cols().len());
             },
         )
     }

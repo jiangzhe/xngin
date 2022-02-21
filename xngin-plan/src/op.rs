@@ -8,6 +8,7 @@
 //!
 //! Each table/column is lookuped from catalog and assigned a unique id.
 use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
+use crate::setop::{Setop, SetopKind, SubqOp};
 use smallvec::{smallvec, SmallVec};
 use smol_str::SmolStr;
 use xngin_catalog::{SchemaID, TableID};
@@ -118,11 +119,6 @@ impl Op {
     }
 
     #[inline]
-    pub fn join(join: Join) -> Self {
-        Op::Join(Box::new(join))
-    }
-
-    #[inline]
     pub fn join_graph(graph: JoinGraph) -> Self {
         Op::JoinGraph(Box::new(graph))
     }
@@ -147,7 +143,7 @@ impl Op {
     }
 
     #[inline]
-    pub fn setop(kind: SetopKind, q: Setq, left: Op, right: Op) -> Self {
+    pub fn setop(kind: SetopKind, q: Setq, left: SubqOp, right: SubqOp) -> Self {
         Op::Setop(Box::new(Setop {
             kind,
             q,
@@ -222,7 +218,7 @@ impl Op {
             Op::JoinGraph(graph) => graph.queries.iter().collect(),
             Op::Setop(set) => {
                 let Setop { left, right, .. } = set.as_ref();
-                smallvec![left, right]
+                smallvec![left.as_ref(), right.as_ref()]
             }
             Op::Query(_) | Op::Row(_) | Op::Table(..) | Op::Empty => smallvec![],
         }
@@ -246,7 +242,7 @@ impl Op {
             Op::JoinGraph(graph) => graph.queries.iter_mut().collect(),
             Op::Setop(set) => {
                 let Setop { left, right, .. } = set.as_mut();
-                smallvec![left, right]
+                smallvec![left.as_mut(), right.as_mut()]
             }
             Op::Query(_) | Op::Row(_) | Op::Table(..) | Op::Empty => smallvec![],
         }
@@ -401,33 +397,6 @@ pub enum ApplyKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Setop {
-    pub kind: SetopKind,
-    pub q: Setq,
-    /// Sources of Setop are always subqueries.
-    pub left: Op,
-    pub right: Op,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetopKind {
-    Union,
-    Except,
-    Intersect,
-}
-
-impl SetopKind {
-    #[inline]
-    pub fn to_lower(&self) -> &'static str {
-        match self {
-            SetopKind::Union => "union",
-            SetopKind::Except => "except",
-            SetopKind::Intersect => "intersect",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sort {
     pub items: Vec<SortItem>,
     pub limit: Option<u64>,
@@ -455,11 +424,13 @@ pub struct Col {
 
 pub trait OpVisitor {
     /// Returns true if continue
+    #[inline]
     fn enter(&mut self, _op: &Op) -> bool {
         true
     }
 
     /// Returns true if continue
+    #[inline]
     fn leave(&mut self, _op: &Op) -> bool {
         true
     }
@@ -480,11 +451,13 @@ pub fn preorder<F: FnMut(&Op)>(f: F) -> impl OpVisitor {
 
 pub trait OpMutVisitor {
     /// Returns true if continue
+    #[inline]
     fn enter(&mut self, _op: &mut Op) -> bool {
         true
     }
 
     /// Returns true if continue
+    #[inline]
     fn leave(&mut self, _op: &mut Op) -> bool {
         true
     }

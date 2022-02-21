@@ -1,6 +1,7 @@
 use crate::join::{Join, JoinEdge, JoinGraph, QualifiedJoin};
-use crate::op::{Aggr, Apply, Filt, Limit, Op, OpVisitor, Proj, Setop, Sort, SortItem};
+use crate::op::{Aggr, Apply, Filt, Limit, Op, OpVisitor, Proj, Sort, SortItem};
 use crate::query::{QueryPlan, QuerySet};
+use crate::setop::Setop;
 use std::fmt::{self, Write};
 use xngin_expr::{AggKind, Aggf, Col, Const, Expr, Func, Pred, PredFunc, QueryID, Setq};
 
@@ -18,11 +19,11 @@ pub trait Explain {
 
 impl Explain for QueryPlan {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        match self.queries.get(&self.root) {
+        match self.qry_set.get(&self.root) {
             Some(subq) => {
                 let mut qe = QueryExplain {
                     title: Some("(root) ".to_string()),
-                    queries: &self.queries,
+                    queries: &self.qry_set,
                     f,
                     spans: vec![],
                     res: Ok(()),
@@ -481,10 +482,12 @@ mod tests {
     fn test_explain_plan() {
         let cat = tpch_catalog();
         for sql in vec![
-            "select 1, true, 1.0e2, 1 & 2, 1 | 2, 1 << 2, 1 >> 2, 1 and 2, 1 or 2, 1 xor 2",
+            "select 1, true, 1.0e2, 1 & 2, 1 | 2, 1 ^ 2, 1 << 2, 1 >> 2, 1 and 2, 1 or 2, 1 xor 2",
             "with cte1 as (select 1), cte2 as (select 2) select * from cte1",
             "select l1.l_orderkey from lineitem l1, lineitem l2",
             "select l_orderkey from lineitem union all select l_orderkey from lineitem",
+            "select 1 union select 2",
+            "select 1 from lineitem join (select 1) t1",
         ] {
             let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
             let (_, qr) = parse_query(MySQL(sql)).unwrap();
