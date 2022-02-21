@@ -4,10 +4,11 @@ pub(crate) mod tests;
 use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
 use crate::join::{Join, JoinKind, JoinOp};
-use crate::op::{Op, OpMutVisitor, SetopKind, SortItem};
+use crate::op::{Op, OpMutVisitor, SortItem};
 use crate::query::{Location, QueryPlan, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
 use crate::scope::{Scope, Scopes};
+use crate::setop::{SetopKind, SubqOp};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
@@ -42,7 +43,7 @@ impl PlanBuilder {
     pub fn build_plan(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<QueryPlan> {
         let (root, _) = self.build_subquery(with, query, false)?;
         Ok(QueryPlan {
-            queries: self.qs,
+            qry_set: self.qs,
             root,
         })
     }
@@ -79,8 +80,7 @@ impl PlanBuilder {
         // We can identify whether current subquery is correlated by check the size of cor_cols
         let correlated = !cor_cols.is_empty();
         scope.cor_cols = cor_cols;
-        let mut subquery = Subquery::new(root, scope, location);
-        subquery.reset_out_cols();
+        let subquery = Subquery::new(root, scope, location);
         let query_id = self.qs.insert(subquery);
         Ok((query_id, correlated))
     }
@@ -146,7 +146,7 @@ impl PlanBuilder {
                             location,
                         ));
                     }
-                    let idx = subquery.scope.position_out_col(col_alias).ok_or_else(|| {
+                    let idx = subquery.position_out_col(col_alias).ok_or_else(|| {
                         Error::unknown_column_full_name(schema_name, tbl_alias, col_alias, location)
                     })?;
                     // mark cor_vars in the matched scope, so column pruning will also take them
@@ -179,7 +179,7 @@ impl PlanBuilder {
                 if from_alias == tbl_alias {
                     // found table by alias
                     let subquery = self.qs.get(query_id).must_ok()?;
-                    let idx = subquery.scope.position_out_col(col_alias).ok_or_else(|| {
+                    let idx = subquery.position_out_col(col_alias).ok_or_else(|| {
                         Error::unknown_column_partial_name(tbl_alias, col_alias, location)
                     })?;
                     // mark cor_vars in the matched scope, so column pruning will also take them
@@ -207,7 +207,7 @@ impl PlanBuilder {
             let mut matched = None;
             for (_, query_id) in s.query_aliases.iter() {
                 let subquery = self.qs.get(query_id).must_ok()?;
-                if let Some(idx) = subquery.scope.position_out_col(col_alias) {
+                if let Some(idx) = subquery.position_out_col(col_alias) {
                     if matched.is_some() {
                         return Err(Error::DuplicatedColumnAlias(col_alias.to_string()));
                     }
@@ -255,11 +255,12 @@ impl PlanBuilder {
             if !elem.cols.is_empty() {
                 // as output columns aliases are explicit specified,
                 // we need to update the output alias list of generated tree.
-                self.qs.transform_scope(query_id, |scope| {
-                    if elem.cols.len() != scope.out_cols.len() {
+                self.qs.transform_subq(query_id, |subq| {
+                    let out_cols = subq.out_cols_mut();
+                    if elem.cols.len() != out_cols.len() {
                         return Err(Error::ColumnCountMismatch);
                     }
-                    for ((_, alias), new) in scope.out_cols.iter_mut().zip(elem.cols.iter()) {
+                    for ((_, alias), new) in out_cols.iter_mut().zip(elem.cols.iter()) {
                         *alias = new.to_lower();
                     }
                     Ok(())
@@ -462,10 +463,10 @@ impl PlanBuilder {
         // todo: handle correlated subquery
         let (query_id, _) =
             self.build_subquery(&None, &select_set.left, phc.allow_unknown_ident)?;
-        let left = Op::Query(query_id);
+        let left = SubqOp::query(query_id);
         let (query_id, _) =
             self.build_subquery(&None, &select_set.right, phc.allow_unknown_ident)?;
-        let right = Op::Query(query_id);
+        let right = SubqOp::query(query_id);
         Ok((Op::setop(kind, q, left, right), Location::Intermediate))
     }
 
@@ -626,8 +627,8 @@ impl PlanBuilder {
                                         .query_aliases
                                         .get(qry_alias)
                                         .must_ok()?;
-                                    let scope = &self.qs.get(query_id).must_ok()?.scope;
-                                    left_queries.push((*query_id, scope));
+                                    let subq = self.qs.get(query_id).must_ok()?;
+                                    left_queries.push((*query_id, subq));
                                 }
                                 let mut right_queries = Vec::with_capacity(right_aliases.len());
                                 for qry_alias in &right_aliases {
@@ -637,8 +638,8 @@ impl PlanBuilder {
                                         .query_aliases
                                         .get(qry_alias)
                                         .must_ok()?;
-                                    let scope = &self.qs.get(query_id).must_ok()?.scope;
-                                    right_queries.push((*query_id, scope));
+                                    let subq = self.qs.get(query_id).must_ok()?;
+                                    right_queries.push((*query_id, subq));
                                 }
                                 let mut preds = Vec::with_capacity(ncs.len());
                                 let mut left_col = None;
@@ -646,8 +647,8 @@ impl PlanBuilder {
                                 for nc in ncs {
                                     let col_alias = nc.to_lower();
                                     // find named column from left side
-                                    for (query_id, scope) in &left_queries {
-                                        if let Some(idx) = scope.position_out_col(&col_alias) {
+                                    for (query_id, subq) in &left_queries {
+                                        if let Some(idx) = subq.position_out_col(&col_alias) {
                                             if left_col.is_some() {
                                                 return Err(Error::DuplicatedColumnAlias(
                                                     col_alias.to_string(),
@@ -664,8 +665,8 @@ impl PlanBuilder {
                                         ));
                                     }
                                     // find named column from right side
-                                    for (query_id, scope) in &right_queries {
-                                        if let Some(idx) = scope.position_out_col(&col_alias) {
+                                    for (query_id, subq) in &right_queries {
+                                        if let Some(idx) = subq.position_out_col(&col_alias) {
                                             if right_col.is_some() {
                                                 return Err(Error::DuplicatedColumnAlias(
                                                     col_alias.to_string(),
@@ -837,8 +838,7 @@ impl PlanBuilder {
         }
         let proj = Op::proj(proj_cols, Op::Table(schema_id, table_id));
         // todo: currently we assume all tables are located on disk.
-        let mut subquery = Subquery::new(proj, Scope::default(), Location::Disk);
-        subquery.reset_out_cols();
+        let subquery = Subquery::new(proj, Scope::default(), Location::Disk);
         let query_id = self.qs.insert(subquery);
         Ok(query_id)
     }
@@ -1131,7 +1131,7 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
         let mut matched = vec![];
         for (_, query_id) in self.query_aliases.iter() {
             let subquery = self.qs.get(query_id).must_ok()?;
-            if let Some(idx) = subquery.scope.position_out_col(&col_alias) {
+            if let Some(idx) = subquery.position_out_col(&col_alias) {
                 let e = expr::Expr::query_col(*query_id, idx as u32);
                 // check existence in proj aliases
                 for (pe, _) in self.proj_cols {
@@ -1195,13 +1195,12 @@ impl OpMutVisitor for ReplaceSubq {
                 }
             }
             Op::Aggr(aggr) => {
-                // if let Some(filt) = &mut aggr.filt {
-                //     let _ = filt.walk_mut(self);
-                // }
-                if self.updated {
-                    return false;
-                }
-                for (e, _) in &mut aggr.proj {
+                for e in aggr
+                    .proj
+                    .iter_mut()
+                    .map(|(e, _)| e)
+                    .chain(aggr.filt.iter_mut())
+                {
                     let _ = e.walk_mut(self);
                     if self.updated {
                         return false;

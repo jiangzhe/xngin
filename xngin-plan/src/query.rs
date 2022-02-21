@@ -7,12 +7,12 @@ use slab::Slab;
 use smol_str::SmolStr;
 use std::mem;
 use xngin_catalog::{SchemaID, TableID};
-use xngin_expr::{Col, Expr, QueryID};
+use xngin_expr::{Expr, QueryID};
 
 /// QueryPlan represents a self-contained query plan with
 /// complete information about all its nodes.
 pub struct QueryPlan {
-    pub queries: QuerySet,
+    pub qry_set: QuerySet,
     pub root: QueryID,
 }
 
@@ -25,13 +25,13 @@ impl QueryPlan {
     #[inline]
     pub fn shape(&self) -> Vec<OpKind> {
         let mut shape = vec![];
-        generate_shape(&self.queries, &self.root, &mut shape);
+        generate_shape(&self.qry_set, &self.root, &mut shape);
         shape
     }
 
     #[inline]
     pub fn root_query(&self) -> Option<&Subquery> {
-        self.queries.get(&self.root)
+        self.qry_set.get(&self.root)
     }
 }
 
@@ -71,6 +71,55 @@ impl Subquery {
     }
 
     #[inline]
+    pub fn out_cols(&self) -> &[(Expr, SmolStr)] {
+        let mut op = &self.root;
+        loop {
+            match op {
+                Op::Aggr(aggr) => return &aggr.proj,
+                Op::Proj(proj) => return &proj.cols,
+                Op::Row(row) => return row,
+                Op::Empty => return &[],
+                Op::Sort(sort) => op = sort.source.as_ref(),
+                Op::Limit(limit) => op = limit.source.as_ref(),
+                Op::Filt(filt) => op = filt.source.as_ref(),
+                Op::Table(..)
+                | Op::Query(_)
+                | Op::Setop(_)
+                | Op::Join(_)
+                | Op::JoinGraph(_)
+                | Op::Apply(_) => unreachable!(),
+            }
+        }
+    }
+
+    #[inline]
+    pub fn out_cols_mut(&mut self) -> &mut [(Expr, SmolStr)] {
+        let mut op = &mut self.root;
+        loop {
+            match op {
+                Op::Aggr(aggr) => return &mut aggr.proj,
+                Op::Proj(proj) => return &mut proj.cols,
+                Op::Row(row) => return row.as_mut(),
+                Op::Empty => return &mut [],
+                Op::Sort(sort) => op = sort.source.as_mut(),
+                Op::Limit(limit) => op = limit.source.as_mut(),
+                Op::Filt(filt) => op = filt.source.as_mut(),
+                Op::Table(..)
+                | Op::Query(_)
+                | Op::Setop(_)
+                | Op::Join(_)
+                | Op::JoinGraph(_)
+                | Op::Apply(_) => unreachable!(),
+            }
+        }
+    }
+
+    #[inline]
+    pub fn position_out_col(&self, alias: &str) -> Option<usize> {
+        self.out_cols().iter().position(|(_, a)| a == alias)
+    }
+
+    #[inline]
     pub fn find_table(&self) -> Option<(SchemaID, TableID)> {
         struct FindTable(Option<(SchemaID, TableID)>);
         impl OpVisitor for FindTable {
@@ -87,41 +136,6 @@ impl Subquery {
         let mut ft = FindTable(None);
         let _ = self.root.walk(&mut ft);
         ft.0
-    }
-
-    // This method will search down the operator tree and find first Aggr or Proj operator.
-    // Use its columns as out cols.
-    #[inline]
-    pub fn reset_out_cols(&mut self) {
-        struct CollectOutCols<'a>(&'a mut Vec<(Expr, SmolStr)>);
-        impl OpVisitor for CollectOutCols<'_> {
-            fn enter(&mut self, op: &Op) -> bool {
-                match op {
-                    Op::Aggr(aggr) => {
-                        for p in &aggr.proj {
-                            self.0.push(p.clone())
-                        }
-                        false
-                    }
-                    Op::Proj(proj) => {
-                        for p in &proj.cols {
-                            self.0.push(p.clone())
-                        }
-                        false
-                    }
-                    Op::Row(row) => {
-                        for c in row {
-                            self.0.push(c.clone())
-                        }
-                        false
-                    }
-                    _ => true,
-                }
-            }
-        }
-        let out_cols = &mut self.scope.out_cols;
-        out_cols.clear();
-        let _ = self.root.walk(&mut CollectOutCols(out_cols));
     }
 }
 
@@ -152,14 +166,8 @@ impl QuerySet {
     }
 
     #[inline]
-    pub fn transform_scope<T, F>(&mut self, qry_id: QueryID, f: F) -> Result<T>
-    where
-        F: FnOnce(&mut Scope) -> T,
-    {
-        if let Some(subq) = self.0.get_mut(*qry_id as usize) {
-            return Ok(f(&mut subq.scope));
-        }
-        Err(Error::QueryNotFound(qry_id))
+    pub fn get_mut(&mut self, qry_id: &QueryID) -> Option<&mut Subquery> {
+        self.0.get_mut(**qry_id as usize)
     }
 
     #[inline]
@@ -182,23 +190,6 @@ impl QuerySet {
             let location = subq.location;
             let mut root = mem::take(&mut subq.root);
             let res = f(self, location, &mut root);
-            // update root back, this always succeed because query set does not allow deletion.
-            self.0[*qry_id as usize].root = root;
-            return Ok(res);
-        }
-        Err(Error::QueryNotFound(qry_id))
-    }
-
-    #[inline]
-    pub fn transform<T, F1, F2>(&mut self, qry_id: QueryID, f1: F1, f2: F2) -> Result<T>
-    where
-        F1: FnOnce(&mut Subquery),
-        F2: FnOnce(&mut QuerySet, &mut Op) -> T,
-    {
-        if let Some(subq) = self.0.get_mut(*qry_id as usize) {
-            f1(subq);
-            let mut root = mem::take(&mut subq.root);
-            let res = f2(self, &mut root);
             // update root back, this always succeed because query set does not allow deletion.
             self.0[*qry_id as usize].root = root;
             return Ok(res);
@@ -234,14 +225,6 @@ impl QuerySet {
         for (_, query_id) in sq.scope.query_aliases.iter_mut() {
             if let Some(new_query_id) = mapping.get(query_id) {
                 *query_id = *new_query_id;
-            }
-        }
-        // update out_cols in subquery's scope
-        for (e, _) in sq.scope.out_cols.iter_mut() {
-            if let Expr::Col(Col::QueryCol(query_id, _)) = e {
-                if let Some(new_query_id) = mapping.get(query_id) {
-                    *query_id = *new_query_id;
-                }
             }
         }
         self.insert(sq)

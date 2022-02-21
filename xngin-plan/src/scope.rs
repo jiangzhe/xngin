@@ -57,12 +57,12 @@ pub struct Scope {
     /// The source is FROM clause.
     /// Row and derived table remain the same.
     /// Any table present in FROM clause, will be converted to
-    /// a simple query automatically, .
+    /// a simple query automatically.
     /// The converted query has a Proj operator upon Table operator,
     /// and no other operator or query involved.
     pub query_aliases: QueryAliases,
     // output column list
-    pub out_cols: Vec<(Expr, SmolStr)>,
+    // pub out_cols: Vec<(Expr, SmolStr)>,
     // if set to true, unknown identifier can be passed to
     // outer scope for search.
     pub transitive: bool,
@@ -81,10 +81,10 @@ impl Scope {
         }
     }
 
-    #[inline]
-    pub fn position_out_col(&self, alias: &str) -> Option<usize> {
-        self.out_cols.iter().position(|(_, a)| a == alias)
-    }
+    // #[inline]
+    // pub fn position_out_col(&self, alias: &str) -> Option<usize> {
+    //     self.out_cols.iter().position(|(_, a)| a == alias)
+    // }
 
     #[inline]
     pub fn restrict_from_aliases(&self, aliases: &[SmolStr]) -> QueryAliases {

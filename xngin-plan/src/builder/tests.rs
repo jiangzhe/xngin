@@ -153,8 +153,8 @@ fn test_plan_build_select_table() {
         };
         print_plan(sql, &plan);
         assert_eq!(shape, plan.shape());
-        let p = plan.queries.get(&plan.root).unwrap();
-        assert_eq!(n_cols, p.scope.out_cols.len());
+        let p = plan.qry_set.get(&plan.root).unwrap();
+        assert_eq!(n_cols, p.out_cols().len());
     }
 }
 
@@ -281,6 +281,10 @@ fn test_plan_build_subquery() {
         "select * from t3 where exists (select 1 from t2, (select c0 from t1 where t1.c1 = t3.c1) tt where tt.c0 = t2.c0)",
         "select * from t3 where exists (with tmp as (select 1 from t2 where t2.c0 = t3.c0) select * from tmp)",
         "with cte as (select 1 as cx) select * from cte where exists (select 1 from t1 where t1.c0 = cx)",
+        "with cte (a, b) as (select 1, 2) select * from cte",
+        "with cte (a, b) as (select c0, c1 from t1) select * from cte",
+        "with cte (a, b) as (select c0, c1 from t1 where c0 > 0 order by c0 limit 10) select * from cte",
+        "with cte (a, b) as (select t1.c0, t2.c0 from t1 join t2) select * from cte",
         "select * from t1 where c0 > (select max(c0) from t2 where t2.c1 = t1.c1)",
         "select * from t2 where c0 > (select max(c0) from t1 where t1.c1 = c2)",
     ] {
@@ -325,7 +329,7 @@ fn test_plan_build_location() {
         assert_j_plan(sql, |s, p| {
             print_plan(s, &p);
             let mut queries = vec![];
-            collect_queries(&p.queries, p.root, &mut queries);
+            collect_queries(&p.qry_set, p.root, &mut queries);
             let actual: Vec<_> = queries.into_iter().map(|subq| subq.location).collect();
             assert_eq!(expected, actual)
         })
@@ -418,7 +422,7 @@ pub(crate) fn assert_j_plan2<F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
     f(sql1, p1, sql2, p2)
 }
 
-fn build_plan(cat: &Arc<dyn QueryCatalog>, sql: &str) -> QueryPlan {
+pub(crate) fn build_plan(cat: &Arc<dyn QueryCatalog>, sql: &str) -> QueryPlan {
     let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
     let (_, qr) = parse_query(MySQL(sql)).unwrap();
     builder.build_plan(&qr).unwrap()
@@ -432,7 +436,7 @@ pub(crate) fn get_lvl_queries(plan: &QueryPlan, lvl: usize) -> Vec<&Subquery> {
     let mut res = vec![];
     for root in roots {
         for (_, query_id) in root.scope.query_aliases.iter() {
-            if let Some(subq) = plan.queries.get(query_id) {
+            if let Some(subq) = plan.qry_set.get(query_id) {
                 res.push(subq);
             }
         }
@@ -473,7 +477,7 @@ pub(crate) fn get_subq_by_location<'a>(
     let mut subqs = vec![];
     if let Some(subq) = plan.root_query() {
         let mut csbl = CollectSubqByLocation {
-            qry_set: &plan.queries,
+            qry_set: &plan.qry_set,
             subqs: &mut subqs,
             location,
         };
@@ -602,8 +606,8 @@ fn test_plan_build_with() {
         let (_, qr) = parse_query(MySQL(sql)).unwrap();
         let plan = builder.build_plan(&qr).unwrap();
         assert_eq!(shape, plan.shape());
-        let p = plan.queries.get(&plan.root).unwrap();
-        assert_eq!(n_cols, p.scope.out_cols.len());
+        let p = plan.qry_set.get(&plan.root).unwrap();
+        assert_eq!(n_cols, p.out_cols().len());
         print_plan(sql, &plan)
     }
 }

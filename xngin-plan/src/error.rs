@@ -79,6 +79,8 @@ pub enum Error {
     InvalidJoinVertexSet,
     #[error("Invalid join transformation")]
     InvalidJoinTransformation,
+    #[error("Invalid operator transformation")]
+    InvalidOpertorTransformation,
 }
 
 impl Error {

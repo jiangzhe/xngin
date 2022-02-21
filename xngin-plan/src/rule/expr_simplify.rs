@@ -10,8 +10,8 @@ use xngin_expr::{
 
 /// Simplify expressions.
 #[inline]
-pub fn expr_simplify(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> {
-    simplify_expr(queries, *root)
+pub fn expr_simplify(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+    simplify_expr(qry_set, *root)
 }
 
 fn simplify_expr(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {

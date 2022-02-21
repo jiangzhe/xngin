@@ -70,7 +70,7 @@ pub trait ExprResolve {
         let mut col = None;
         for (_, query_id) in queries {
             let subquery = self.get_query(&query_id).must_ok()?;
-            if let Some(idx) = subquery.scope.position_out_col(&col_alias) {
+            if let Some(idx) = subquery.position_out_col(&col_alias) {
                 if col.is_some() {
                     return Err(Error::DuplicatedColumnAlias(col_alias.to_string()));
                 }
@@ -94,7 +94,7 @@ pub trait ExprResolve {
             Some(query_id) => query_id,
             None => return Ok(Resolution::Unknown(vec![tbl_alias, col_alias])),
         };
-        if let Some(idx) = subquery.scope.position_out_col(&col_alias) {
+        if let Some(idx) = subquery.position_out_col(&col_alias) {
             Ok(Resolution::Expr(expr::Expr::query_col(
                 query_id, idx as u32,
             )))
@@ -132,12 +132,7 @@ pub trait ExprResolve {
                     location,
                 ));
             }
-            if let Some(idx) = subquery
-                .scope
-                .out_cols
-                .iter()
-                .position(|(_, alias)| alias == &col_alias)
-            {
+            if let Some(idx) = subquery.position_out_col(&col_alias) {
                 return Ok(Resolution::Expr(expr::Expr::query_col(
                     query_id, idx as u32,
                 )));
@@ -222,8 +217,9 @@ pub trait ExprResolve {
                         )));
                     }
                     // match table to simple projection, use its output list to resolve asterisk
-                    let mut res = Vec::with_capacity(subquery.scope.out_cols.len());
-                    for (i, (_, alias)) in subquery.scope.out_cols.iter().enumerate() {
+                    let out_cols = subquery.out_cols();
+                    let mut res = Vec::with_capacity(out_cols.len());
+                    for (i, (_, alias)) in out_cols.iter().enumerate() {
                         let e = expr::Expr::query_col(query_id, i as u32);
                         res.push((e, alias.clone()))
                     }
@@ -240,8 +236,9 @@ pub trait ExprResolve {
                 let (query_id, subquery) = self
                     .find_query(&tbl_alias)
                     .ok_or_else(|| Error::unknown_asterisk_column(q, location))?;
-                let mut res = Vec::with_capacity(subquery.scope.out_cols.len());
-                for (i, (_, alias)) in subquery.scope.out_cols.iter().enumerate() {
+                let out_cols = subquery.out_cols();
+                let mut res = Vec::with_capacity(out_cols.len());
+                for (i, (_, alias)) in out_cols.iter().enumerate() {
                     let col = expr::Expr::query_col(query_id, i as u32);
                     res.push((col, alias.clone()))
                 }
@@ -256,7 +253,7 @@ pub trait ExprResolve {
                 let mut res = vec![];
                 for (_, query_id) in qrs {
                     let subquery = self.get_query(&query_id).must_ok()?;
-                    for (i, (_, alias)) in subquery.scope.out_cols.iter().enumerate() {
+                    for (i, (_, alias)) in subquery.out_cols().iter().enumerate() {
                         let col = expr::Expr::query_col(query_id, i as u32);
                         res.push((col, alias.clone()))
                     }

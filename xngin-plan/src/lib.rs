@@ -10,3 +10,4 @@ pub mod query;
 pub mod resolv;
 pub mod rule;
 pub mod scope;
+pub mod setop;

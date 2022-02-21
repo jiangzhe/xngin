@@ -9,8 +9,8 @@ use xngin_expr::{Col, Const, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Pushdown predicates.
 #[inline]
-pub fn pred_pushdown(QueryPlan { queries, root }: &mut QueryPlan) -> Result<()> {
-    pushdown_pred(queries, *root)
+pub fn pred_pushdown(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+    pushdown_pred(qry_set, *root)
 }
 
 fn pushdown_pred(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
@@ -59,6 +59,10 @@ impl OpMutVisitor for PredPushdown<'_> {
                     *pred = fallback;
                     true
                 }
+            }
+            Op::Query(qry_id) => {
+                self.res = pushdown_pred(self.qry_set, *qry_id);
+                self.res.is_ok()
             }
             _ => true,
         }
@@ -119,7 +123,7 @@ fn push_single(
     let res = match op {
         Op::Query(qry_id) => {
             if let Some(subq) = qry_set.get(qry_id) {
-                rewrite_out_expr(&mut pred, &subq.scope.out_cols);
+                rewrite_out_expr(&mut pred, subq.out_cols());
                 // after rewriting, Simplify it before pushing
                 simplify_single(&mut pred.e)?;
                 match &pred.e {
@@ -167,6 +171,7 @@ fn push_single(
                         let mut old = mem::take(&mut aggr.filt);
                         old.push(pred.e);
                         if old.len() > 1 {
+                            // todo: once simplify_conj is done, update below code
                             let mut new = Expr::pred_conj(old);
                             simplify_single(&mut new)?;
                             aggr.filt = new.into_conj();
@@ -192,12 +197,9 @@ fn push_single(
         },
         Op::Setop(so) => {
             // push to both side and won't fail
-            assert!(push_single(qry_set, &mut so.left, pred.clone())?.is_none());
-            assert!(push_single(qry_set, &mut so.right, pred)?.is_none());
+            assert!(push_single(qry_set, so.left.as_mut(), pred.clone())?.is_none());
+            assert!(push_single(qry_set, so.right.as_mut(), pred)?.is_none());
             None
-        }
-        Op::Join(_) => {
-            unreachable!("Directly push down to join operator not supported")
         }
         Op::JoinGraph(graph) => {
             let extra = graph.add_single_filt(pred.e)?;
@@ -214,6 +216,9 @@ fn push_single(
                 })??;
             }
             None
+        }
+        Op::Join(_) => {
+            unreachable!("Directly push down to join operator not supported")
         }
     };
     Ok(res)
@@ -280,6 +285,11 @@ mod tests {
         assert_j_plan1(
             &cat,
             "select 1 from (select c1 from t1) x1 where x1.c1 = 0",
+            assert_filt_on_disk_table1,
+        );
+        assert_j_plan1(
+            &cat,
+            "select 1 from (select c1 from t1 where c1 > 0) x1",
             assert_filt_on_disk_table1,
         );
         assert_j_plan1(

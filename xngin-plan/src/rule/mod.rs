@@ -3,6 +3,7 @@
 //! is supposed to be always better, so that no cost model involved.
 
 pub mod col_prune;
+pub mod derived_unfold;
 pub mod expr_simplify;
 pub mod joingraph_initialize;
 pub mod op_eliminate;
