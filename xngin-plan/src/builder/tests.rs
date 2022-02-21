@@ -285,6 +285,7 @@ fn test_plan_build_subquery() {
         "with cte (a, b) as (select c0, c1 from t1) select * from cte",
         "with cte (a, b) as (select c0, c1 from t1 where c0 > 0 order by c0 limit 10) select * from cte",
         "with cte (a, b) as (select t1.c0, t2.c0 from t1 join t2) select * from cte",
+        "with cte (a, b) as (select t1.c0, t2.c0 from t1 join t2 join t3) select * from cte",
         "select * from t1 where c0 > (select max(c0) from t2 where t2.c1 = t1.c1)",
         "select * from t2 where c0 > (select max(c0) from t1 where t1.c1 = c2)",
     ] {
@@ -489,14 +490,15 @@ pub(crate) fn get_subq_by_location<'a>(
 struct CollectFiltExpr(Vec<xngin_expr::Expr>);
 
 impl OpVisitor for CollectFiltExpr {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, op: &Op) -> bool {
+    fn enter(&mut self, op: &Op) -> ControlFlow<()> {
         match op {
             Op::Filt(filt) => {
                 self.0 = filt.pred.clone();
-                false
+                ControlFlow::Break(())
             }
-            _ => true,
+            _ => ControlFlow::Continue(()),
         }
     }
 }
@@ -508,8 +510,9 @@ struct CollectSubqByLocation<'a, 'b> {
 }
 
 impl<'a, 'b> OpVisitor for CollectSubqByLocation<'a, 'b> {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, op: &Op) -> bool {
+    fn enter(&mut self, op: &Op) -> ControlFlow<()> {
         match op {
             Op::Query(qry_id) => {
                 if let Some(subq) = self.qry_set.get(qry_id) {
@@ -521,7 +524,7 @@ impl<'a, 'b> OpVisitor for CollectSubqByLocation<'a, 'b> {
             }
             _ => (),
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 

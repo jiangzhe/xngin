@@ -5,6 +5,7 @@ use crate::rule::expr_simplify::simplify_single;
 use indexmap::IndexSet;
 use smol_str::SmolStr;
 use std::mem;
+use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{Col, Const, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Pushdown predicates.
@@ -15,36 +16,28 @@ pub fn pred_pushdown(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> 
 
 fn pushdown_pred(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
-        let mut ppd = PredPushdown {
-            qry_set,
-            res: Ok(()),
-        };
-        let _ = op.walk_mut(&mut ppd);
-        ppd.res
+        let mut ppd = PredPushdown { qry_set };
+        op.walk_mut(&mut ppd).unbranch()
     })?
 }
 
 struct PredPushdown<'a> {
     qry_set: &'a mut QuerySet,
-    res: Result<()>,
 }
 
 impl OpMutVisitor for PredPushdown<'_> {
-    fn enter(&mut self, op: &mut Op) -> bool {
+    type Break = Error;
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Filt(Filt { pred, source }) => {
                 let mut fallback = vec![];
                 for e in mem::take(pred) {
                     let item = ExprItem::new(e);
-                    match push_single(self.qry_set, source, item) {
-                        Ok(None) => (),
-                        Ok(Some(p)) => {
+                    match push_single(self.qry_set, source, item).branch()? {
+                        None => (),
+                        Some(p) => {
                             // child rejects the predicate, add it to fallback
                             fallback.push(p.e);
-                        }
-                        Err(e) => {
-                            self.res = Err(e);
-                            return false;
                         }
                     }
                 }
@@ -57,14 +50,11 @@ impl OpMutVisitor for PredPushdown<'_> {
                     // still have certain predicates can not be pushed down,
                     // update them back
                     *pred = fallback;
-                    true
+                    ControlFlow::Continue(())
                 }
             }
-            Op::Query(qry_id) => {
-                self.res = pushdown_pred(self.qry_set, *qry_id);
-                self.res.is_ok()
-            }
-            _ => true,
+            Op::Query(qry_id) => pushdown_pred(self.qry_set, *qry_id).branch(),
+            _ => ControlFlow::Continue(()),
         }
     }
 }
@@ -76,8 +66,9 @@ struct ExprAttr {
 }
 
 impl ExprVisitor for ExprAttr {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, e: &Expr) -> bool {
+    fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
         match e {
             Expr::Aggf(_) => self.has_aggf = true,
             Expr::Col(Col::QueryCol(qry_id, _)) => {
@@ -85,7 +76,7 @@ impl ExprVisitor for ExprAttr {
             }
             _ => (),
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
@@ -248,13 +239,14 @@ struct RewriteOutExpr<'a> {
 }
 
 impl ExprMutVisitor for RewriteOutExpr<'_> {
+    type Break = ();
     #[inline]
-    fn leave(&mut self, e: &mut Expr) -> bool {
+    fn leave(&mut self, e: &mut Expr) -> ControlFlow<()> {
         if let Expr::Col(Col::QueryCol(_, idx)) = e {
             let (new_e, _) = &self.out[*idx as usize];
             *e = new_e.clone();
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
@@ -591,13 +583,14 @@ mod tests {
     fn extract_join_graph(op: &Op) -> Option<JoinGraph> {
         struct ExtractJoinGraph(Option<JoinGraph>);
         impl OpVisitor for ExtractJoinGraph {
-            fn enter(&mut self, op: &Op) -> bool {
+            type Break = ();
+            fn enter(&mut self, op: &Op) -> ControlFlow<()> {
                 match op {
                     Op::JoinGraph(g) => {
                         self.0 = Some(g.as_ref().clone());
-                        false
+                        ControlFlow::Break(())
                     }
-                    _ => true,
+                    _ => ControlFlow::Continue(()),
                 }
             }
         }

@@ -3,6 +3,7 @@ use crate::join::graph::{qids_to_vset, vset_to_qids};
 use crate::join::vertex::{VertexID, VertexSet};
 use crate::join::JoinKind;
 use std::collections::{HashMap, HashSet};
+use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::fold::Fold;
 use xngin_expr::{
     Col, CollectQryIDs, Expr, ExprVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind, QueryID,
@@ -290,7 +291,8 @@ fn all_transposable(qids: &HashSet<QueryID>, e: &Expr) -> bool {
 fn transposable(e: &Expr) -> HashMap<QueryID, bool> {
     struct Trans(HashMap<QueryID, bool>);
     impl ExprVisitor for Trans {
-        fn leave(&mut self, e: &Expr) -> bool {
+        type Break = ();
+        fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
             match e {
                 Expr::Col(Col::QueryCol(qry_id, _)) => {
                     self.0.entry(*qry_id).or_insert(true);
@@ -313,7 +315,7 @@ fn transposable(e: &Expr) -> HashMap<QueryID, bool> {
                     }
                 }
             }
-            true
+            ControlFlow::Continue(())
         }
     }
     let mut trans = Trans(HashMap::new());

@@ -3,6 +3,7 @@ use crate::op::{Aggr, Apply, Filt, Limit, Op, OpVisitor, Proj, Sort, SortItem};
 use crate::query::{QueryPlan, QuerySet};
 use crate::setop::Setop;
 use std::fmt::{self, Write};
+use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{AggKind, Aggf, Col, Const, Expr, Func, Pred, PredFunc, QueryID, Setq};
 
 const INDENT: usize = 4;
@@ -26,10 +27,8 @@ impl Explain for QueryPlan {
                     queries: &self.qry_set,
                     f,
                     spans: vec![],
-                    res: Ok(()),
                 };
-                subq.root.walk(&mut qe);
-                qe.res
+                subq.root.walk(&mut qe).unbranch()
             }
             None => f.write_str("No plan found"),
         }
@@ -346,55 +345,51 @@ struct QueryExplain<'a, F> {
     queries: &'a QuerySet,
     f: &'a mut F,
     spans: Vec<Span>,
-    res: fmt::Result,
+    // res: fmt::Result,
 }
 
 impl<'a, F: Write> QueryExplain<'a, F> {
     // returns true if continue
-    fn write_prefix(&mut self) -> bool {
-        self.res = write_prefix(self.f, &self.spans);
+    fn write_prefix(&mut self) -> fmt::Result {
+        write_prefix(self.f, &self.spans)?;
         // only write title once
         if let Some(s) = self.title.take() {
-            let _ = self.write_str(&s);
+            self.write_str(&s)?;
         }
-        self.res.is_ok()
+        Ok(())
     }
 
-    fn write_str(&mut self, s: &str) -> bool {
-        self.res = self.f.write_str(s);
-        self.res.is_ok()
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.f.write_str(s)
     }
 
-    fn set_res(&mut self, res: fmt::Result) -> bool {
-        self.res = res;
-        self.res.is_ok()
-    }
+    // fn set_res(&mut self, res: fmt::Result) -> bool {
+    //     self.res = res;
+    //     self.res.is_ok()
+    // }
 }
 
 impl<F: Write> OpVisitor for QueryExplain<'_, F> {
+    type Break = fmt::Error;
     #[inline]
-    fn enter(&mut self, op: &Op) -> bool {
+    fn enter(&mut self, op: &Op) -> ControlFlow<fmt::Error> {
         // special handling Subquery
         if let Op::Query(query_id) = op {
-            let res = if let Some(subq) = self.queries.get(query_id) {
+            if let Some(subq) = self.queries.get(query_id) {
                 let mut qe = QueryExplain {
                     title: Some(format!("(q{}) ", **query_id)),
                     queries: self.queries,
                     f: self.f,
                     spans: self.spans.clone(),
-                    res: Ok(()),
+                    // res: Ok(()),
                 };
-                subq.root.walk(&mut qe);
-                qe.res
+                subq.root.walk(&mut qe)?
             } else {
-                Err(fmt::Error)
-            };
-            return self.set_res(res);
+                ControlFlow::Break(fmt::Error)?
+            }
         }
         let child_cnt = op.children().len();
-        if !self.write_prefix() {
-            return false;
-        }
+        self.write_prefix().branch()?;
         // process at parent level
         if let Some(span) = self.spans.pop() {
             match span {
@@ -413,15 +408,12 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
         if child_cnt > 0 {
             self.spans.push(Span::Branch(child_cnt as u16, false))
         }
-        let res = op.explain(self.f);
-        if !self.set_res(res) {
-            return false;
-        }
-        self.write_str("\n")
+        op.explain(self.f).branch()?;
+        self.write_str("\n").branch()
     }
 
     #[inline]
-    fn leave(&mut self, _op: &Op) -> bool {
+    fn leave(&mut self, _op: &Op) -> ControlFlow<fmt::Error> {
         if let Some(span) = self.spans.last_mut() {
             match span {
                 Span::Branch(1, _) => {
@@ -434,7 +426,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
                 _ => (),
             }
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 

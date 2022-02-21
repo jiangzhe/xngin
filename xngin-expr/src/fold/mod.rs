@@ -4,7 +4,8 @@ mod neg;
 mod not;
 mod sub;
 
-use crate::error::Result;
+use crate::controlflow::{ControlFlow, Unbranch};
+use crate::error::{Error, Result};
 use crate::{Const, Expr, ExprMutVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind};
 
 pub use add::*;
@@ -36,40 +37,38 @@ pub trait Fold: Sized {
 
 impl Fold for Expr {
     fn replace_fold<F: Fn(&mut Expr)>(mut self, f: F) -> Result<Expr> {
-        let mut fe = FoldExpr(Ok(()), &f);
-        let _ = self.walk_mut(&mut fe);
-        fe.0.map(|_| self)
+        let mut fe = FoldExpr(&f);
+        self.walk_mut(&mut fe).unbranch()?;
+        Ok(self)
     }
 }
 
-struct FoldExpr<'a, F>(Result<()>, &'a F);
+struct FoldExpr<'a, F>(&'a F);
 
 impl<'a, F> FoldExpr<'a, F> {
-    fn update(&mut self, res: Result<Option<Const>>, e: &mut Expr) -> bool {
+    fn update(&mut self, res: Result<Option<Const>>, e: &mut Expr) -> ControlFlow<Error> {
         match res {
-            Err(e) => {
-                self.0 = Err(e);
-                false
-            }
+            Err(e) => ControlFlow::Break(e),
             Ok(Some(c)) => {
                 *e = Expr::Const(c);
-                true
+                ControlFlow::Continue(())
             }
-            Ok(None) => true,
+            Ok(None) => ControlFlow::Continue(()),
         }
     }
 }
 
 impl<'a, F: Fn(&mut Expr)> ExprMutVisitor for FoldExpr<'a, F> {
-    fn leave(&mut self, e: &mut Expr) -> bool {
-        (self.1)(e);
+    type Break = Error;
+    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+        (self.0)(e);
         match e {
-            Expr::Const(_) => true,
+            Expr::Const(_) => ControlFlow::Continue(()),
             Expr::Func(Func { kind, args }) => match kind {
                 FuncKind::Neg => self.update(fold_neg(&args[0]), e),
                 FuncKind::Add => self.update(fold_add(&args[0], &args[1]), e),
                 FuncKind::Sub => self.update(fold_sub(&args[0], &args[1]), e),
-                _ => true, // todo: fold more functions
+                _ => ControlFlow::Continue(()), // todo: fold more functions
             },
             Expr::Pred(Pred::Not(arg)) => self.update(fold_not(arg), e),
             Expr::Pred(Pred::Func(PredFunc { kind, args })) => match kind {
@@ -86,9 +85,9 @@ impl<'a, F: Fn(&mut Expr)> ExprMutVisitor for FoldExpr<'a, F> {
                 PredFuncKind::IsNotTrue => self.update(fold_isnottrue(&args[0]), e),
                 PredFuncKind::IsFalse => self.update(fold_isfalse(&args[0]), e),
                 PredFuncKind::IsNotFalse => self.update(fold_isnotfalse(&args[0]), e),
-                _ => true,
+                _ => ControlFlow::Continue(()),
             },
-            _ => true, // todo: fold other expressions
+            _ => ControlFlow::Continue(()), // todo: fold other expressions
         }
     }
 }

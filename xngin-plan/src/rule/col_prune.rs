@@ -5,6 +5,7 @@ use fnv::FnvHashMap;
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
 use std::mem;
+use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{Col, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Column pruning will remove unnecessary columns from the given plan.
@@ -39,13 +40,8 @@ fn prune_col(
             use_set.insert(k, v);
         }
         let mut op = mem::take(&mut subq.root);
-        let mut m = Modify {
-            qry_set,
-            use_set,
-            res: Ok(()),
-        };
-        let _ = op.walk_mut(&mut m);
-        let res = m.res;
+        let mut m = Modify { qry_set, use_set };
+        let res = op.walk_mut(&mut m).unbranch();
         qry_set.get_mut(&qry_id).unwrap().root = op; // update back
         res
     } else {
@@ -55,60 +51,60 @@ fn prune_col(
 
 struct Collect<'a>(&'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>);
 impl OpVisitor for Collect<'_> {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, op: &Op) -> bool {
+    fn enter(&mut self, op: &Op) -> ControlFlow<()> {
         for e in op.exprs() {
             let _ = e.walk(self);
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 impl ExprVisitor for Collect<'_> {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, e: &Expr) -> bool {
+    fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
         if let Expr::Col(Col::QueryCol(qry_id, idx)) = e {
             self.0.entry(*qry_id).or_default().insert(*idx, 0);
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
 struct Modify<'a> {
     qry_set: &'a mut QuerySet,
     use_set: &'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>,
-    res: Result<()>,
+    // res: Result<()>,
 }
 
 impl OpMutVisitor for Modify<'_> {
+    type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> bool {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Query(qry_id) => {
                 // modify child query
                 let mapping = self.use_set.get(qry_id);
-                self.res = self
-                    .qry_set
-                    .transform_subq(*qry_id, |subq| modify_subq(subq, mapping));
-                if self.res.is_err() {
-                    return false;
-                }
+                self.qry_set
+                    .transform_subq(*qry_id, |subq| modify_subq(subq, mapping))
+                    .branch()?;
                 // recursively prune child
-                self.res = prune_col(self.qry_set, *qry_id, self.use_set);
-                self.res.is_ok()
+                prune_col(self.qry_set, *qry_id, self.use_set).branch()
             }
             _ => {
                 for e in op.exprs_mut() {
                     let _ = e.walk_mut(self);
                 }
-                true
+                ControlFlow::Continue(())
             }
         }
     }
 }
 
 impl ExprMutVisitor for Modify<'_> {
+    type Break = Error;
     #[inline]
-    fn enter(&mut self, e: &mut Expr) -> bool {
+    fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error> {
         match e {
             Expr::Col(Col::QueryCol(qry_id, idx)) | Expr::Col(Col::CorrelatedCol(qry_id, idx)) => {
                 if let Some(new) = self.use_set.get(qry_id).and_then(|m| m.get(idx).cloned()) {
@@ -116,12 +112,13 @@ impl ExprMutVisitor for Modify<'_> {
                 }
             }
             Expr::Subq(_, qry_id) => {
-                self.res = prune_col(self.qry_set, *qry_id, self.use_set);
-                return self.res.is_ok();
+                // self.res = prune_col(self.qry_set, *qry_id, self.use_set);
+                // return self.res.is_ok();
+                prune_col(self.qry_set, *qry_id, self.use_set).branch()?;
             }
             _ => (),
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
