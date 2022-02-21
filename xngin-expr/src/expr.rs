@@ -1,3 +1,4 @@
+use crate::controlflow::ControlFlow;
 use crate::func::{Func, FuncKind};
 use crate::pred::{Pred, PredFuncKind};
 use smallvec::{smallvec, SmallVec};
@@ -328,26 +329,18 @@ impl Expr {
         .into_iter()
     }
 
-    pub fn walk<V: ExprVisitor>(&self, visitor: &mut V) -> bool {
-        if !visitor.enter(self) {
-            return false;
-        }
+    pub fn walk<V: ExprVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break> {
+        visitor.enter(self)?;
         for c in self.args() {
-            if !c.walk(visitor) {
-                return false;
-            }
+            c.walk(visitor)?
         }
         visitor.leave(self)
     }
 
-    pub fn walk_mut<V: ExprMutVisitor>(&mut self, visitor: &mut V) -> bool {
-        if !visitor.enter(self) {
-            return false;
-        }
+    pub fn walk_mut<V: ExprMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break> {
+        visitor.enter(self)?;
         for c in self.args_mut() {
-            if !c.walk_mut(visitor) {
-                return false;
-            }
+            c.walk_mut(visitor)?
         }
         visitor.leave(self)
     }
@@ -368,8 +361,9 @@ impl Expr {
             cols: &'a mut Vec<Col>,
         }
         impl ExprVisitor for Collect<'_> {
+            type Break = ();
             #[inline]
-            fn enter(&mut self, e: &Expr) -> bool {
+            fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
                 match e {
                     Expr::Aggf(_) => {
                         self.aggr_lvl += 1;
@@ -382,15 +376,15 @@ impl Expr {
                     }
                     _ => (),
                 }
-                true
+                ControlFlow::Continue(())
             }
 
             #[inline]
-            fn leave(&mut self, e: &Expr) -> bool {
+            fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
                 if let Expr::Aggf(_) = e {
                     self.aggr_lvl -= 1
                 }
-                true
+                ControlFlow::Continue(())
             }
         }
         let mut c = Collect {
@@ -406,13 +400,14 @@ impl Expr {
     pub fn contains_aggr_func(&self) -> bool {
         struct Contains(bool);
         impl ExprVisitor for Contains {
+            type Break = ();
             #[inline]
-            fn enter(&mut self, e: &Expr) -> bool {
+            fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
                 if let Expr::Aggf(_) = e {
                     self.0 = true;
-                    return false;
+                    return ControlFlow::Break(());
                 }
-                true
+                ControlFlow::Continue(())
             }
         }
         let mut c = Contains(false);
@@ -428,25 +423,28 @@ impl Expr {
         }
 
         impl ExprVisitor for Contains {
-            fn enter(&mut self, e: &Expr) -> bool {
+            type Break = ();
+            #[inline]
+            fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
                 match e {
                     Expr::Aggf(_) => self.aggr_lvl += 1,
                     Expr::Col(_) => {
                         if self.aggr_lvl == 0 {
                             self.has_non_aggr_cols = true;
-                            return false;
+                            return ControlFlow::Break(());
                         }
                     }
                     _ => (),
                 }
-                true
+                ControlFlow::Continue(())
             }
 
-            fn leave(&mut self, e: &Expr) -> bool {
+            #[inline]
+            fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
                 if let Expr::Aggf(_) = e {
                     self.aggr_lvl -= 1
                 }
-                true
+                ControlFlow::Continue(())
             }
         }
 
@@ -564,30 +562,32 @@ impl std::fmt::Display for QueryID {
 pub const INVALID_QUERY_ID: QueryID = QueryID(!0);
 
 pub trait ExprVisitor {
+    type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _e: &Expr) -> bool {
-        true
+    fn enter(&mut self, _e: &Expr) -> ControlFlow<Self::Break> {
+        ControlFlow::Continue(())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _e: &Expr) -> bool {
-        true
+    fn leave(&mut self, _e: &Expr) -> ControlFlow<Self::Break> {
+        ControlFlow::Continue(())
     }
 }
 
 pub trait ExprMutVisitor {
+    type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _e: &mut Expr) -> bool {
-        true
+    fn enter(&mut self, _e: &mut Expr) -> ControlFlow<Self::Break> {
+        ControlFlow::Continue(())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _e: &mut Expr) -> bool {
-        true
+    fn leave(&mut self, _e: &mut Expr) -> ControlFlow<Self::Break> {
+        ControlFlow::Continue(())
     }
 }
 
@@ -602,10 +602,11 @@ impl CollectQryIDs {
 }
 
 impl ExprVisitor for CollectQryIDs {
-    fn leave(&mut self, e: &Expr) -> bool {
+    type Break = ();
+    fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
         if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
             self.0.insert(*qry_id);
         }
-        true
+        ControlFlow::Continue(())
     }
 }

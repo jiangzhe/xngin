@@ -6,6 +6,7 @@ use fnv::FnvHashMap;
 use slab::Slab;
 use smol_str::SmolStr;
 use std::mem;
+use std::ops::ControlFlow;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::{Expr, QueryID};
 
@@ -123,13 +124,14 @@ impl Subquery {
     pub fn find_table(&self) -> Option<(SchemaID, TableID)> {
         struct FindTable(Option<(SchemaID, TableID)>);
         impl OpVisitor for FindTable {
-            fn enter(&mut self, op: &Op) -> bool {
+            type Break = ();
+            fn enter(&mut self, op: &Op) -> ControlFlow<()> {
                 match op {
                     Op::Table(schema_id, table_id) => {
                         self.0 = Some((*schema_id, *table_id));
-                        false
+                        ControlFlow::Break(())
                     }
-                    _ => true,
+                    _ => ControlFlow::Continue(()),
                 }
             }
         }
@@ -270,8 +272,9 @@ impl UpsertQuery<'_> {
 }
 
 impl<'a> OpMutVisitor for UpsertQuery<'a> {
+    type Break = ();
     #[inline]
-    fn leave(&mut self, op: &mut Op) -> bool {
+    fn leave(&mut self, op: &mut Op) -> ControlFlow<()> {
         match op {
             Op::Query(query_id) => {
                 // only perform additional copy to subquery
@@ -293,7 +296,7 @@ impl<'a> OpMutVisitor for UpsertQuery<'a> {
             },
             _ => (), // others are safe to copy
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
@@ -310,13 +313,14 @@ struct ShapeGen<'a> {
 }
 
 impl OpVisitor for ShapeGen<'_> {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, op: &Op) -> bool {
+    fn enter(&mut self, op: &Op) -> ControlFlow<()> {
         if let Op::Query(query_id) = op {
             generate_shape(self.qs, query_id, self.shape);
         } else {
             self.shape.push(op.kind());
         }
-        true
+        ControlFlow::Continue(())
     }
 }

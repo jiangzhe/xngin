@@ -1,9 +1,10 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::join::vertex::VertexSet;
 use crate::join::{Join, JoinGraph, JoinOp, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::{Location, QueryPlan, QuerySet};
 use std::mem;
+use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::QueryID;
 
 /// Initialize join graph.
@@ -23,12 +24,8 @@ fn init_joingraph(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, location, op| {
         if location == Location::Intermediate {
             // only build join graph in intermediate queries
-            let mut init = InitJoinGraph {
-                qry_set,
-                res: Ok(()),
-            };
-            let _ = op.walk_mut(&mut init);
-            init.res
+            let mut init = InitJoinGraph { qry_set };
+            op.walk_mut(&mut init).unbranch()
         } else {
             Ok(())
         }
@@ -37,32 +34,28 @@ fn init_joingraph(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
 
 struct InitJoinGraph<'a> {
     qry_set: &'a mut QuerySet,
-    res: Result<()>,
 }
 
 impl OpMutVisitor for InitJoinGraph<'_> {
+    type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> bool {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Join(join) => {
                 let mut graph = JoinGraph::default();
                 match update_graph(self.qry_set, join.as_mut(), &mut graph) {
                     Ok(_) => {
                         *op = Op::join_graph(graph);
-                        true
+                        ControlFlow::Continue(())
                     }
-                    Err(e) => {
-                        self.res = Err(e);
-                        false
-                    }
+                    Err(e) => ControlFlow::Break(e),
                 }
             }
             Op::Query(qry_id) => {
                 // no join in current tree, recursively detect all children
-                self.res = init_joingraph(self.qry_set, *qry_id);
-                self.res.is_ok()
+                init_joingraph(self.qry_set, *qry_id).branch()
             }
-            _ => true,
+            _ => ControlFlow::Continue(()),
         }
     }
 }
@@ -150,13 +143,14 @@ mod tests {
         print_plan(sql, &plan);
         struct CollectGraph(Option<JoinGraph>);
         impl OpVisitor for CollectGraph {
-            fn enter(&mut self, op: &Op) -> bool {
+            type Break = ();
+            fn enter(&mut self, op: &Op) -> ControlFlow<()> {
                 match op {
                     Op::JoinGraph(g) => {
                         self.0 = Some(g.as_ref().clone());
-                        false
+                        ControlFlow::Break(())
                     }
-                    _ => true,
+                    _ => ControlFlow::Continue(()),
                 }
             }
         }

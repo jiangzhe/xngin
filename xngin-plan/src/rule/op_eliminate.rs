@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Limit, Op, OpMutVisitor, Proj, Sort};
 use crate::query::{QueryPlan, QuerySet};
@@ -6,6 +6,7 @@ use crate::rule::expr_simplify::update_simplify_single;
 use crate::setop::{Setop, SetopKind};
 use std::collections::HashSet;
 use std::mem;
+use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{Col, Const, Expr, ExprMutVisitor, QueryID, Setq};
 
 /// Eliminate redundant operators.
@@ -24,8 +25,7 @@ pub fn op_eliminate(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
 fn eliminate_op(qry_set: &mut QuerySet, qry_id: QueryID, is_subq: bool) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut eo = EliminateOp::new(qry_set, is_subq);
-        let _ = op.walk_mut(&mut eo);
-        eo.res
+        op.walk_mut(&mut eo).unbranch()
     })?
 }
 
@@ -34,7 +34,6 @@ struct EliminateOp<'a> {
     is_subq: bool,
     has_limit: bool,
     empty_qs: HashSet<QueryID>,
-    res: Result<()>,
 }
 
 impl<'a> EliminateOp<'a> {
@@ -44,11 +43,10 @@ impl<'a> EliminateOp<'a> {
             is_subq,
             has_limit: false,
             empty_qs: HashSet::new(),
-            res: Ok(()),
         }
     }
 
-    fn bottom_up(&mut self, op: &mut Op) -> bool {
+    fn bottom_up(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Join(j) => match j.as_mut() {
                 Join::Cross(tbls) => {
@@ -77,7 +75,7 @@ impl<'a> EliminateOp<'a> {
                             // when bottom up, rewrite all columns derived from right table to null
                             let new = mem::take(right_op);
                             *op = new;
-                            return true; // skip the cleansing because left table won't contain right columns.
+                            return ControlFlow::Continue(()); // skip the cleansing because left table won't contain right columns.
                         }
                     }
                 },
@@ -97,7 +95,7 @@ impl<'a> EliminateOp<'a> {
                         // and clean up when bottom up.
                         let new = mem::take(left_op);
                         *op = new;
-                        return true;
+                        return ControlFlow::Continue(());
                     }
                 },
                 _ => (),
@@ -153,25 +151,19 @@ impl<'a> EliminateOp<'a> {
         if !op.is_empty() && !self.empty_qs.is_empty() {
             // current operator is not eliminated but we have some child query set to empty,
             // all column references to it must be set to null
-            let mut ucs = UpdateColAndSimplify {
-                qs: &self.empty_qs,
-                res: Ok(()),
-            };
+            let mut ucs = UpdateColAndSimplify { qs: &self.empty_qs };
             for e in op.exprs_mut() {
-                e.walk_mut(&mut ucs);
-                if ucs.res.is_err() {
-                    self.res = ucs.res;
-                    return false;
-                }
+                e.walk_mut(&mut ucs)?;
             }
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
 impl OpMutVisitor for EliminateOp<'_> {
+    type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> bool {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Filt(Filt { pred, source }) => {
                 match pred.as_slice() {
@@ -212,18 +204,17 @@ impl OpMutVisitor for EliminateOp<'_> {
                 }
             }
             Op::Query(query_id) => {
-                self.res = eliminate_op(self.qry_set, *query_id, true);
-                return self.res.is_ok();
+                eliminate_op(self.qry_set, *query_id, true).branch()?;
             }
             _ => (),
         };
         // always returns true, even if current node is updated in-place, we still
         // need to traverse back to eliminate entire tree if possible.
-        true
+        ControlFlow::Continue(())
     }
 
     #[inline]
-    fn leave(&mut self, op: &mut Op) -> bool {
+    fn leave(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Query(qry_id) => {
                 if let Some(subq) = self.qry_set.get(qry_id) {
@@ -236,24 +227,24 @@ impl OpMutVisitor for EliminateOp<'_> {
             Op::Table(..) | Op::Row(_) => (),
             _ => return self.bottom_up(op),
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
 struct UpdateColAndSimplify<'a> {
     qs: &'a HashSet<QueryID>,
-    res: Result<()>,
 }
 impl ExprMutVisitor for UpdateColAndSimplify<'_> {
-    fn leave(&mut self, e: &mut Expr) -> bool {
-        self.res = update_simplify_single(e, |e| {
+    type Break = Error;
+    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+        update_simplify_single(e, |e| {
             if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
                 if self.qs.contains(qry_id) {
                     *e = Expr::const_null();
                 }
             }
-        });
-        self.res.is_ok()
+        })
+        .branch()
     }
 }
 

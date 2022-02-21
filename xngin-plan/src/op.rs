@@ -7,11 +7,13 @@
 //! with schema validated.
 //!
 //! Each table/column is lookuped from catalog and assigned a unique id.
+use crate::error::Error;
 use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
 use crate::setop::{Setop, SetopKind, SubqOp};
 use smallvec::{smallvec, SmallVec};
 use smol_str::SmolStr;
 use xngin_catalog::{SchemaID, TableID};
+use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::{Expr, QueryID, Setq};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -308,26 +310,18 @@ impl Op {
         }
     }
 
-    pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> bool {
-        if !visitor.enter(self) {
-            return false;
-        }
+    pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break> {
+        visitor.enter(self)?;
         for c in self.children() {
-            if !c.walk(visitor) {
-                return false;
-            }
+            c.walk(visitor)?
         }
         visitor.leave(self)
     }
 
-    pub fn walk_mut<V: OpMutVisitor>(&mut self, visitor: &mut V) -> bool {
-        if !visitor.enter(self) {
-            return false;
-        }
+    pub fn walk_mut<V: OpMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break> {
+        visitor.enter(self)?;
         for c in self.children_mut() {
-            if !c.walk_mut(visitor) {
-                return false;
-            }
+            c.walk_mut(visitor)?
         }
         visitor.leave(self)
     }
@@ -423,16 +417,17 @@ pub struct Col {
 }
 
 pub trait OpVisitor {
+    type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _op: &Op) -> bool {
-        true
+    fn enter(&mut self, _op: &Op) -> ControlFlow<Self::Break> {
+        ControlFlow::Continue(())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _op: &Op) -> bool {
-        true
+    fn leave(&mut self, _op: &Op) -> ControlFlow<Self::Break> {
+        ControlFlow::Continue(())
     }
 }
 
@@ -441,25 +436,27 @@ pub trait OpVisitor {
 pub fn preorder<F: FnMut(&Op)>(f: F) -> impl OpVisitor {
     struct Preorder<F>(F);
     impl<F: FnMut(&Op)> OpVisitor for Preorder<F> {
-        fn enter(&mut self, op: &Op) -> bool {
+        type Break = Error;
+        fn enter(&mut self, op: &Op) -> ControlFlow<Error> {
             (self.0)(op);
-            true
+            ControlFlow::Continue(())
         }
     }
     Preorder(f)
 }
 
 pub trait OpMutVisitor {
+    type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _op: &mut Op) -> bool {
-        true
+    fn enter(&mut self, _op: &mut Op) -> ControlFlow<Self::Break> {
+        ControlFlow::Continue(())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _op: &mut Op) -> bool {
-        true
+    fn leave(&mut self, _op: &mut Op) -> ControlFlow<Self::Break> {
+        ControlFlow::Continue(())
     }
 }
 

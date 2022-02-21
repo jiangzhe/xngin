@@ -12,6 +12,7 @@ use crate::setop::{SetopKind, SubqOp};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
+use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::{self as expr, Col, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind};
 use xngin_frontend::ast::*;
 
@@ -1154,8 +1155,9 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
 struct ReplaceCorrelatedCol(u32, expr::Expr);
 
 impl OpMutVisitor for ReplaceCorrelatedCol {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> bool {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
         for e in op.exprs_mut() {
             if let expr::Expr::Plhd(Plhd::Ident(uid)) = e {
                 if *uid == self.0 {
@@ -1163,7 +1165,7 @@ impl OpMutVisitor for ReplaceCorrelatedCol {
                 }
             }
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
@@ -1175,14 +1177,15 @@ struct ReplaceSubq {
 }
 
 impl OpMutVisitor for ReplaceSubq {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> bool {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
         match op {
             Op::Proj(proj) => {
                 for (e, _) in &mut proj.cols {
                     let _ = e.walk_mut(self);
                     if self.updated {
-                        return false;
+                        return ControlFlow::Break(());
                     }
                 }
             }
@@ -1191,7 +1194,7 @@ impl OpMutVisitor for ReplaceSubq {
                     let _ = e.walk_mut(self);
                 }
                 if self.updated {
-                    return false;
+                    return ControlFlow::Break(());
                 }
             }
             Op::Aggr(aggr) => {
@@ -1203,7 +1206,7 @@ impl OpMutVisitor for ReplaceSubq {
                 {
                     let _ = e.walk_mut(self);
                     if self.updated {
-                        return false;
+                        return ControlFlow::Break(());
                     }
                 }
             }
@@ -1213,26 +1216,27 @@ impl OpMutVisitor for ReplaceSubq {
                         let _ = e.walk_mut(self);
                     }
                     if self.updated {
-                        return false;
+                        return ControlFlow::Break(());
                     }
                 }
             }
             _ => (), // do not try others
         }
-        true
+        ControlFlow::Continue(())
     }
 }
 
 impl ExprMutVisitor for ReplaceSubq {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, e: &mut expr::Expr) -> bool {
+    fn enter(&mut self, e: &mut expr::Expr) -> ControlFlow<()> {
         match e {
             expr::Expr::Plhd(Plhd::Subquery(_, uid)) if *uid == self.uid => {
                 *e = expr::Expr::Subq(self.kind, self.query_id);
-                return false;
+                return ControlFlow::Break(());
             }
             _ => (),
         }
-        true
+        ControlFlow::Continue(())
     }
 }

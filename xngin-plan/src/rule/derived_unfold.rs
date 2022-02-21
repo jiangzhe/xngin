@@ -6,6 +6,7 @@ use crate::setop::{Setop, SubqOp};
 use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::mem;
+use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{Col, Expr, ExprMutVisitor, QueryID};
 
 /// Unfold derived table.
@@ -33,8 +34,9 @@ fn unfold_derived(
         if loc == Location::Intermediate {
             // only unfold intermediate query
             let mut u = Unfold::new(qry_set, mapping, mode);
-            let _ = op.walk_mut(&mut u);
-            u.res
+            // let _ = op.walk_mut(&mut u);
+            // u.res
+            op.walk_mut(&mut u).unbranch()
         } else {
             Ok(())
         }
@@ -53,7 +55,7 @@ struct Unfold<'a> {
     stack: Vec<Op>,
     mapping: &'a mut HashMap<Col, Expr>,
     mode: Mode,
-    res: Result<()>,
+    // res: Result<()>,
 }
 
 impl<'a> Unfold<'a> {
@@ -63,23 +65,25 @@ impl<'a> Unfold<'a> {
             stack: vec![],
             mapping,
             mode,
-            res: Ok(()),
+            // res: Ok(()),
         }
     }
 }
 
 impl OpMutVisitor for Unfold<'_> {
+    type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> bool {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Query(qry_id) => {
                 // recursively unfold child query
                 let mut mapping = HashMap::new();
-                self.res = unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full);
-                self.res.is_ok()
+                // self.res = unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full);
+                // self.res.is_ok()
+                unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full).branch()
             }
             Op::Join(join) => match join.as_mut() {
-                Join::Cross(_) => true,
+                Join::Cross(_) => ControlFlow::Continue(()),
                 Join::Qualified(QualifiedJoin {
                     kind: JoinKind::Left,
                     right,
@@ -88,14 +92,9 @@ impl OpMutVisitor for Unfold<'_> {
                     // remove right, execute on right, and add back when leaving
                     let mut right = mem::take(right);
                     let mut u = Unfold::new(self.qry_set, self.mapping, Mode::Partial);
-                    let _ = right.as_mut().walk_mut(&mut u);
+                    let cf = right.as_mut().walk_mut(&mut u);
                     self.stack.push(right.into());
-                    if u.res.is_err() {
-                        self.res = u.res;
-                        false
-                    } else {
-                        true
-                    }
+                    cf
                 }
                 Join::Qualified(QualifiedJoin {
                     kind: JoinKind::Full,
@@ -106,24 +105,16 @@ impl OpMutVisitor for Unfold<'_> {
                     // remove both side, and add back when leaving
                     let mut right = mem::take(right);
                     let mut u = Unfold::new(self.qry_set, self.mapping, Mode::Partial);
-                    let _ = right.as_mut().walk_mut(&mut u);
+                    let cf = right.as_mut().walk_mut(&mut u);
                     self.stack.push(right.into());
-                    if u.res.is_err() {
-                        self.res = u.res;
-                        return false;
-                    }
+                    cf?;
                     let mut left = mem::take(left);
                     // reuse u
-                    let _ = left.as_mut().walk_mut(&mut u);
+                    let cf = left.as_mut().walk_mut(&mut u);
                     self.stack.push(left.into());
-                    if u.res.is_err() {
-                        self.res = u.res;
-                        false
-                    } else {
-                        true
-                    }
+                    cf
                 }
-                _ => true, // other joins is fine to bypass
+                _ => ControlFlow::Continue(()), // other joins is fine to bypass
             },
             Op::Setop(so) => {
                 // setop does not support unfolding into current query
@@ -131,35 +122,35 @@ impl OpMutVisitor for Unfold<'_> {
                 let right = mem::take(right);
                 if let Op::Query(qry_id) = right.as_ref() {
                     let mut mapping = HashMap::new();
-                    self.res = unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full);
+                    let cf =
+                        unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full).branch();
                     self.stack.push(right.into());
-                    if self.res.is_err() {
-                        return false;
-                    }
+                    cf?;
                 } else {
                     unreachable!()
                 }
                 let left = mem::take(left);
                 if let Op::Query(qry_id) = left.as_ref() {
                     let mut mapping = HashMap::new();
-                    self.res = unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full);
+                    let cf =
+                        unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full).branch();
                     self.stack.push(left.into());
-                    if self.res.is_err() {
-                        return false;
-                    }
+                    cf?;
                 }
-                true
+                ControlFlow::Continue(())
             }
             Op::JoinGraph(_) => todo!(),
-            Op::Proj(_) | Op::Filt(_) | Op::Aggr(_) | Op::Sort(_) | Op::Limit(_) => true, // fine to bypass
-            Op::Empty => true, // as join op is set to empty, it's safe to bypass
+            Op::Proj(_) | Op::Filt(_) | Op::Aggr(_) | Op::Sort(_) | Op::Limit(_) => {
+                ControlFlow::Continue(())
+            } // fine to bypass
+            Op::Empty => ControlFlow::Continue(()), // as join op is set to empty, it's safe to bypass
             Op::Table(..) | Op::Row(_) => unreachable!(),
             Op::Apply(_) => todo!(),
         }
     }
 
     #[inline]
-    fn leave(&mut self, op: &mut Op) -> bool {
+    fn leave(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Query(qry_id) => {
                 return match self.qry_set.get_mut(qry_id) {
@@ -172,15 +163,12 @@ impl OpMutVisitor for Unfold<'_> {
                                     self.mapping.insert(Col::QueryCol(*qry_id, idx as u32), e);
                                 }
                                 *op = new_op;
-                                true
+                                ControlFlow::Continue(())
                             }
-                            None => true,
+                            None => ControlFlow::Continue(()),
                         }
                     }
-                    None => {
-                        self.res = Err(Error::QueryNotFound(*qry_id));
-                        false
-                    }
+                    None => ControlFlow::Break(Error::QueryNotFound(*qry_id)),
                 };
             }
             Op::Join(join) => match join.as_mut() {
@@ -189,59 +177,36 @@ impl OpMutVisitor for Unfold<'_> {
                     kind: JoinKind::Left,
                     right,
                     ..
-                }) => match JoinOp::try_from(self.stack.pop().unwrap()) {
-                    Ok(jo) => *right = jo,
-                    Err(e) => {
-                        self.res = Err(e);
-                        return false;
-                    }
-                },
+                }) => {
+                    let jo = JoinOp::try_from(self.stack.pop().unwrap()).branch()?;
+                    *right = jo;
+                }
                 Join::Qualified(QualifiedJoin {
                     kind: JoinKind::Full,
                     left,
                     right,
                     ..
                 }) => {
-                    match JoinOp::try_from(self.stack.pop().unwrap()) {
-                        Ok(jo) => *left = jo,
-                        Err(e) => {
-                            self.res = Err(e);
-                            return false;
-                        }
-                    }
-                    match JoinOp::try_from(self.stack.pop().unwrap()) {
-                        Ok(jo) => *right = jo,
-                        Err(e) => {
-                            self.res = Err(e);
-                            return false;
-                        }
-                    }
+                    let jo = JoinOp::try_from(self.stack.pop().unwrap()).branch()?;
+                    *left = jo;
+                    let jo = JoinOp::try_from(self.stack.pop().unwrap()).branch()?;
+                    *right = jo;
                 }
                 _ => (),
             },
             Op::Setop(so) => {
                 let Setop { left, right, .. } = so.as_mut();
-                match SubqOp::try_from(self.stack.pop().unwrap()) {
-                    Ok(jo) => *left = jo,
-                    Err(e) => {
-                        self.res = Err(e);
-                        return false;
-                    }
-                }
-                match SubqOp::try_from(self.stack.pop().unwrap()) {
-                    Ok(jo) => *right = jo,
-                    Err(e) => {
-                        self.res = Err(e);
-                        return false;
-                    }
-                }
+                let sq = SubqOp::try_from(self.stack.pop().unwrap()).branch()?;
+                *left = sq;
+                let sq = SubqOp::try_from(self.stack.pop().unwrap()).branch()?;
+                *right = sq;
             }
             Op::JoinGraph(_) => todo!(),
             _ => (),
         }
         // rewrite all expressions in current operator
         rewrite_exprs(op, self.mapping);
-        true
+        ControlFlow::Continue(())
     }
 }
 
@@ -303,28 +268,29 @@ impl Detect {
 }
 
 impl OpVisitor for Detect {
+    type Break = ();
     #[inline]
-    fn enter(&mut self, op: &Op) -> bool {
+    fn enter(&mut self, op: &Op) -> ControlFlow<()> {
         match op {
             Op::Aggr(_) | Op::Filt(_) | Op::Sort(_) | Op::Limit(_) | Op::Setop(_) => {
                 self.res = false;
-                false
+                ControlFlow::Break(())
             }
             Op::Proj(_) => {
                 if !self.top_proj {
                     self.top_proj = true;
-                    true
+                    ControlFlow::Continue(())
                 } else {
                     self.res = false;
-                    false
+                    ControlFlow::Break(())
                 }
             }
             Op::Join(_) | Op::JoinGraph(_) | Op::Query(_) => {
                 if !self.top_proj {
                     self.res = false;
-                    false
+                    ControlFlow::Break(())
                 } else {
-                    true
+                    ControlFlow::Continue(())
                 }
             }
             Op::Apply(_) => todo!(),
@@ -343,14 +309,15 @@ fn extract(op: &mut Op) -> (Op, Vec<(Expr, SmolStr)>) {
 fn rewrite_exprs(op: &mut Op, mapping: &HashMap<Col, Expr>) {
     struct Rewrite<'a>(&'a HashMap<Col, Expr>);
     impl ExprMutVisitor for Rewrite<'_> {
+        type Break = ();
         #[inline]
-        fn leave(&mut self, e: &mut Expr) -> bool {
+        fn leave(&mut self, e: &mut Expr) -> ControlFlow<()> {
             if let Expr::Col(c) = e {
                 if let Some(new) = self.0.get(c) {
                     *e = new.clone();
                 }
             }
-            true
+            ControlFlow::Continue(())
         }
     }
     if mapping.is_empty() {

@@ -1,8 +1,9 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::op::Op;
 use crate::op::OpMutVisitor;
 use crate::query::{QueryPlan, QuerySet};
 use std::mem;
+use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::*;
 use xngin_expr::{
     Const, Expr, ExprMutVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind, QueryID,
@@ -16,44 +17,37 @@ pub fn expr_simplify(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> 
 
 fn simplify_expr(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
-        let mut es = ExprSimplify {
-            qry_set,
-            res: Ok(()),
-        };
-        let _ = op.walk_mut(&mut es);
-        es.res
+        let mut es = ExprSimplify { qry_set };
+        op.walk_mut(&mut es).unbranch()
     })?
 }
 
 struct ExprSimplify<'a> {
     qry_set: &'a mut QuerySet,
-    res: Result<()>,
 }
 
 impl OpMutVisitor for ExprSimplify<'_> {
+    type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> bool {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
-            Op::Query(qry_id) => {
-                self.res = simplify_expr(self.qry_set, *qry_id);
-                self.res.is_ok()
-            }
+            Op::Query(qry_id) => simplify_expr(self.qry_set, *qry_id).branch(),
             _ => {
                 for e in op.exprs_mut() {
-                    let _ = e.walk_mut(self);
+                    e.walk_mut(self)?
                 }
-                self.res.is_ok()
+                ControlFlow::Continue(())
             }
         }
     }
 }
 
 impl ExprMutVisitor for ExprSimplify<'_> {
+    type Break = Error;
     /// simplify expression bottom up.
     #[inline]
-    fn leave(&mut self, e: &mut Expr) -> bool {
-        self.res = simplify_single(e);
-        self.res.is_ok()
+    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+        simplify_single(e).branch()
     }
 }
 
