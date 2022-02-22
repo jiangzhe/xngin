@@ -73,46 +73,12 @@ impl Subquery {
 
     #[inline]
     pub fn out_cols(&self) -> &[(Expr, SmolStr)] {
-        let mut op = &self.root;
-        loop {
-            match op {
-                Op::Aggr(aggr) => return &aggr.proj,
-                Op::Proj(proj) => return &proj.cols,
-                Op::Row(row) => return row,
-                Op::Empty => return &[],
-                Op::Sort(sort) => op = sort.source.as_ref(),
-                Op::Limit(limit) => op = limit.source.as_ref(),
-                Op::Filt(filt) => op = filt.source.as_ref(),
-                Op::Table(..)
-                | Op::Query(_)
-                | Op::Setop(_)
-                | Op::Join(_)
-                | Op::JoinGraph(_)
-                | Op::Apply(_) => unreachable!(),
-            }
-        }
+        self.root.out_cols().unwrap()
     }
 
     #[inline]
     pub fn out_cols_mut(&mut self) -> &mut [(Expr, SmolStr)] {
-        let mut op = &mut self.root;
-        loop {
-            match op {
-                Op::Aggr(aggr) => return &mut aggr.proj,
-                Op::Proj(proj) => return &mut proj.cols,
-                Op::Row(row) => return row.as_mut(),
-                Op::Empty => return &mut [],
-                Op::Sort(sort) => op = sort.source.as_mut(),
-                Op::Limit(limit) => op = limit.source.as_mut(),
-                Op::Filt(filt) => op = filt.source.as_mut(),
-                Op::Table(..)
-                | Op::Query(_)
-                | Op::Setop(_)
-                | Op::Join(_)
-                | Op::JoinGraph(_)
-                | Op::Apply(_) => unreachable!(),
-            }
-        }
+        self.root.out_cols_mut().unwrap()
     }
 
     #[inline]

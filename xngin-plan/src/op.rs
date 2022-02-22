@@ -12,6 +12,7 @@ use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
 use crate::setop::{Setop, SetopKind, SubqOp};
 use smallvec::{smallvec, SmallVec};
 use smol_str::SmolStr;
+use std::collections::HashSet;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::{Expr, QueryID, Setq};
@@ -181,6 +182,50 @@ impl Op {
         matches!(self, Op::Empty)
     }
 
+    #[inline]
+    pub fn out_cols(&self) -> Option<&[(Expr, SmolStr)]> {
+        let mut op = self;
+        loop {
+            match op {
+                Op::Aggr(aggr) => return Some(&aggr.proj),
+                Op::Proj(proj) => return Some(&proj.cols),
+                Op::Row(row) => return Some(row),
+                Op::Empty => return Some(&[]),
+                Op::Sort(sort) => op = sort.source.as_ref(),
+                Op::Limit(limit) => op = limit.source.as_ref(),
+                Op::Filt(filt) => op = filt.source.as_ref(),
+                Op::Table(..)
+                | Op::Query(_)
+                | Op::Setop(_)
+                | Op::Join(_)
+                | Op::JoinGraph(_)
+                | Op::Apply(_) => return None,
+            }
+        }
+    }
+
+    #[inline]
+    pub fn out_cols_mut(&mut self) -> Option<&mut [(Expr, SmolStr)]> {
+        let mut op = self;
+        loop {
+            match op {
+                Op::Aggr(aggr) => return Some(&mut aggr.proj),
+                Op::Proj(proj) => return Some(&mut proj.cols),
+                Op::Row(row) => return Some(row.as_mut()),
+                Op::Empty => return Some(&mut []),
+                Op::Sort(sort) => op = sort.source.as_mut(),
+                Op::Limit(limit) => op = limit.source.as_mut(),
+                Op::Filt(filt) => op = filt.source.as_mut(),
+                Op::Table(..)
+                | Op::Query(_)
+                | Op::Setop(_)
+                | Op::Join(_)
+                | Op::JoinGraph(_)
+                | Op::Apply(_) => return None,
+            }
+        }
+    }
+
     /// Returns single source of the operator
     #[inline]
     pub fn source_mut(&mut self) -> Option<&mut Op> {
@@ -308,6 +353,26 @@ impl Op {
                 .collect(),
             Op::Row(row) => row.iter_mut().map(|(e, _)| e).collect(),
         }
+    }
+
+    #[inline]
+    pub fn collect_qry_ids(&self, qry_ids: &mut HashSet<QueryID>) {
+        struct Collect<'a>(&'a mut HashSet<QueryID>);
+        impl OpVisitor for Collect<'_> {
+            type Break = ();
+            #[inline]
+            fn enter(&mut self, op: &Op) -> ControlFlow<()> {
+                match op {
+                    Op::Query(qry_id) => {
+                        self.0.insert(*qry_id);
+                    }
+                    _ => (),
+                }
+                ControlFlow::Continue(())
+            }
+        }
+        let mut c = Collect(qry_ids);
+        let _ = self.walk(&mut c);
     }
 
     pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break> {

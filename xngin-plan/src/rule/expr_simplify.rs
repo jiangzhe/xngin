@@ -51,15 +51,34 @@ impl ExprMutVisitor for ExprSimplify<'_> {
     }
 }
 
-/// Simplify expression.
+pub(crate) fn simplify_nested(e: &mut Expr) -> Result<()> {
+    update_simplify_nested(e, |_| {})
+}
+
 #[inline]
-pub(super) fn simplify_single(e: &mut Expr) -> Result<()> {
+pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr)>(e: &mut Expr, f: F) -> Result<()> {
+    struct SimplifyNested<F>(F);
+    impl<F: FnMut(&mut Expr)> ExprMutVisitor for SimplifyNested<F> {
+        type Break = Error;
+        #[inline]
+        fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+            update_simplify_single(e, &mut self.0).branch()
+        }
+    }
+    let mut sn = SimplifyNested(f);
+    e.walk_mut(&mut sn).unbranch()
+}
+
+/// Simplify single expression.
+/// This method will only simplify the top level of the expression.
+#[inline]
+pub(crate) fn simplify_single(e: &mut Expr) -> Result<()> {
     update_simplify_single(e, |_| {})
 }
 
 /// Try updating the expression, and then simplify it.
 #[inline]
-pub(super) fn update_simplify_single<F: Fn(&mut Expr)>(e: &mut Expr, f: F) -> Result<()> {
+fn update_simplify_single<F: FnMut(&mut Expr)>(e: &mut Expr, mut f: F) -> Result<()> {
     f(e);
     match e {
         Expr::Func(f) => {
@@ -503,7 +522,7 @@ fn simplify_func(f: &mut Func) -> Result<Option<Expr>> {
             }
             _ => None,
         },
-        _ => todo!(),
+        _ => None,
     };
     Ok(res)
 }
