@@ -2,9 +2,9 @@ use crate::error::Result;
 use crate::join::graph::{qids_to_vset, vset_to_qids};
 use crate::join::vertex::{VertexID, VertexSet};
 use crate::join::JoinKind;
+use crate::rule::outerjoin_reduce::reject_null;
 use std::collections::{HashMap, HashSet};
 use xngin_expr::controlflow::ControlFlow;
-use xngin_expr::fold::Fold;
 use xngin_expr::{
     Col, CollectQryIDs, Expr, ExprVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind, QueryID,
 };
@@ -81,7 +81,8 @@ impl Edge {
         r_vset: VertexSet,
         cond: Vec<Expr>,
     ) -> Result<Self> {
-        let expr_qids = collect_qry_ids(&cond);
+        let mut expr_qids = HashSet::new();
+        collect_qry_ids(&cond, &mut expr_qids);
         let expr_vset = qids_to_vset(rev_vmap, &expr_qids)?;
         l_vset &= expr_vset;
         let left = Side {
@@ -258,19 +259,6 @@ pub enum Rebuild {
     Right,
 }
 
-#[inline]
-fn reject_null(expr: &Expr, qry_ids: &HashSet<QueryID>) -> Result<bool> {
-    expr.clone()
-        .reject_null(|e| {
-            if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
-                if qry_ids.contains(qry_id) {
-                    *e = Expr::const_null();
-                }
-            }
-        })
-        .map_err(Into::into)
-}
-
 /// Reserved for fine-grained analysis on join conditions in future.
 #[allow(dead_code)]
 #[inline]
@@ -324,10 +312,9 @@ fn transposable(e: &Expr) -> HashMap<QueryID, bool> {
 }
 
 #[inline]
-fn collect_qry_ids(exprs: &[Expr]) -> HashSet<QueryID> {
-    let mut c = CollectQryIDs::default();
+fn collect_qry_ids(exprs: &[Expr], hs: &mut HashSet<QueryID>) {
+    let mut c = CollectQryIDs(hs);
     for e in exprs {
         let _ = e.walk(&mut c);
     }
-    c.res()
 }

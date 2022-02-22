@@ -362,11 +362,6 @@ impl<'a, F: Write> QueryExplain<'a, F> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.f.write_str(s)
     }
-
-    // fn set_res(&mut self, res: fmt::Result) -> bool {
-    //     self.res = res;
-    //     self.res.is_ok()
-    // }
 }
 
 impl<F: Write> OpVisitor for QueryExplain<'_, F> {
@@ -375,18 +370,17 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
     fn enter(&mut self, op: &Op) -> ControlFlow<fmt::Error> {
         // special handling Subquery
         if let Op::Query(query_id) = op {
-            if let Some(subq) = self.queries.get(query_id) {
+            return if let Some(subq) = self.queries.get(query_id) {
                 let mut qe = QueryExplain {
                     title: Some(format!("(q{}) ", **query_id)),
                     queries: self.queries,
                     f: self.f,
                     spans: self.spans.clone(),
-                    // res: Ok(()),
                 };
-                subq.root.walk(&mut qe)?
+                subq.root.walk(&mut qe)
             } else {
-                ControlFlow::Break(fmt::Error)?
-            }
+                ControlFlow::Break(fmt::Error)
+            };
         }
         let child_cnt = op.children().len();
         self.write_prefix().branch()?;

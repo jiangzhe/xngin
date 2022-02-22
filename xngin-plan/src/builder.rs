@@ -7,6 +7,7 @@ use crate::join::{Join, JoinKind, JoinOp};
 use crate::op::{Op, OpMutVisitor, SortItem};
 use crate::query::{Location, QueryPlan, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
+use crate::rule::expr_simplify::simplify_nested;
 use crate::scope::{Scope, Scopes};
 use crate::setop::{SetopKind, SubqOp};
 use smol_str::SmolStr;
@@ -372,11 +373,17 @@ impl PlanBuilder {
         }
         // 5. translate HAVING clause
         let having = if let Some(having) = &select_table.having {
+            let group_cols = if groups.is_empty() {
+                None
+            } else {
+                Some(groups.as_slice())
+            };
             let resolver = ResolveHavingOrOrder {
                 catalog: self.catalog.as_ref(),
                 qs: &self.qs,
                 query_aliases,
                 proj_cols: &proj_cols,
+                group_cols,
             };
             let having = resolver.resolve_expr(having, "having clause", phc, false)?;
             validate_having(&proj_cols, &groups, scalar_aggr, &having)?;
@@ -391,6 +398,7 @@ impl PlanBuilder {
                 qs: &self.qs,
                 query_aliases,
                 proj_cols: &proj_cols,
+                group_cols: None,
             };
             let order = self.setup_order(&resolver, &select_table.order_by, phc)?;
             validate_order(&groups, scalar_aggr, &order)?;
@@ -858,7 +866,7 @@ impl PlanBuilder {
 /// The rules are:
 /// 1. aggr-funcs are not allowed as group items in aggr.
 /// 2. all non-aggr expressions in proj must be group items in aggr.
-/// 3. all group items in aggr must be expressions in proj.
+/// 3. proj can have constant values, can also eliminate group items in aggr.
 /// Returns true if the aggregation is scalar aggregation.
 #[inline]
 fn validate_proj_aggr(
@@ -879,20 +887,26 @@ fn validate_proj_aggr(
     // which is logically valid.
     let mut proj_cols_outside_aggr = Vec::new();
     let mut proj_groups = Vec::new();
-    let mut has_aggr = false;
+    let mut proj_has_aggr = false;
     for (e, _) in proj_cols {
         // collect column outside aggr
         let (cols, ag) = e.collect_non_aggr_cols();
         if ag {
             proj_cols_outside_aggr.extend(cols)
         } else {
-            proj_groups.push(e);
+            // constants can also be present in SELECT list
+            let mut new_e = e.clone();
+            simplify_nested(&mut new_e)?;
+            if !new_e.is_const() {
+                proj_groups.push(e);
+            }
         }
-        has_aggr |= ag;
+        proj_has_aggr |= ag;
     }
     if aggr_groups.is_empty() {
-        // No GROUP BY specified, so projection can either has no aggr functions, or has all aggr functions.
-        if !has_aggr {
+        // No GROUP BY specified, so projection can either has no aggr functions,
+        // or has all aggr functions with optional constants.
+        if !proj_has_aggr {
             return Ok(false);
         }
         if !proj_groups.is_empty() || !proj_cols_outside_aggr.is_empty() {
@@ -901,7 +915,7 @@ fn validate_proj_aggr(
         // scalar aggregation: no group by, all projection are aggregation function without column reference outside
         return Ok(true);
     }
-    // all proj_groups must exist in aggr_groups
+    // all proj_groups must exist in aggr_groups, constants already excluded
     for pg in &proj_groups {
         if !aggr_groups.contains(pg) {
             return Err(Error::FieldsSelectedNotInGroupBy);
@@ -1095,6 +1109,7 @@ pub struct ResolveHavingOrOrder<'a> {
     qs: &'a QuerySet,
     query_aliases: &'a QueryAliases,
     proj_cols: &'a [(expr::Expr, SmolStr)],
+    group_cols: Option<&'a [expr::Expr]>,
 }
 
 impl ExprResolve for ResolveHavingOrOrder<'_> {
@@ -1138,6 +1153,15 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
                 for (pe, _) in self.proj_cols {
                     if pe == &e {
                         return Ok(Resolution::Expr(e));
+                    }
+                }
+                // then try group cols if exists, this is only for HAVING case,
+                // which also respect GROUP BY clause for search
+                if let Some(group_cols) = self.group_cols {
+                    for ge in group_cols {
+                        if ge == &e {
+                            return Ok(Resolution::Expr(e.clone()));
+                        }
                     }
                 }
                 // not exists, save to check uniqueness

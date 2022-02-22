@@ -4,7 +4,7 @@ use crate::join::vertex::{VertexID, VertexSet};
 use crate::join::JoinKind;
 use crate::op::Op;
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use xngin_expr::{Expr, QueryID};
 
 // Support at most 31 tables in single join graph.
@@ -111,7 +111,8 @@ impl Graph {
     /// pushed down to the query.
     #[inline]
     pub fn add_single_filt(&mut self, mut expr: Expr) -> Result<Vec<(Expr, QueryID)>> {
-        let qry_ids = expr.collect_query_ids();
+        let mut qry_ids = HashSet::new();
+        expr.collect_qry_ids(&mut qry_ids);
         let filt_vset = qids_to_vset(&self.rev_vmap, &qry_ids)?;
         let mut res = vec![];
         // first iteration is to try outer joins in reverse order

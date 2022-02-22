@@ -457,10 +457,9 @@ impl Expr {
     }
 
     #[inline]
-    pub fn collect_query_ids(&self) -> HashSet<QueryID> {
-        let mut c = CollectQryIDs(HashSet::new());
+    pub fn collect_qry_ids(&self, hs: &mut HashSet<QueryID>) {
+        let mut c = CollectQryIDs(hs);
         let _ = self.walk(&mut c);
-        c.0
     }
 }
 
@@ -591,17 +590,10 @@ pub trait ExprMutVisitor {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct CollectQryIDs(HashSet<QueryID>);
+#[derive(Debug)]
+pub struct CollectQryIDs<'a>(pub &'a mut HashSet<QueryID>);
 
-impl CollectQryIDs {
-    #[inline]
-    pub fn res(self) -> HashSet<QueryID> {
-        self.0
-    }
-}
-
-impl ExprVisitor for CollectQryIDs {
+impl ExprVisitor for CollectQryIDs<'_> {
     type Break = ();
     fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
         if let Expr::Col(Col::QueryCol(qry_id, _)) = e {

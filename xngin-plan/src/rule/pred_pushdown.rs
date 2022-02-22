@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::op::{Filt, Op, OpMutVisitor};
 use crate::query::{QueryPlan, QuerySet};
-use crate::rule::expr_simplify::simplify_single;
+use crate::rule::expr_simplify::simplify_nested;
 use indexmap::IndexSet;
 use smol_str::SmolStr;
 use std::mem;
@@ -116,7 +116,7 @@ fn push_single(
             if let Some(subq) = qry_set.get(qry_id) {
                 rewrite_out_expr(&mut pred, subq.out_cols());
                 // after rewriting, Simplify it before pushing
-                simplify_single(&mut pred.e)?;
+                simplify_nested(&mut pred.e)?;
                 match &pred.e {
                     Expr::Const(Const::Null) => {
                         *op = Op::Empty;
@@ -164,7 +164,7 @@ fn push_single(
                         if old.len() > 1 {
                             // todo: once simplify_conj is done, update below code
                             let mut new = Expr::pred_conj(old);
-                            simplify_single(&mut new)?;
+                            simplify_nested(&mut new)?;
                             aggr.filt = new.into_conj();
                         } else {
                             aggr.filt = old;
@@ -180,7 +180,7 @@ fn push_single(
                 let mut old = mem::take(&mut filt.pred);
                 old.push(pred.e);
                 let mut new = Expr::pred_conj(old);
-                simplify_single(&mut new)?;
+                simplify_nested(&mut new)?;
                 filt.pred = new.into_conj();
                 None
             }

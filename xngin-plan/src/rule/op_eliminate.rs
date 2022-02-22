@@ -2,12 +2,12 @@ use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Limit, Op, OpMutVisitor, Proj, Sort};
 use crate::query::{QueryPlan, QuerySet};
-use crate::rule::expr_simplify::update_simplify_single;
+use crate::rule::expr_simplify::update_simplify_nested;
 use crate::setop::{Setop, SetopKind};
 use std::collections::HashSet;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, Const, Expr, ExprMutVisitor, QueryID, Setq};
+use xngin_expr::{Col, Const, Expr, QueryID, Setq};
 
 /// Eliminate redundant operators.
 /// 1. Filter with true predicate can be removed.
@@ -151,9 +151,18 @@ impl<'a> EliminateOp<'a> {
         if !op.is_empty() && !self.empty_qs.is_empty() {
             // current operator is not eliminated but we have some child query set to empty,
             // all column references to it must be set to null
-            let mut ucs = UpdateColAndSimplify { qs: &self.empty_qs };
+            // let mut ucs = UpdateColAndSimplify { qs: &self.empty_qs };
+            let qs = &self.empty_qs;
             for e in op.exprs_mut() {
-                e.walk_mut(&mut ucs)?;
+                // e.walk_mut(&mut ucs)?;
+                update_simplify_nested(e, |e| {
+                    if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
+                        if qs.contains(qry_id) {
+                            *e = Expr::const_null();
+                        }
+                    }
+                })
+                .branch()?
             }
         }
         ControlFlow::Continue(())
@@ -228,23 +237,6 @@ impl OpMutVisitor for EliminateOp<'_> {
             _ => return self.bottom_up(op),
         }
         ControlFlow::Continue(())
-    }
-}
-
-struct UpdateColAndSimplify<'a> {
-    qs: &'a HashSet<QueryID>,
-}
-impl ExprMutVisitor for UpdateColAndSimplify<'_> {
-    type Break = Error;
-    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
-        update_simplify_single(e, |e| {
-            if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
-                if self.qs.contains(qry_id) {
-                    *e = Expr::const_null();
-                }
-            }
-        })
-        .branch()
     }
 }
 
