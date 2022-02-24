@@ -1,4 +1,5 @@
 use super::*;
+use crate::join::{JoinGraph, QualifiedJoin};
 use crate::op::OpKind;
 use crate::op::OpVisitor;
 use std::sync::Arc;
@@ -413,6 +414,16 @@ pub(crate) fn assert_j_plan1<F: FnOnce(&str, QueryPlan)>(
     f(sql, plan)
 }
 
+pub(crate) fn assert_j_dup_plan<F: FnOnce(&str, QueryPlan, QueryPlan)>(
+    cat: &Arc<dyn QueryCatalog>,
+    sql: &str,
+    f: F,
+) {
+    let plan1 = build_plan(&cat, sql);
+    let plan2 = build_plan(&cat, sql);
+    f(sql, plan1, plan2)
+}
+
 pub(crate) fn assert_j_plan2<F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
     cat: &Arc<dyn QueryCatalog>,
     sql1: &str,
@@ -444,6 +455,46 @@ pub(crate) fn get_lvl_queries(plan: &QueryPlan, lvl: usize) -> Vec<&Subquery> {
         }
     }
     res
+}
+
+pub(crate) fn extract_join_kinds(op: &Op) -> Vec<&'static str> {
+    struct Extract(Vec<&'static str>);
+    impl OpVisitor for Extract {
+        type Break = ();
+        #[inline]
+        fn enter(&mut self, op: &Op) -> ControlFlow<()> {
+            match op {
+                Op::Join(j) => match j.as_ref() {
+                    Join::Cross(_) => self.0.push("cross"),
+                    Join::Qualified(QualifiedJoin { kind, .. }) => self.0.push(kind.to_lower()),
+                },
+                _ => (),
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut ex = Extract(vec![]);
+    let _ = op.walk(&mut ex);
+    ex.0
+}
+
+pub(crate) fn extract_join_graph(op: &Op) -> Option<JoinGraph> {
+    struct ExtractJoinGraph(Option<JoinGraph>);
+    impl OpVisitor for ExtractJoinGraph {
+        type Break = ();
+        fn enter(&mut self, op: &Op) -> ControlFlow<()> {
+            match op {
+                Op::JoinGraph(g) => {
+                    self.0 = Some(g.as_ref().clone());
+                    ControlFlow::Break(())
+                }
+                _ => ControlFlow::Continue(()),
+            }
+        }
+    }
+    let mut ex = ExtractJoinGraph(None);
+    let _ = op.walk(&mut ex);
+    ex.0
 }
 
 pub(crate) fn collect_queries<'a>(

@@ -4,6 +4,7 @@ pub mod vertex;
 
 use crate::error::{Error, Result};
 use crate::op::Op;
+use std::collections::HashSet;
 use xngin_expr::{Expr, QueryID};
 
 // aliases of join graph and edge
@@ -42,6 +43,33 @@ pub enum Join {
     Cross(Vec<JoinOp>),
     /// All natural join are converted to cross join or qualified join.
     Qualified(QualifiedJoin),
+}
+
+impl Join {
+    #[inline]
+    pub fn collect_qry_ids(&self, qry_ids: &mut HashSet<QueryID>) {
+        match self {
+            Join::Cross(jos) => {
+                for jo in jos {
+                    jo.collect_qry_ids(qry_ids)
+                }
+            }
+            Join::Qualified(QualifiedJoin { left, right, .. }) => {
+                left.collect_qry_ids(qry_ids);
+                right.collect_qry_ids(qry_ids);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn contains_qry_id(&self, qry_id: QueryID) -> bool {
+        match self {
+            Join::Cross(jos) => jos.iter().any(|jo| jo.contains_qry_id(qry_id)),
+            Join::Qualified(QualifiedJoin { left, right, .. }) => {
+                left.contains_qry_id(qry_id) || right.contains_qry_id(qry_id)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +131,28 @@ impl JoinOp {
         filt: Vec<Expr>,
     ) -> Self {
         JoinOp(Op::qualified_join(kind, left, right, cond, filt))
+    }
+
+    #[inline]
+    pub fn collect_qry_ids(&self, qry_ids: &mut HashSet<QueryID>) {
+        match self.as_ref() {
+            Op::Empty => (),
+            Op::Query(qry_id) => {
+                qry_ids.insert(*qry_id);
+            }
+            Op::Join(join) => join.collect_qry_ids(qry_ids),
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    pub fn contains_qry_id(&self, qry_id: QueryID) -> bool {
+        match self.as_ref() {
+            Op::Empty => false,
+            Op::Query(qid) => *qid == qry_id,
+            Op::Join(join) => join.contains_qry_id(qry_id),
+            _ => unreachable!(),
+        }
     }
 }
 

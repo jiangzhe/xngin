@@ -1160,7 +1160,7 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
                 if let Some(group_cols) = self.group_cols {
                     for ge in group_cols {
                         if ge == &e {
-                            return Ok(Resolution::Expr(e.clone()));
+                            return Ok(Resolution::Expr(e));
                         }
                     }
                 }

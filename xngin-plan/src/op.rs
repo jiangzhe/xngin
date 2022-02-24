@@ -362,11 +362,8 @@ impl Op {
             type Break = ();
             #[inline]
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-                match op {
-                    Op::Query(qry_id) => {
-                        self.0.insert(*qry_id);
-                    }
-                    _ => (),
+                if let Op::Query(qry_id) = op {
+                    self.0.insert(*qry_id);
                 }
                 ControlFlow::Continue(())
             }
