@@ -89,7 +89,7 @@ impl Expr {
         if exprs.len() == 1 {
             exprs.pop().unwrap()
         } else {
-            Expr::pred_conj(exprs)
+            Expr::Pred(Pred::Conj(exprs))
         }
     }
 
