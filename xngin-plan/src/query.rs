@@ -5,6 +5,7 @@ use crate::scope::Scope;
 use fnv::FnvHashMap;
 use slab::Slab;
 use smol_str::SmolStr;
+use std::collections::HashSet;
 use std::mem;
 use std::ops::ControlFlow;
 use xngin_catalog::{SchemaID, TableID};
@@ -115,6 +116,19 @@ pub enum Location {
     Network,
     // virtual table which is computed directly by expression
     Virtual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QryIDs {
+    Empty,
+    Single(QueryID),
+    Multi(HashSet<QueryID>),
+}
+
+impl Default for QryIDs {
+    fn default() -> Self {
+        QryIDs::Empty
+    }
 }
 
 /// QuerySet stores all sub-subqeries and provide lookup and update methods.
