@@ -74,7 +74,6 @@ impl ExprVisitor for Collect<'_> {
 struct Modify<'a> {
     qry_set: &'a mut QuerySet,
     use_set: &'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>,
-    // res: Result<()>,
 }
 
 impl OpMutVisitor for Modify<'_> {
@@ -112,8 +111,6 @@ impl ExprMutVisitor for Modify<'_> {
                 }
             }
             Expr::Subq(_, qry_id) => {
-                // self.res = prune_col(self.qry_set, *qry_id, self.use_set);
-                // return self.res.is_ok();
                 prune_col(self.qry_set, *qry_id, self.use_set).branch()?;
             }
             _ => (),

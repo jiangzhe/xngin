@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::join::{Join, JoinKind, QualifiedJoin};
+use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Op, OpMutVisitor};
 use crate::query::{QryIDs, QueryPlan, QuerySet};
 use crate::rule::expr_simplify::simplify_nested;
@@ -30,30 +30,44 @@ struct PredPushdown<'a> {
 
 impl OpMutVisitor for PredPushdown<'_> {
     type Break = Error;
+    #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
         match op {
             Op::Filt(Filt { pred, source }) => {
                 let mut fallback = vec![];
-                for e in mem::take(pred) {
-                    let item = ExprItem::new(e);
-                    match push_single(self.qry_set, source, item).branch()? {
-                        None => (),
-                        Some(p) => {
-                            // child rejects the predicate, add it to fallback
-                            fallback.push(p.e);
+                let mut exprs = mem::take(pred);
+                loop {
+                    let orig_count = exprs.len();
+                    for e in exprs {
+                        // todo: we do not support subquery push, in future we will
+                        // always unnest subqueries, this will not be a problem.
+                        let mut item = ExprItem::new(e);
+                        if item.load_attr().has_subq {
+                            fallback.push(item.e);
+                            continue;
+                        }
+                        match push_single(self.qry_set, source, item).branch()? {
+                            None => (),
+                            Some(p) => {
+                                // child rejects the predicate, add it to fallback
+                                fallback.push(p.e);
+                            }
                         }
                     }
-                }
-                if fallback.is_empty() {
-                    // all predicates are pushed down, current operator can be removed.
-                    let source = mem::take(source.as_mut());
-                    *op = source;
-                    self.enter(op)
-                } else {
-                    // still have certain predicates can not be pushed down,
-                    // update them back
-                    *pred = fallback;
-                    ControlFlow::Continue(())
+                    if fallback.is_empty() {
+                        // all predicates are pushed down, current operator can be removed.
+                        let source = mem::take(source.as_mut());
+                        *op = source;
+                        break self.enter(op);
+                    } else if fallback.len() == orig_count {
+                        // still have certain predicates can not be pushed down,
+                        // and no further progress could be made.
+                        *pred = fallback;
+                        break ControlFlow::Continue(());
+                    } else {
+                        // can still make progress, retry
+                        exprs = mem::take(&mut fallback);
+                    }
                 }
             }
             Op::Query(qry_id) => pushdown_pred(self.qry_set, *qry_id).branch(),
@@ -66,6 +80,7 @@ impl OpMutVisitor for PredPushdown<'_> {
 struct ExprAttr {
     qry_ids: QryIDs,
     has_aggf: bool,
+    has_subq: bool,
 }
 
 impl ExprVisitor for ExprAttr {
@@ -74,24 +89,24 @@ impl ExprVisitor for ExprAttr {
     fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
         match e {
             Expr::Aggf(_) => self.has_aggf = true,
-            Expr::Col(Col::QueryCol(qry_id, _)) => {
-                // self.qry_ids.insert(*qry_id);
-                match &mut self.qry_ids {
-                    QryIDs::Empty => {
-                        self.qry_ids = QryIDs::Single(*qry_id);
-                    }
-                    QryIDs::Single(qid) => {
-                        if qid != qry_id {
-                            let mut hs = HashSet::new();
-                            hs.insert(*qid);
-                            hs.insert(*qry_id);
-                            self.qry_ids = QryIDs::Multi(hs);
-                        }
-                    }
-                    QryIDs::Multi(hs) => {
+            Expr::Col(Col::QueryCol(qry_id, _)) => match &mut self.qry_ids {
+                QryIDs::Empty => {
+                    self.qry_ids = QryIDs::Single(*qry_id);
+                }
+                QryIDs::Single(qid) => {
+                    if qid != qry_id {
+                        let mut hs = HashSet::new();
+                        hs.insert(*qid);
                         hs.insert(*qry_id);
+                        self.qry_ids = QryIDs::Multi(hs);
                     }
                 }
+                QryIDs::Multi(hs) => {
+                    hs.insert(*qry_id);
+                }
+            },
+            Expr::Subq(..) => {
+                self.has_subq = true;
             }
             _ => (),
         }
@@ -273,7 +288,82 @@ fn push_single(
                             }
                             Some(pred)
                         }
-                        _ => Some(pred), // if involved multiple tables, we delay it to push unpon join graph
+                        QryIDs::Multi(qry_ids) => {
+                            // if involved multiple tables, we convert cross join into join tree
+                            // currently only two-way join is supported.
+                            // once cross join are converted as a join tree, these rejected predicates
+                            // can be pushed further.
+                            if qry_ids.len() > 2 {
+                                Some(pred)
+                            } else {
+                                let (qid1, qid2) = {
+                                    let mut iter = qry_ids.iter();
+                                    let q1 = iter.next().cloned().unwrap();
+                                    let q2 = iter.next().cloned().unwrap();
+                                    (q1, q2)
+                                };
+                                let mut join_ops = mem::take(jos);
+                                if let Some((idx1, jo)) = join_ops
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(_, jo)| jo.contains_qry_id(qid1))
+                                {
+                                    if jo.contains_qry_id(qid2) {
+                                        // belong to single join op, push to it
+                                        *jos = join_ops;
+                                        assert!(push_single(
+                                            qry_set,
+                                            jos[idx1].as_mut(),
+                                            pred.clone()
+                                        )?
+                                        .is_none());
+                                        return Ok(None);
+                                    }
+                                    if let Some(idx2) =
+                                        join_ops.iter().position(|jo| jo.contains_qry_id(qid2))
+                                    {
+                                        let (jo1, jo2) = if idx1 < idx2 {
+                                            // get larger one first
+                                            let jo2 = join_ops.swap_remove(idx2);
+                                            let jo1 = join_ops.swap_remove(idx1);
+                                            (jo1, jo2)
+                                        } else {
+                                            let jo1 = join_ops.swap_remove(idx1);
+                                            let jo2 = join_ops.swap_remove(idx2);
+                                            (jo2, jo1)
+                                        };
+                                        // let new_join = JoinOp::qualified(JoinKind::Inner, jo1, jo2, vec![pred.e], vec![]);
+                                        if join_ops.is_empty() {
+                                            // entire cross join is converted to inner join tree.
+                                            let new_join = Join::Qualified(QualifiedJoin {
+                                                kind: JoinKind::Inner,
+                                                left: jo1,
+                                                right: jo2,
+                                                cond: vec![pred.e],
+                                                filt: vec![],
+                                            });
+                                            *join.as_mut() = new_join;
+                                            return Ok(None);
+                                        } else {
+                                            let new_join = JoinOp::qualified(
+                                                JoinKind::Inner,
+                                                jo1,
+                                                jo2,
+                                                vec![pred.e],
+                                                vec![],
+                                            );
+                                            join_ops.push(new_join);
+                                            *jos = join_ops;
+                                            return Ok(None);
+                                        }
+                                    } else {
+                                        return Err(Error::InvalidJoinCondition);
+                                    }
+                                } else {
+                                    return Err(Error::InvalidJoinCondition);
+                                }
+                            }
+                        } // _ => Some(pred), // if involved multiple tables, we delay it to push unpon join graph
                     }
                 }
             }
@@ -673,6 +763,39 @@ mod tests {
             "select t1.c1, count(*) from t1, t2 group by t1.c1 having c1 > 0",
             assert_filt_on_disk_table1,
         );
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1, t2 where t1.c1 = t2.c1",
+            |s1, mut q1| {
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let jks = extract_join_kinds(&subq.root);
+                assert_eq!(vec!["inner"], jks);
+            },
+        );
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1, t2, t3 where t1.c1 = t2.c1 and t1.c1 = t3.c1",
+            |s1, mut q1| {
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let jks = extract_join_kinds(&subq.root);
+                assert_eq!(vec!["inner", "inner"], jks);
+            },
+        );
+        assert_j_plan1(
+            &cat,
+            "select 1 from t1, t2, t3 where t1.c1 = t2.c1 and t1.c1 = t3.c1 and t2.c1 = t3.c1",
+            |s1, mut q1| {
+                pred_pushdown(&mut q1).unwrap();
+                print_plan(s1, &q1);
+                let subq = q1.root_query().unwrap();
+                let jks = extract_join_kinds(&subq.root);
+                assert_eq!(vec!["inner", "inner"], jks);
+            },
+        )
     }
 
     #[test]

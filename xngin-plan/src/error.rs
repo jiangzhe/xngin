@@ -81,6 +81,8 @@ pub enum Error {
     InvalidJoinTransformation,
     #[error("Invalid operator transformation")]
     InvalidOpertorTransformation,
+    #[error("Invalid join condition")]
+    InvalidJoinCondition,
     #[error("Break")]
     Break,
 }
