@@ -3,6 +3,7 @@ use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Limit, Op, OpMutVisitor, Proj, Sort};
 use crate::query::{QueryPlan, QuerySet};
 use crate::rule::expr_simplify::update_simplify_nested;
+use crate::rule::RuleEffect;
 use crate::setop::{Setop, SetopKind};
 use std::collections::HashSet;
 use std::mem;
@@ -18,11 +19,11 @@ use xngin_expr::{Col, Const, Expr, QueryID, Setq};
 /// 6. LIMIT 0 can eliminiate entire tree.
 /// 7. ORDER BY in subquery without LIMIT can be removed.
 #[inline]
-pub fn op_eliminate(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+pub fn op_eliminate(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
     eliminate_op(qry_set, *root, false)
 }
 
-fn eliminate_op(qry_set: &mut QuerySet, qry_id: QueryID, is_subq: bool) -> Result<()> {
+fn eliminate_op(qry_set: &mut QuerySet, qry_id: QueryID, is_subq: bool) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut eo = EliminateOp::new(qry_set, is_subq);
         op.walk_mut(&mut eo).unbranch()
@@ -46,13 +47,15 @@ impl<'a> EliminateOp<'a> {
         }
     }
 
-    fn bottom_up(&mut self, op: &mut Op) -> ControlFlow<Error> {
+    fn bottom_up(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
+        let mut eff = RuleEffect::NONE;
         match op {
             Op::Join(j) => match j.as_mut() {
                 Join::Cross(tbls) => {
                     if tbls.iter().any(|t| t.as_ref().is_empty()) {
                         // any child in cross join results in empty rows
-                        *op = Op::Empty
+                        *op = Op::Empty;
+                        eff |= RuleEffect::OP;
                     }
                 }
                 Join::Qualified(QualifiedJoin {
@@ -70,12 +73,14 @@ impl<'a> EliminateOp<'a> {
                     JoinKind::Full => {
                         if right_op.is_empty() {
                             *op = Op::Empty;
+                            eff |= RuleEffect::OP;
                         } else {
                             // As left table is empty, we can convert full join to single table,
                             // when bottom up, rewrite all columns derived from right table to null
                             let new = mem::take(right_op);
                             *op = new;
-                            return ControlFlow::Continue(()); // skip the cleansing because left table won't contain right columns.
+                            eff |= RuleEffect::OP;
+                            return ControlFlow::Continue(eff); // skip the cleansing because left table won't contain right columns.
                         }
                     }
                 },
@@ -95,7 +100,8 @@ impl<'a> EliminateOp<'a> {
                         // and clean up when bottom up.
                         let new = mem::take(left_op);
                         *op = new;
-                        return ControlFlow::Continue(());
+                        eff |= RuleEffect::OP;
+                        return ControlFlow::Continue(eff);
                     }
                 },
                 _ => (),
@@ -108,15 +114,25 @@ impl<'a> EliminateOp<'a> {
                     right,
                 } = so.as_mut();
                 match (left.as_mut(), right.as_mut()) {
-                    (Op::Empty, Op::Empty) => *op = Op::Empty,
+                    (Op::Empty, Op::Empty) => {
+                        *op = Op::Empty;
+                        eff |= RuleEffect::OP;
+                    }
                     (Op::Empty, right) => match (kind, q) {
-                        (SetopKind::Union, Setq::All) => *op = mem::take(right),
-                        (SetopKind::Except | SetopKind::Intersect, Setq::All) => *op = Op::Empty,
+                        (SetopKind::Union, Setq::All) => {
+                            *op = mem::take(right);
+                            eff |= RuleEffect::OP;
+                        }
+                        (SetopKind::Except | SetopKind::Intersect, Setq::All) => {
+                            *op = Op::Empty;
+                            eff |= RuleEffect::OP;
+                        }
                         _ => (),
                     },
                     (left, Op::Empty) => {
                         if *q == Setq::All {
                             *op = mem::take(left);
+                            eff |= RuleEffect::OP;
                         }
                     }
                     _ => (),
@@ -124,23 +140,27 @@ impl<'a> EliminateOp<'a> {
             }
             Op::Limit(Limit { source, .. }) => {
                 if source.is_empty() {
-                    *op = Op::Empty
+                    *op = Op::Empty;
+                    eff |= RuleEffect::OP;
                 }
             }
             Op::Sort(Sort { source, .. }) => {
                 if source.is_empty() {
-                    *op = Op::Empty
+                    *op = Op::Empty;
+                    eff |= RuleEffect::OP;
                 }
             }
             Op::Aggr(_) => (), // todo: leave aggr as is, and optimize later
             Op::Proj(Proj { source, .. }) => {
                 if source.is_empty() {
-                    *op = Op::Empty
+                    *op = Op::Empty;
+                    eff |= RuleEffect::OP;
                 }
             }
             Op::Filt(Filt { source, .. }) => {
                 if source.is_empty() {
-                    *op = Op::Empty
+                    *op = Op::Empty;
+                    eff |= RuleEffect::OP;
                 }
             }
             Op::Apply(_) => unimplemented!(),
@@ -151,46 +171,50 @@ impl<'a> EliminateOp<'a> {
         if !op.is_empty() && !self.empty_qs.is_empty() {
             // current operator is not eliminated but we have some child query set to empty,
             // all column references to it must be set to null
-            // let mut ucs = UpdateColAndSimplify { qs: &self.empty_qs };
             let qs = &self.empty_qs;
             for e in op.exprs_mut() {
-                // e.walk_mut(&mut ucs)?;
-                update_simplify_nested(e, |e| {
+                eff |= update_simplify_nested(e, |e| {
                     if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
                         if qs.contains(qry_id) {
                             *e = Expr::const_null();
                         }
                     }
                 })
-                .branch()?
+                .branch()?;
             }
         }
-        ControlFlow::Continue(())
+        ControlFlow::Continue(eff)
     }
 }
 
 impl OpMutVisitor for EliminateOp<'_> {
+    type Cont = RuleEffect;
     type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
+        let mut eff = RuleEffect::NONE;
         match op {
             Op::Filt(Filt { pred, source }) => {
                 match pred.as_slice() {
                     [Expr::Const(Const::Null)] => {
                         // impossible predicates, remove entire sub-tree
                         *op = Op::Empty;
+                        eff |= RuleEffect::OP;
                     }
                     [Expr::Const(c)] => {
                         if c.is_zero().unwrap_or_default() {
                             // impossible predicates, remove entire sub-tree
                             *op = Op::Empty;
+                            eff |= RuleEffect::OP;
                         } else {
                             // true predicates, remove filter
                             let source = mem::take(source.as_mut());
                             *op = source;
+                            eff |= RuleEffect::OP;
                             // as we replace current operator with its child, we need to
                             // perform enter() again
-                            return self.enter(op);
+                            eff |= self.enter(op)?;
+                            return ControlFlow::Continue(eff);
                         }
                     }
                     _ => (),
@@ -199,6 +223,7 @@ impl OpMutVisitor for EliminateOp<'_> {
             Op::Limit(Limit { start, end, .. }) => {
                 if *start == *end {
                     *op = Op::Empty;
+                    eff |= RuleEffect::OP;
                 } else {
                     self.has_limit = true;
                 }
@@ -209,34 +234,40 @@ impl OpMutVisitor for EliminateOp<'_> {
                     // sort can be eliminated.
                     let source = mem::take(source.as_mut());
                     *op = source;
-                    return self.enter(op);
+                    eff |= RuleEffect::OP;
+                    eff |= self.enter(op)?;
+                    return ControlFlow::Continue(eff);
                 }
             }
             Op::Query(query_id) => {
-                eliminate_op(self.qry_set, *query_id, true).branch()?;
+                eff |= eliminate_op(self.qry_set, *query_id, true).branch()?;
             }
             _ => (),
         };
         // always returns true, even if current node is updated in-place, we still
         // need to traverse back to eliminate entire tree if possible.
-        ControlFlow::Continue(())
+        ControlFlow::Continue(eff)
     }
 
     #[inline]
-    fn leave(&mut self, op: &mut Op) -> ControlFlow<Error> {
+    fn leave(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
+        let mut eff = RuleEffect::NONE;
         match op {
             Op::Query(qry_id) => {
                 if let Some(subq) = self.qry_set.get(qry_id) {
                     if subq.root.is_empty() {
                         self.empty_qs.insert(*qry_id);
                         *op = Op::Empty;
+                        eff |= RuleEffect::OP;
                     }
                 }
             }
             Op::Table(..) | Op::Row(_) => (),
-            _ => return self.bottom_up(op),
+            _ => {
+                eff |= self.bottom_up(op)?;
+            }
         }
-        ControlFlow::Continue(())
+        ControlFlow::Continue(eff)
     }
 }
 

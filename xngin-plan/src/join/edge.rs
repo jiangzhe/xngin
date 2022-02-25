@@ -279,6 +279,7 @@ fn all_transposable(qids: &HashSet<QueryID>, e: &Expr) -> bool {
 fn transposable(e: &Expr) -> HashMap<QueryID, bool> {
     struct Trans(HashMap<QueryID, bool>);
     impl ExprVisitor for Trans {
+        type Cont = ();
         type Break = ();
         fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
             match e {

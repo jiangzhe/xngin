@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::op::Op;
 use crate::op::OpMutVisitor;
 use crate::query::{QueryPlan, QuerySet};
+use crate::rule::RuleEffect;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::*;
@@ -11,11 +12,11 @@ use xngin_expr::{
 
 /// Simplify expressions.
 #[inline]
-pub fn expr_simplify(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+pub fn expr_simplify(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
     simplify_expr(qry_set, *root)
 }
 
-fn simplify_expr(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
+fn simplify_expr(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut es = ExprSimplify { qry_set };
         op.walk_mut(&mut es).unbranch()
@@ -27,41 +28,50 @@ struct ExprSimplify<'a> {
 }
 
 impl OpMutVisitor for ExprSimplify<'_> {
+    type Cont = RuleEffect;
     type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         match op {
             Op::Query(qry_id) => simplify_expr(self.qry_set, *qry_id).branch(),
             _ => {
+                let mut eff = RuleEffect::NONE;
                 for e in op.exprs_mut() {
-                    e.walk_mut(self)?
+                    eff |= e.walk_mut(self)?;
+                    // we do not count normalize as expression change
+                    normalize_single(e); // normalize after simplifying
                 }
-                ControlFlow::Continue(())
+                ControlFlow::Continue(eff)
             }
         }
     }
 }
 
 impl ExprMutVisitor for ExprSimplify<'_> {
+    type Cont = RuleEffect;
     type Break = Error;
     /// simplify expression bottom up.
     #[inline]
-    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
         simplify_single(e).branch()
     }
 }
 
-pub(crate) fn simplify_nested(e: &mut Expr) -> Result<()> {
+pub(crate) fn simplify_nested(e: &mut Expr) -> Result<RuleEffect> {
     update_simplify_nested(e, |_| {})
 }
 
 #[inline]
-pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr)>(e: &mut Expr, f: F) -> Result<()> {
+pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr)>(
+    e: &mut Expr,
+    f: F,
+) -> Result<RuleEffect> {
     struct SimplifyNested<F>(F);
     impl<F: FnMut(&mut Expr)> ExprMutVisitor for SimplifyNested<F> {
+        type Cont = RuleEffect;
         type Break = Error;
         #[inline]
-        fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+        fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
             update_simplify_single(e, &mut self.0).branch()
         }
     }
@@ -69,31 +79,60 @@ pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr)>(e: &mut Expr, f: F) ->
     e.walk_mut(&mut sn).unbranch()
 }
 
+// normalize considers
+#[inline]
+pub(crate) fn normalize_single(e: &mut Expr) {
+    if let Expr::Pred(Pred::Func(PredFunc { kind, args })) = e {
+        if let Some(flipped_kind) = kind.pos_flip() {
+            match args.as_mut() {
+                [e1 @ Expr::Const(_), e2] => {
+                    // "const cmp expr" => "expr cmp const"
+                    mem::swap(e1, e2);
+                    *kind = flipped_kind;
+                }
+                [Expr::Col(c1), Expr::Col(c2)] => {
+                    // if e1 and e2 are columns, fixed the order so that
+                    // "e1 cmp e2" always has InternalOrder(e1) < InternalOrder(e2)
+                    if c1 > c2 {
+                        mem::swap(c1, c2);
+                        *kind = flipped_kind;
+                    }
+                }
+                _ => (),
+            }
+        }
+    }
+}
+
 /// Simplify single expression.
 /// This method will only simplify the top level of the expression.
 #[inline]
-pub(crate) fn simplify_single(e: &mut Expr) -> Result<()> {
+pub(crate) fn simplify_single(e: &mut Expr) -> Result<RuleEffect> {
     update_simplify_single(e, |_| {})
 }
 
 /// Try updating the expression, and then simplify it.
 #[inline]
-fn update_simplify_single<F: FnMut(&mut Expr)>(e: &mut Expr, mut f: F) -> Result<()> {
+fn update_simplify_single<F: FnMut(&mut Expr)>(e: &mut Expr, mut f: F) -> Result<RuleEffect> {
+    let mut eff = RuleEffect::NONE;
+    // we don't count the replacement as expression change
     f(e);
     match e {
         Expr::Func(f) => {
             if let Some(new) = simplify_func(f)? {
-                *e = new
+                *e = new;
+                eff |= RuleEffect::EXPR;
             }
         }
         Expr::Pred(p) => {
             if let Some(new) = simplify_pred(p)? {
-                *e = new
+                *e = new;
+                eff |= RuleEffect::EXPR;
             }
         }
         _ => (), // All other kinds are skipped in constant folding
     }
-    Ok(())
+    Ok(eff)
 }
 
 /// Simplify function.
@@ -839,12 +878,11 @@ fn coerce_cmp_func(kind: PredFuncKind, e1: Expr, e2: Expr) -> Expr {
 mod tests {
     use super::*;
     use crate::builder::tests::{
-        assert_j_plan, assert_j_plan2, get_filt_expr, j_catalog, print_plan,
+        assert_j_plan1, assert_j_plan2, get_filt_expr, j_catalog, print_plan,
     };
 
-    // fold func 1
     #[test]
-    fn test_expr_simplify1() {
+    fn test_expr_simplify_neg_neg() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -854,9 +892,8 @@ mod tests {
         )
     }
 
-    // fold func 2
     #[test]
-    fn test_expr_simplify2() {
+    fn test_expr_simplify_neg() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -866,21 +903,25 @@ mod tests {
         )
     }
 
-    // fold func 3
     #[test]
-    fn test_expr_simplify3() {
+    fn test_expr_simplify_consts_add_sub() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
             "select c1 from t1 where 1+1",
             "select c1 from t1 where 2",
             assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            &cat,
+            "select c1 from t1 where 1-1",
+            "select c1 from t1 where 0",
+            assert_eq_filt_expr,
         )
     }
 
-    // fold func 4
     #[test]
-    fn test_expr_simplify4() {
+    fn test_expr_simplify_add_sub_zero() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -896,9 +937,8 @@ mod tests {
         );
     }
 
-    // fold func 4
     #[test]
-    fn test_expr_simplify5() {
+    fn test_expr_simplify_zero_add_sub() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -926,9 +966,8 @@ mod tests {
         )
     }
 
-    // fold func 5
     #[test]
-    fn test_expr_simplify6() {
+    fn test_expr_simplify6_commu() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -950,9 +989,8 @@ mod tests {
         )
     }
 
-    // fold func 6
     #[test]
-    fn test_expr_simplify7() {
+    fn test_expr_simplify_comm_assoc1() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -992,9 +1030,8 @@ mod tests {
         );
     }
 
-    // fold func 7
     #[test]
-    fn test_expr_simplify8() {
+    fn test_expr_simplify_comm_assoc2() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1040,9 +1077,8 @@ mod tests {
         );
     }
 
-    // fold func 8
     #[test]
-    fn test_expr_simplify9() {
+    fn test_expr_simplify_comm_assoc3() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1106,9 +1142,8 @@ mod tests {
         );
     }
 
-    // fold func 8
     #[test]
-    fn test_expr_simplify10() {
+    fn test_expr_simplify_comm_assoc4() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1174,8 +1209,10 @@ mod tests {
 
     // fold pred 1.1
     #[test]
-    fn test_expr_simplify11() {
-        assert_j_plan(
+    fn test_expr_simplify_exists() {
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where not exists (select 1 from t1)",
             |s1, mut q1| {
                 expr_simplify(&mut q1).unwrap();
@@ -1185,13 +1222,9 @@ mod tests {
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
-        )
-    }
-
-    // fold pred 1.2
-    #[test]
-    fn test_expr_simplify12() {
-        assert_j_plan(
+        );
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where not not exists (select 1 from t1)",
             |s1, mut q1| {
                 expr_simplify(&mut q1).unwrap();
@@ -1204,10 +1237,11 @@ mod tests {
         )
     }
 
-    // fold pred 1.3
     #[test]
-    fn test_expr_simplify13() {
-        assert_j_plan(
+    fn test_expr_simplify_in() {
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where not c1 in (select c1 from t2)",
             |s1, mut q1| {
                 expr_simplify(&mut q1).unwrap();
@@ -1218,19 +1252,14 @@ mod tests {
                 }
             },
         );
-        let cat = j_catalog();
         assert_j_plan2(
             &cat,
             "select c1 from t1 where not c1 in (select c1 from t2)",
             "select c1 from t1 where c1 not in (select c1 from t2)",
             assert_eq_filt_expr,
-        )
-    }
-
-    // fold pred 1.4
-    #[test]
-    fn test_expr_simplify14() {
-        assert_j_plan(
+        );
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where not c1 not in (select c1 from t2)",
             |s1, mut q1| {
                 expr_simplify(&mut q1).unwrap();
@@ -1241,7 +1270,6 @@ mod tests {
                 }
             },
         );
-        let cat = j_catalog();
         assert_j_plan2(
             &cat,
             "select c1 from t1 where not c1 not in (select c1 from t2)",
@@ -1250,9 +1278,8 @@ mod tests {
         )
     }
 
-    // fold pred 1.5
     #[test]
-    fn test_expr_simplify15() {
+    fn test_expr_simplify_not_cmp() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1292,9 +1319,8 @@ mod tests {
         )
     }
 
-    // fold pred 1.5
     #[test]
-    fn test_expr_simplify16() {
+    fn test_expr_simplify_not_is() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1334,9 +1360,8 @@ mod tests {
         )
     }
 
-    // fold pred 1.5
     #[test]
-    fn test_expr_simplify17() {
+    fn test_expr_simplify_not_match() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1364,9 +1389,8 @@ mod tests {
         )
     }
 
-    // fold pred 1.5
     #[test]
-    fn test_expr_simplify18() {
+    fn test_expr_simplify_not_range() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1394,9 +1418,8 @@ mod tests {
         )
     }
 
-    // fold pred 1.6
     #[test]
-    fn test_expr_simplify19() {
+    fn test_expr_simplify_not_const() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1442,9 +1465,8 @@ mod tests {
         )
     }
 
-    // fold pred 2.1
     #[test]
-    fn test_expr_simplify20() {
+    fn test_expr_simplify_null_cmp() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1592,9 +1614,8 @@ mod tests {
         );
     }
 
-    // fold pred 2.2
     #[test]
-    fn test_expr_simplify21() {
+    fn test_expr_simplify_cmp_const() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1622,9 +1643,8 @@ mod tests {
         )
     }
 
-    // fold pred 2.3
     #[test]
-    fn test_expr_simplify22() {
+    fn test_expr_simplify_arith_cmp1() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1644,12 +1664,6 @@ mod tests {
             "select c1 from t1 where c0 <= -1",
             assert_eq_filt_expr,
         );
-    }
-
-    // fold pred 2.4
-    #[test]
-    fn test_expr_simplify23() {
-        let cat = j_catalog();
         assert_j_plan2(
             &cat,
             "select c1 from t1 where 1 = c0 + 2",
@@ -1670,9 +1684,8 @@ mod tests {
         );
     }
 
-    // fold pred 2.5
     #[test]
-    fn test_expr_simplify24() {
+    fn test_expr_simplify_arith_cmp2() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1724,9 +1737,8 @@ mod tests {
         );
     }
 
-    // fold pred 2.6
     #[test]
-    fn test_expr_simplify25() {
+    fn test_expr_simplify_arith_cmp3() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -1791,47 +1803,119 @@ mod tests {
     }
 
     #[test]
+    fn test_expr_simplify_normalize_cmp() {
+        let cat = j_catalog();
+        assert_j_plan2(
+            &cat,
+            "select c1 from t1 where c1 > c0",
+            "select c1 from t1 where c0 < c1",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            &cat,
+            "select c1 from t1 where c1 = c0",
+            "select c1 from t1 where c0 = c1",
+            assert_eq_filt_expr,
+        );
+        assert_j_plan2(
+            &cat,
+            "select t1.c1 from t1, t2 where t2.c0 > t1.c1",
+            "select t1.c1 from t1, t2 where t1.c1 < t2.c0",
+            assert_eq_filt_expr,
+        );
+    }
+
+    #[test]
     fn test_col_rejects_null() {
-        assert_j_plan("select c1 from t1 where c1 = 0", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where c1 > 0", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where c1 >= 0", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where c1 < 0", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where c1 <= 0", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where c1 <> 0", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where c1 <=> 0", assert_col_rejects_null);
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 = 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 > 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 >= 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 < 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 <= 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 <> 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 <=> 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where c1 is not null",
             assert_col_rejects_null,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where c1 is true",
             assert_col_rejects_null,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where c1 is false",
             assert_col_rejects_null,
         );
-        assert_j_plan("select c1 from t1 where c1 + 0", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where c1 - 0", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where not c1", assert_col_rejects_null);
-        assert_j_plan("select c1 from t1 where -c1", assert_col_rejects_null);
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 + 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where c1 - 0",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from t1 where not c1",
+            assert_col_rejects_null,
+        );
+        assert_j_plan1(&cat, "select c1 from t1 where -c1", assert_col_rejects_null);
     }
 
     #[test]
     fn test_col_not_rejects_null() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where c1 <=> null",
             assert_col_not_rejects_null,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where c1 is null",
             assert_col_not_rejects_null,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where c1 is not true",
             assert_col_not_rejects_null,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where c1 is not false",
             assert_col_not_rejects_null,
         );

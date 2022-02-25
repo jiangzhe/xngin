@@ -3,6 +3,7 @@ use crate::join::{Join, JoinKind, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::{Location, QueryPlan, QuerySet};
 use crate::rule::expr_simplify::simplify_single;
+use crate::rule::RuleEffect;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -16,7 +17,7 @@ use xngin_expr::{Col, Expr, ExprMutVisitor, QueryID};
 /// The fully predicates pushdown will be applied after
 /// join graph initialization.
 #[inline]
-pub fn outerjoin_reduce(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+pub fn outerjoin_reduce(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
     reduce_outerjoin(qry_set, *root, None)
 }
 
@@ -24,10 +25,10 @@ fn reduce_outerjoin(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
     rn_map: Option<&HashMap<QueryID, Vec<Expr>>>,
-) -> Result<()> {
+) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, loc, op| {
         if loc != Location::Intermediate {
-            return Ok(());
+            return Ok(RuleEffect::NONE);
         }
         // as entering a new query, original reject-null exprs should be translated in current scope
         // and check whether it still rejects null, and initialize new rn_map.
@@ -51,17 +52,19 @@ struct Reduce<'a> {
 }
 
 impl OpMutVisitor for Reduce<'_> {
+    type Cont = RuleEffect;
     type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
+        let mut eff = RuleEffect::NONE;
         match op {
-            Op::Filt(filt) => analyze_conj_preds(&filt.pred, self.rn_map).branch(),
-            Op::Aggr(aggr) => analyze_conj_preds(&aggr.filt, self.rn_map).branch(),
+            Op::Filt(filt) => analyze_conj_preds(&filt.pred, self.rn_map).branch()?,
+            Op::Aggr(aggr) => analyze_conj_preds(&aggr.filt, self.rn_map).branch()?,
             Op::Query(qry_id) => {
-                reduce_outerjoin(self.qry_set, *qry_id, Some(self.rn_map)).branch()
+                eff |= reduce_outerjoin(self.qry_set, *qry_id, Some(self.rn_map)).branch()?;
             }
             Op::Join(join) => match join.as_mut() {
-                Join::Cross(_) => ControlFlow::Continue(()),
+                Join::Cross(_) => (), // do not operate on cross join
                 Join::Qualified(QualifiedJoin {
                     kind,
                     left,
@@ -79,9 +82,13 @@ impl OpMutVisitor for Reduce<'_> {
                             if right_qids.iter().any(|qid| self.rn_map.contains_key(qid)) {
                                 // null rejecting predicates on right table, convert join type to inner join
                                 *kind = JoinKind::Inner;
+                                eff |= RuleEffect::OP;
                                 analyze_conj_preds(cond, self.rn_map).branch()?;
                                 // merge filters into conditions
-                                cond.extend(mem::take(filt));
+                                if !filt.is_empty() {
+                                    cond.extend(mem::take(filt));
+                                    eff |= RuleEffect::EXPR;
+                                }
                             } else {
                                 // no such condition, keep join type as is.
                                 // condition that involves right qids should be analyzed
@@ -94,7 +101,6 @@ impl OpMutVisitor for Reduce<'_> {
                                     }
                                 }
                             }
-                            ControlFlow::Continue(())
                         }
                         JoinKind::Full => {
                             let mut left_qids = HashSet::new();
@@ -107,12 +113,17 @@ impl OpMutVisitor for Reduce<'_> {
                                 (true, true) => {
                                     // both sides reject null, convert to inner join
                                     *kind = JoinKind::Inner;
+                                    eff |= RuleEffect::OP;
                                     analyze_conj_preds(cond, self.rn_map).branch()?;
-                                    cond.extend(mem::take(filt));
+                                    if !filt.is_empty() {
+                                        cond.extend(mem::take(filt));
+                                        eff |= RuleEffect::EXPR;
+                                    }
                                 }
                                 (false, true) => {
                                     // right side rejects null, convert to left join
                                     *kind = JoinKind::Left;
+                                    eff |= RuleEffect::OP;
                                     // analyze conditions of right side
                                     for qid in &right_qids {
                                         for e in &*cond {
@@ -127,6 +138,7 @@ impl OpMutVisitor for Reduce<'_> {
                                     // we do not support right join, swap both side and change to left join
                                     *kind = JoinKind::Left;
                                     mem::swap(left, right);
+                                    eff |= RuleEffect::OP;
                                     // analyze conditions of (original) left side
                                     for qid in &left_qids {
                                         for e in &*cond {
@@ -138,14 +150,13 @@ impl OpMutVisitor for Reduce<'_> {
                                 }
                                 (false, false) => (), // cannot change anything
                             }
-                            ControlFlow::Continue(())
                         }
                         JoinKind::Inner => {
                             analyze_conj_preds(cond, self.rn_map).branch()?;
                             if !filt.is_empty() {
                                 cond.extend(mem::take(filt));
+                                eff |= RuleEffect::EXPR;
                             }
-                            ControlFlow::Continue(())
                         }
                         _ => todo!(),
                     }
@@ -154,12 +165,11 @@ impl OpMutVisitor for Reduce<'_> {
             Op::JoinGraph(_) => {
                 unreachable!("Outerjoin reduce should be applied before initializing join graph")
             }
-            Op::Proj(_) | Op::Sort(_) | Op::Limit(_) | Op::Empty | Op::Setop(_) => {
-                ControlFlow::Continue(())
-            }
+            Op::Proj(_) | Op::Sort(_) | Op::Limit(_) | Op::Empty | Op::Setop(_) => (),
             Op::Apply(_) => todo!(),
             Op::Table(..) | Op::Row(_) => unreachable!(),
         }
+        ControlFlow::Continue(eff)
     }
 }
 
@@ -241,7 +251,7 @@ pub(crate) fn reject_null_single(expr: &Expr, qry_id: QueryID) -> Result<bool> {
 
 // transform, collect and simplify.
 // The order is importatnt: we should perform transformation in preorder,
-// o that further collecting can be performed on new expression.
+// so that further collecting can be performed on new expression.
 // finally perform simplification.
 struct TransformCollectSimplify<'a> {
     old: QueryID,
@@ -250,6 +260,8 @@ struct TransformCollectSimplify<'a> {
 }
 
 impl ExprMutVisitor for TransformCollectSimplify<'_> {
+    // rewrite on cloned expression, no effect
+    type Cont = ();
     type Break = Error;
     #[inline]
     fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error> {
@@ -269,7 +281,9 @@ impl ExprMutVisitor for TransformCollectSimplify<'_> {
             Expr::Col(Col::QueryCol(qry_id, _)) => {
                 self.new_ids.insert(*qry_id);
             }
-            _ => simplify_single(e).branch()?,
+            _ => {
+                let _ = simplify_single(e).branch()?;
+            }
         }
         ControlFlow::Continue(())
     }

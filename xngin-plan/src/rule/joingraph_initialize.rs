@@ -37,6 +37,7 @@ struct InitJoinGraph<'a> {
 }
 
 impl OpMutVisitor for InitJoinGraph<'_> {
+    type Cont = ();
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
@@ -143,6 +144,7 @@ mod tests {
         print_plan(sql, &plan);
         struct CollectGraph(Option<JoinGraph>);
         impl OpVisitor for CollectGraph {
+            type Cont = ();
             type Break = ();
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
                 match op {

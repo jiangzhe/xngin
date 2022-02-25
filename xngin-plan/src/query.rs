@@ -91,6 +91,7 @@ impl Subquery {
     pub fn find_table(&self) -> Option<(SchemaID, TableID)> {
         struct FindTable(Option<(SchemaID, TableID)>);
         impl OpVisitor for FindTable {
+            type Cont = ();
             type Break = ();
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
                 match op {
@@ -252,6 +253,7 @@ impl UpsertQuery<'_> {
 }
 
 impl<'a> OpMutVisitor for UpsertQuery<'a> {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn leave(&mut self, op: &mut Op) -> ControlFlow<()> {
@@ -293,6 +295,7 @@ struct ShapeGen<'a> {
 }
 
 impl OpVisitor for ShapeGen<'_> {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {

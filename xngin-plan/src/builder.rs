@@ -1179,6 +1179,7 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
 struct ReplaceCorrelatedCol(u32, expr::Expr);
 
 impl OpMutVisitor for ReplaceCorrelatedCol {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
@@ -1201,6 +1202,7 @@ struct ReplaceSubq {
 }
 
 impl OpMutVisitor for ReplaceSubq {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
@@ -1251,6 +1253,7 @@ impl OpMutVisitor for ReplaceSubq {
 }
 
 impl ExprMutVisitor for ReplaceSubq {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, e: &mut expr::Expr) -> ControlFlow<()> {

@@ -365,6 +365,7 @@ impl<'a, F: Write> QueryExplain<'a, F> {
 }
 
 impl<F: Write> OpVisitor for QueryExplain<'_, F> {
+    type Cont = ();
     type Break = fmt::Error;
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<fmt::Error> {
