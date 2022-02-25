@@ -3,6 +3,7 @@ use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Op, OpMutVisitor};
 use crate::query::{QryIDs, QueryPlan, QuerySet};
 use crate::rule::expr_simplify::simplify_nested;
+use crate::rule::RuleEffect;
 use smol_str::SmolStr;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -13,11 +14,11 @@ use xngin_expr::{Col, Const, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Pushdown predicates.
 #[inline]
-pub fn pred_pushdown(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+pub fn pred_pushdown(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
     pushdown_pred(qry_set, *root)
 }
 
-fn pushdown_pred(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
+fn pushdown_pred(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut ppd = PredPushdown { qry_set };
         op.walk_mut(&mut ppd).unbranch()
@@ -29,9 +30,11 @@ struct PredPushdown<'a> {
 }
 
 impl OpMutVisitor for PredPushdown<'_> {
+    type Cont = RuleEffect;
     type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
+        let mut eff = RuleEffect::NONE;
         match op {
             Op::Filt(Filt { pred, source }) => {
                 let mut fallback = vec![];
@@ -47,9 +50,14 @@ impl OpMutVisitor for PredPushdown<'_> {
                             continue;
                         }
                         match push_single(self.qry_set, source, item).branch()? {
-                            None => (),
-                            Some(p) => {
+                            (e, None) => {
+                                // push succeeds
+                                eff |= e;
+                                eff |= RuleEffect::EXPR;
+                            }
+                            (e, Some(p)) => {
                                 // child rejects the predicate, add it to fallback
+                                eff |= e;
                                 fallback.push(p.e);
                             }
                         }
@@ -58,21 +66,26 @@ impl OpMutVisitor for PredPushdown<'_> {
                         // all predicates are pushed down, current operator can be removed.
                         let source = mem::take(source.as_mut());
                         *op = source;
-                        break self.enter(op);
+                        eff |= RuleEffect::OP;
+                        eff |= self.enter(op)?;
+                        break;
                     } else if fallback.len() == orig_count {
                         // still have certain predicates can not be pushed down,
                         // and no further progress could be made.
                         *pred = fallback;
-                        break ControlFlow::Continue(());
+                        break;
                     } else {
                         // can still make progress, retry
                         exprs = mem::take(&mut fallback);
                     }
                 }
             }
-            Op::Query(qry_id) => pushdown_pred(self.qry_set, *qry_id).branch(),
-            _ => ControlFlow::Continue(()),
+            Op::Query(qry_id) => {
+                eff |= pushdown_pred(self.qry_set, *qry_id).branch()?;
+            }
+            _ => (),
         }
+        ControlFlow::Continue(eff)
     }
 }
 
@@ -84,6 +97,7 @@ struct ExprAttr {
 }
 
 impl ExprVisitor for ExprAttr {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
@@ -183,7 +197,8 @@ fn push_single(
     qry_set: &mut QuerySet,
     op: &mut Op,
     mut pred: ExprItem,
-) -> Result<Option<ExprItem>> {
+) -> Result<(RuleEffect, Option<ExprItem>)> {
+    let mut eff = RuleEffect::NONE;
     let res = match op {
         Op::Query(qry_id) => {
             if let Some(subq) = qry_set.get(qry_id) {
@@ -193,22 +208,28 @@ fn push_single(
                 match &pred.e {
                     Expr::Const(Const::Null) => {
                         *op = Op::Empty;
-                        return Ok(None);
+                        eff |= RuleEffect::OP;
+                        return Ok((eff, None));
                     }
                     Expr::Const(c) => {
                         if c.is_zero().unwrap_or_default() {
                             *op = Op::Empty;
-                            return Ok(None);
+                            eff |= RuleEffect::OP;
+                            return Ok((eff, None));
                         } else {
-                            return Ok(None);
+                            return Ok((eff, None));
                         }
                     }
                     _ => (),
                 }
-                qry_set.transform_op(*qry_id, |qry_set, _, op| {
-                    assert!(push_single(qry_set, op, pred)?.is_none()); // this push must succeed
-                    Ok::<_, Error>(())
+                let e = qry_set.transform_op(*qry_id, |qry_set, _, op| {
+                    let (e, pred) = push_single(qry_set, op, pred)?;
+                    assert!(pred.is_none()); // this push must succeed
+                    eff |= e;
+                    eff |= RuleEffect::EXPR;
+                    Ok::<_, Error>(eff)
                 })??;
+                eff |= e;
                 None
             } else {
                 Some(pred)
@@ -221,7 +242,11 @@ fn push_single(
         Op::Row(_) => todo!(), // todo: evaluate immediately
         Op::Apply(_) => todo!(),
         // Proj/Sort/Limit will try pushing pred, and if fails just accept.
-        Op::Proj(_) | Op::Sort(_) | Op::Limit(_) => push_or_accept(qry_set, op, pred)?,
+        Op::Proj(_) | Op::Sort(_) | Op::Limit(_) => {
+            let (e, item) = push_or_accept(qry_set, op, pred)?;
+            eff |= e;
+            item
+        }
         Op::Aggr(aggr) => {
             if pred.load_attr().has_aggf {
                 Some(pred)
@@ -229,34 +254,51 @@ fn push_single(
                 // after the validation, all expressions containing no aggregate
                 // functions can be pushed down through Aggr operator, as they can
                 // only be composite of group columns, constants and functions.
-                assert!(push_single(qry_set, &mut aggr.source, pred)?.is_none());
+                let (e, item) = push_single(qry_set, &mut aggr.source, pred)?;
+                assert!(item.is_none()); // just succeed
+                eff |= e;
                 None
             }
         }
         Op::Filt(filt) => match push_single(qry_set, &mut filt.source, pred)? {
-            Some(pred) => {
+            (e, Some(pred)) => {
+                eff |= e;
                 let mut old = mem::take(&mut filt.pred);
                 old.push(pred.e);
                 let mut new = Expr::pred_conj(old);
-                simplify_nested(&mut new)?;
+                eff |= simplify_nested(&mut new)?;
                 filt.pred = new.into_conj();
                 None
             }
-            None => None,
+            (e, None) => {
+                eff |= e;
+                eff |= RuleEffect::EXPR;
+                None
+            }
         },
         Op::Setop(so) => {
             // push to both side and won't fail
-            assert!(push_single(qry_set, so.left.as_mut(), pred.clone())?.is_none());
-            assert!(push_single(qry_set, so.right.as_mut(), pred)?.is_none());
+            let (e, item) = push_single(qry_set, so.left.as_mut(), pred.clone())?;
+            assert!(item.is_none());
+            eff |= e;
+            eff |= RuleEffect::EXPR;
+            let (e, item) = push_single(qry_set, so.right.as_mut(), pred)?;
+            eff |= e;
+            eff |= RuleEffect::EXPR;
+            assert!(item.is_none());
             None
         }
+        // todo:
+        // Maybe remove this branch makes the pushdown logic clearer, so that
+        // we forbid predicate pushdown when join graph is established.
         Op::JoinGraph(graph) => {
             let extra = graph.add_single_filt(pred.e)?;
+            eff |= RuleEffect::EXPR;
             for (e, qry_id) in extra {
                 // try pushing extra expressions
-                qry_set.transform_op(qry_id, |qry_set, _, op| {
+                eff |= qry_set.transform_op(qry_id, |qry_set, _, op| {
                     match push_single(qry_set, op, ExprItem::new(e)) {
-                        Ok(None) => Ok(()),
+                        Ok((ef, None)) => Ok(ef),
                         Err(e) => Err(e),
                         _ => Err(Error::InternalError(
                             "Predicate pushdown failed on subquery".to_string(),
@@ -282,8 +324,10 @@ fn push_single(
                                 jo_qids.clear();
                                 jo.collect_qry_ids(&mut jo_qids);
                                 if jo_qids.contains(qry_id) {
-                                    assert!(push_single(qry_set, jo.as_mut(), pred)?.is_none());
-                                    return Ok(None);
+                                    let (e, item) = push_single(qry_set, jo.as_mut(), pred)?;
+                                    assert!(item.is_none());
+                                    eff |= e;
+                                    return Ok((eff, None));
                                 }
                             }
                             Some(pred)
@@ -311,13 +355,12 @@ fn push_single(
                                     if jo.contains_qry_id(qid2) {
                                         // belong to single join op, push to it
                                         *jos = join_ops;
-                                        assert!(push_single(
-                                            qry_set,
-                                            jos[idx1].as_mut(),
-                                            pred.clone()
-                                        )?
-                                        .is_none());
-                                        return Ok(None);
+                                        let (e, item) =
+                                            push_single(qry_set, jos[idx1].as_mut(), pred.clone())?;
+                                        assert!(item.is_none());
+                                        eff |= e;
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                     if let Some(idx2) =
                                         join_ops.iter().position(|jo| jo.contains_qry_id(qid2))
@@ -332,7 +375,6 @@ fn push_single(
                                             let jo2 = join_ops.swap_remove(idx2);
                                             (jo2, jo1)
                                         };
-                                        // let new_join = JoinOp::qualified(JoinKind::Inner, jo1, jo2, vec![pred.e], vec![]);
                                         if join_ops.is_empty() {
                                             // entire cross join is converted to inner join tree.
                                             let new_join = Join::Qualified(QualifiedJoin {
@@ -343,7 +385,8 @@ fn push_single(
                                                 filt: vec![],
                                             });
                                             *join.as_mut() = new_join;
-                                            return Ok(None);
+                                            eff |= RuleEffect::OPEXPR;
+                                            return Ok((eff, None));
                                         } else {
                                             let new_join = JoinOp::qualified(
                                                 JoinKind::Inner,
@@ -354,7 +397,8 @@ fn push_single(
                                             );
                                             join_ops.push(new_join);
                                             *jos = join_ops;
-                                            return Ok(None);
+                                            eff |= RuleEffect::OPEXPR;
+                                            return Ok((eff, None));
                                         }
                                     } else {
                                         return Err(Error::InvalidJoinCondition);
@@ -363,7 +407,7 @@ fn push_single(
                                     return Err(Error::InvalidJoinCondition);
                                 }
                             }
-                        } // _ => Some(pred), // if involved multiple tables, we delay it to push unpon join graph
+                        }
                     }
                 }
             }
@@ -379,14 +423,14 @@ fn push_single(
                     QryIDs::Empty => unreachable!(), // Currently marked as unreachable
                     QryIDs::Single(qry_id) => {
                         let qry_id = *qry_id;
-                        // let mut jo_qids = HashSet::new();
-                        // // handle on left side
-                        // left.collect_qry_ids(&mut jo_qids);
                         if left.contains_qry_id(qry_id) {
                             match kind {
                                 JoinKind::Inner | JoinKind::Left => {
-                                    assert!(push_single(qry_set, left.as_mut(), pred)?.is_none());
-                                    return Ok(None);
+                                    let (e, item) = push_single(qry_set, left.as_mut(), pred)?;
+                                    assert!(item.is_none());
+                                    eff |= e;
+                                    eff |= RuleEffect::EXPR;
+                                    return Ok((eff, None));
                                 }
                                 JoinKind::Full => {
                                     if pred.load_reject_null(qry_id)? {
@@ -395,14 +439,16 @@ fn push_single(
                                         *kind = JoinKind::Left;
                                         mem::swap(left, right);
                                         // push to (original) left side
-                                        assert!(
-                                            push_single(qry_set, right.as_mut(), pred)?.is_none()
-                                        );
-                                        return Ok(None);
+                                        let (e, item) = push_single(qry_set, right.as_mut(), pred)?;
+                                        assert!(item.is_none());
+                                        eff |= e;
+                                        eff |= RuleEffect::OPEXPR;
+                                        return Ok((eff, None));
                                     } else {
                                         // not reject null
                                         filt.push(pred.e);
-                                        return Ok(None);
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                 }
                                 _ => todo!(),
@@ -410,8 +456,10 @@ fn push_single(
                         } else if right.contains_qry_id(qry_id) {
                             match kind {
                                 JoinKind::Inner => {
-                                    assert!(push_single(qry_set, right.as_mut(), pred)?.is_none());
-                                    return Ok(None);
+                                    let (e, item) = push_single(qry_set, right.as_mut(), pred)?;
+                                    assert!(item.is_none());
+                                    eff |= e;
+                                    return Ok((eff, None));
                                 }
                                 JoinKind::Left => {
                                     if pred.load_reject_null(qry_id)? {
@@ -421,14 +469,16 @@ fn push_single(
                                         if !filt.is_empty() {
                                             cond.extend(mem::take(filt)) // put filters into condition
                                         }
-                                        assert!(
-                                            push_single(qry_set, right.as_mut(), pred)?.is_none()
-                                        );
-                                        return Ok(None);
+                                        let (e, item) = push_single(qry_set, right.as_mut(), pred)?;
+                                        assert!(item.is_none());
+                                        eff |= e;
+                                        eff |= RuleEffect::OPEXPR;
+                                        return Ok((eff, None));
                                     } else {
                                         // not reject null
                                         filt.push(pred.e);
-                                        return Ok(None);
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                 }
                                 JoinKind::Full => {
@@ -436,14 +486,16 @@ fn push_single(
                                         // reject null
                                         // convert full join to left join
                                         *kind = JoinKind::Left;
-                                        assert!(
-                                            push_single(qry_set, right.as_mut(), pred)?.is_none()
-                                        );
-                                        return Ok(None);
+                                        let (e, item) = push_single(qry_set, right.as_mut(), pred)?;
+                                        assert!(item.is_none());
+                                        eff |= e;
+                                        eff |= RuleEffect::OPEXPR;
+                                        return Ok((eff, None));
                                     } else {
                                         // not reject null
                                         filt.push(pred.e);
-                                        return Ok(None);
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                 }
                                 _ => todo!(),
@@ -467,10 +519,10 @@ fn push_single(
                                 // handle on left side
                                 match kind {
                                     JoinKind::Inner | JoinKind::Left => {
-                                        assert!(
-                                            push_single(qry_set, left.as_mut(), pred)?.is_none()
-                                        );
-                                        return Ok(None);
+                                        let (e, item) = push_single(qry_set, left.as_mut(), pred)?;
+                                        assert!(item.is_none());
+                                        eff |= e;
+                                        return Ok((eff, None));
                                     }
                                     JoinKind::Full => {
                                         for qry_id in left_qids {
@@ -479,18 +531,18 @@ fn push_single(
                                                 *kind = JoinKind::Left;
                                                 mem::swap(left, right);
                                                 // push to (original) left side
-                                                assert!(push_single(
-                                                    qry_set,
-                                                    right.as_mut(),
-                                                    pred
-                                                )?
-                                                .is_none());
-                                                return Ok(None);
+                                                let (e, item) =
+                                                    push_single(qry_set, right.as_mut(), pred)?;
+                                                assert!(item.is_none());
+                                                eff |= e;
+                                                eff |= RuleEffect::OPEXPR;
+                                                return Ok((eff, None));
                                             }
                                         }
                                         // not reject null
                                         filt.push(pred.e);
-                                        return Ok(None);
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                     _ => todo!(),
                                 }
@@ -499,10 +551,10 @@ fn push_single(
                                 // handle on right side
                                 match kind {
                                     JoinKind::Inner => {
-                                        assert!(
-                                            push_single(qry_set, right.as_mut(), pred)?.is_none()
-                                        );
-                                        return Ok(None);
+                                        let (e, item) = push_single(qry_set, right.as_mut(), pred)?;
+                                        assert!(item.is_none());
+                                        eff |= e;
+                                        return Ok((eff, None));
                                     }
                                     JoinKind::Left => {
                                         for qry_id in right_qids {
@@ -510,39 +562,39 @@ fn push_single(
                                                 // convert left join to inner join
                                                 *kind = JoinKind::Inner;
                                                 if !filt.is_empty() {
-                                                    cond.extend(mem::take(filt))
                                                     // put filters into condition
+                                                    cond.extend(mem::take(filt));
                                                 }
-                                                assert!(push_single(
-                                                    qry_set,
-                                                    right.as_mut(),
-                                                    pred
-                                                )?
-                                                .is_none());
-                                                return Ok(None);
+                                                let (e, item) =
+                                                    push_single(qry_set, right.as_mut(), pred)?;
+                                                assert!(item.is_none());
+                                                eff |= e;
+                                                eff |= RuleEffect::OPEXPR;
+                                                return Ok((e, None));
                                             }
                                         }
                                         // not reject null
                                         filt.push(pred.e);
-                                        return Ok(None);
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                     JoinKind::Full => {
                                         for qry_id in right_qids {
                                             if pred.load_reject_null(qry_id)? {
                                                 // convert full join to left join
                                                 *kind = JoinKind::Left;
-                                                assert!(push_single(
-                                                    qry_set,
-                                                    right.as_mut(),
-                                                    pred
-                                                )?
-                                                .is_none());
-                                                return Ok(None);
+                                                let (e, item) =
+                                                    push_single(qry_set, right.as_mut(), pred)?;
+                                                assert!(item.is_none());
+                                                eff |= e;
+                                                eff |= RuleEffect::OP;
+                                                return Ok((eff, None));
                                             }
                                         }
                                         // not reject null
                                         filt.push(pred.e);
-                                        return Ok(None);
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                     _ => todo!(),
                                 }
@@ -552,7 +604,8 @@ fn push_single(
                                 match kind {
                                     JoinKind::Inner => {
                                         cond.push(pred.e);
-                                        return Ok(None);
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                     JoinKind::Left => {
                                         for qry_id in right_qids {
@@ -564,12 +617,14 @@ fn push_single(
                                                     // put filters into condition
                                                 }
                                                 cond.push(pred.e);
-                                                return Ok(None);
+                                                eff |= RuleEffect::OPEXPR;
+                                                return Ok((eff, None));
                                             }
                                         }
                                         // not reject null on right side
                                         filt.push(pred.e);
-                                        return Ok(None);
+                                        eff |= RuleEffect::EXPR;
+                                        return Ok((eff, None));
                                     }
                                     JoinKind::Full => {
                                         let mut left_reject_null = false;
@@ -594,24 +649,28 @@ fn push_single(
                                                     cond.extend(mem::take(filt))
                                                 }
                                                 cond.push(pred.e);
-                                                return Ok(None);
+                                                eff |= RuleEffect::OPEXPR;
+                                                return Ok((eff, None));
                                             }
                                             (true, false) => {
                                                 // convert to right join then left join
                                                 *kind = JoinKind::Left;
                                                 mem::swap(left, right);
                                                 filt.push(pred.e);
-                                                return Ok(None);
+                                                eff |= RuleEffect::OPEXPR;
+                                                return Ok((eff, None));
                                             }
                                             (false, true) => {
                                                 // convert to left join
                                                 *kind = JoinKind::Left;
                                                 filt.push(pred.e);
-                                                return Ok(None);
+                                                eff |= RuleEffect::OPEXPR;
+                                                return Ok((eff, None));
                                             }
                                             (false, false) => {
                                                 filt.push(pred.e);
-                                                return Ok(None);
+                                                eff |= RuleEffect::EXPR;
+                                                return Ok((eff, None));
                                             }
                                         }
                                     }
@@ -625,19 +684,24 @@ fn push_single(
             }
         },
     };
-    Ok(res)
+    Ok((eff, res))
 }
 
-fn push_or_accept(qry_set: &mut QuerySet, op: &mut Op, pred: ExprItem) -> Result<Option<ExprItem>> {
+fn push_or_accept(
+    qry_set: &mut QuerySet,
+    op: &mut Op,
+    pred: ExprItem,
+) -> Result<(RuleEffect, Option<ExprItem>)> {
     let source = op.source_mut().unwrap(); // won't fail
     match push_single(qry_set, source, pred)? {
-        Some(pred) => {
+        (eff, Some(pred)) => {
             let child = mem::take(source);
             let new_filt = Op::filt(vec![pred.e], child);
             *source = new_filt;
-            Ok(None)
+            // as child reject it, we do not merge effect, as parent will update it
+            Ok((eff, None))
         }
-        None => Ok(None),
+        (eff, None) => Ok((eff, None)),
     }
 }
 
@@ -647,6 +711,7 @@ struct RewriteOutExpr<'a> {
 }
 
 impl ExprMutVisitor for RewriteOutExpr<'_> {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn leave(&mut self, e: &mut Expr) -> ControlFlow<()> {

@@ -15,7 +15,7 @@ use smol_str::SmolStr;
 use std::collections::HashSet;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
-use xngin_expr::{Expr, QueryID, Setq};
+use xngin_expr::{Effect, Expr, QueryID, Setq};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpKind {
@@ -359,6 +359,7 @@ impl Op {
     pub fn collect_qry_ids(&self, qry_ids: &mut HashSet<QueryID>) {
         struct Collect<'a>(&'a mut HashSet<QueryID>);
         impl OpVisitor for Collect<'_> {
+            type Cont = ();
             type Break = ();
             #[inline]
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
@@ -372,20 +373,22 @@ impl Op {
         let _ = self.walk(&mut c);
     }
 
-    pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break> {
-        visitor.enter(self)?;
+    pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
+        let mut eff = visitor.enter(self)?;
         for c in self.children() {
-            c.walk(visitor)?
+            eff.merge(c.walk(visitor)?)
         }
-        visitor.leave(self)
+        eff.merge(visitor.leave(self)?);
+        ControlFlow::Continue(eff)
     }
 
-    pub fn walk_mut<V: OpMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break> {
-        visitor.enter(self)?;
+    pub fn walk_mut<V: OpMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
+        let mut eff = visitor.enter(self)?;
         for c in self.children_mut() {
-            c.walk_mut(visitor)?
+            eff.merge(c.walk_mut(visitor)?)
         }
-        visitor.leave(self)
+        eff.merge(visitor.leave(self)?);
+        ControlFlow::Continue(eff)
     }
 }
 
@@ -479,17 +482,18 @@ pub struct Col {
 }
 
 pub trait OpVisitor {
+    type Cont: Effect;
     type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _op: &Op) -> ControlFlow<Self::Break> {
-        ControlFlow::Continue(())
+    fn enter(&mut self, _op: &Op) -> ControlFlow<Self::Break, Self::Cont> {
+        ControlFlow::Continue(Self::Cont::default())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _op: &Op) -> ControlFlow<Self::Break> {
-        ControlFlow::Continue(())
+    fn leave(&mut self, _op: &Op) -> ControlFlow<Self::Break, Self::Cont> {
+        ControlFlow::Continue(Self::Cont::default())
     }
 }
 
@@ -498,6 +502,7 @@ pub trait OpVisitor {
 pub fn preorder<F: FnMut(&Op)>(f: F) -> impl OpVisitor {
     struct Preorder<F>(F);
     impl<F: FnMut(&Op)> OpVisitor for Preorder<F> {
+        type Cont = ();
         type Break = Error;
         fn enter(&mut self, op: &Op) -> ControlFlow<Error> {
             (self.0)(op);
@@ -508,17 +513,18 @@ pub fn preorder<F: FnMut(&Op)>(f: F) -> impl OpVisitor {
 }
 
 pub trait OpMutVisitor {
+    type Cont: Effect;
     type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _op: &mut Op) -> ControlFlow<Self::Break> {
-        ControlFlow::Continue(())
+    fn enter(&mut self, _op: &mut Op) -> ControlFlow<Self::Break, Self::Cont> {
+        ControlFlow::Continue(Self::Cont::default())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _op: &mut Op) -> ControlFlow<Self::Break> {
-        ControlFlow::Continue(())
+    fn leave(&mut self, _op: &mut Op) -> ControlFlow<Self::Break, Self::Cont> {
+        ControlFlow::Continue(Self::Cont::default())
     }
 }
 

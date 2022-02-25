@@ -460,6 +460,7 @@ pub(crate) fn get_lvl_queries(plan: &QueryPlan, lvl: usize) -> Vec<&Subquery> {
 pub(crate) fn extract_join_kinds(op: &Op) -> Vec<&'static str> {
     struct Extract(Vec<&'static str>);
     impl OpVisitor for Extract {
+        type Cont = ();
         type Break = ();
         #[inline]
         fn enter(&mut self, op: &Op) -> ControlFlow<()> {
@@ -481,6 +482,7 @@ pub(crate) fn extract_join_kinds(op: &Op) -> Vec<&'static str> {
 pub(crate) fn extract_join_graph(op: &Op) -> Option<JoinGraph> {
     struct ExtractJoinGraph(Option<JoinGraph>);
     impl OpVisitor for ExtractJoinGraph {
+        type Cont = ();
         type Break = ();
         fn enter(&mut self, op: &Op) -> ControlFlow<()> {
             match op {
@@ -542,6 +544,7 @@ pub(crate) fn get_subq_by_location<'a>(
 struct CollectFiltExpr(Vec<xngin_expr::Expr>);
 
 impl OpVisitor for CollectFiltExpr {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {
@@ -562,6 +565,7 @@ struct CollectSubqByLocation<'a, 'b> {
 }
 
 impl<'a, 'b> OpVisitor for CollectSubqByLocation<'a, 'b> {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {

@@ -59,6 +59,7 @@ impl<'a, F> FoldExpr<'a, F> {
 }
 
 impl<'a, F: Fn(&mut Expr)> ExprMutVisitor for FoldExpr<'a, F> {
+    type Cont = ();
     type Break = Error;
     fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
         (self.0)(e);

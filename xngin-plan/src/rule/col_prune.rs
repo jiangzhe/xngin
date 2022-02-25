@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::op::{Op, OpMutVisitor, OpVisitor};
 use crate::query::{Location, QueryPlan, QuerySet, Subquery};
+use crate::rule::RuleEffect;
 use fnv::FnvHashMap;
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
@@ -12,7 +13,7 @@ use xngin_expr::{Col, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 /// It is invoked top down. First collect all output columns from current
 /// query, then apply the pruning to each of its child query.
 #[inline]
-pub fn col_prune(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+pub fn col_prune(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
     let mut use_set = FnvHashMap::default();
     prune_col(qry_set, *root, &mut use_set)
 }
@@ -21,11 +22,11 @@ fn prune_col(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
     use_set: &mut FnvHashMap<QueryID, BTreeMap<u32, u32>>,
-) -> Result<()> {
+) -> Result<RuleEffect> {
     if let Some(subq) = qry_set.get_mut(&qry_id) {
         if subq.location != Location::Intermediate {
             // skip other types of queries
-            return Ok(());
+            return Ok(RuleEffect::NONE);
         }
         let mut curr_use_set = FnvHashMap::default();
         let mut c = Collect(&mut curr_use_set);
@@ -51,6 +52,7 @@ fn prune_col(
 
 struct Collect<'a>(&'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>);
 impl OpVisitor for Collect<'_> {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {
@@ -61,6 +63,7 @@ impl OpVisitor for Collect<'_> {
     }
 }
 impl ExprVisitor for Collect<'_> {
+    type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
@@ -77,12 +80,13 @@ struct Modify<'a> {
 }
 
 impl OpMutVisitor for Modify<'_> {
+    type Cont = RuleEffect;
     type Break = Error;
     #[inline]
-    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
+    fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         match op {
             Op::Query(qry_id) => {
-                // modify child query
+                // modify child query, we do not count the deletion of expression as effect
                 let mapping = self.use_set.get(qry_id);
                 self.qry_set
                     .transform_subq(*qry_id, |subq| modify_subq(subq, mapping))
@@ -91,31 +95,36 @@ impl OpMutVisitor for Modify<'_> {
                 prune_col(self.qry_set, *qry_id, self.use_set).branch()
             }
             _ => {
+                let mut eff = RuleEffect::NONE;
                 for e in op.exprs_mut() {
-                    let _ = e.walk_mut(self);
+                    eff |= e.walk_mut(self)?;
                 }
-                ControlFlow::Continue(())
+                ControlFlow::Continue(eff)
             }
         }
     }
 }
 
 impl ExprMutVisitor for Modify<'_> {
+    type Cont = RuleEffect;
     type Break = Error;
     #[inline]
-    fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+    fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
+        let mut eff = RuleEffect::NONE;
         match e {
             Expr::Col(Col::QueryCol(qry_id, idx)) | Expr::Col(Col::CorrelatedCol(qry_id, idx)) => {
                 if let Some(new) = self.use_set.get(qry_id).and_then(|m| m.get(idx).cloned()) {
                     *idx = new;
+                    // expression change
+                    eff |= RuleEffect::EXPR;
                 }
             }
             Expr::Subq(_, qry_id) => {
-                prune_col(self.qry_set, *qry_id, self.use_set).branch()?;
+                eff |= prune_col(self.qry_set, *qry_id, self.use_set).branch()?;
             }
             _ => (),
         }
-        ControlFlow::Continue(())
+        ControlFlow::Continue(eff)
     }
 }
 

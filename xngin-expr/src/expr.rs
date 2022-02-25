@@ -329,20 +329,25 @@ impl Expr {
         .into_iter()
     }
 
-    pub fn walk<V: ExprVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break> {
-        visitor.enter(self)?;
+    pub fn walk<V: ExprVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
+        let mut eff = visitor.enter(self)?;
         for c in self.args() {
-            c.walk(visitor)?
+            eff.merge(c.walk(visitor)?)
         }
-        visitor.leave(self)
+        eff.merge(visitor.leave(self)?);
+        ControlFlow::Continue(eff)
     }
 
-    pub fn walk_mut<V: ExprMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break> {
-        visitor.enter(self)?;
+    pub fn walk_mut<V: ExprMutVisitor>(
+        &mut self,
+        visitor: &mut V,
+    ) -> ControlFlow<V::Break, V::Cont> {
+        let mut eff = visitor.enter(self)?;
         for c in self.args_mut() {
-            c.walk_mut(visitor)?
+            eff.merge(c.walk_mut(visitor)?)
         }
-        visitor.leave(self)
+        eff.merge(visitor.leave(self)?);
+        ControlFlow::Continue(eff)
     }
 
     #[inline]
@@ -361,6 +366,7 @@ impl Expr {
             cols: &'a mut Vec<Col>,
         }
         impl ExprVisitor for Collect<'_> {
+            type Cont = ();
             type Break = ();
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
@@ -400,6 +406,7 @@ impl Expr {
     pub fn contains_aggr_func(&self) -> bool {
         struct Contains(bool);
         impl ExprVisitor for Contains {
+            type Cont = ();
             type Break = ();
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
@@ -423,6 +430,7 @@ impl Expr {
         }
 
         impl ExprVisitor for Contains {
+            type Cont = ();
             type Break = ();
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
@@ -463,7 +471,7 @@ impl Expr {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Col {
     TableCol(TableID, u32),
     QueryCol(QueryID, u32),
@@ -532,7 +540,7 @@ pub enum Farg {
 }
 
 /// QueryID wraps u32 to be the identifier of subqueries in single query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QueryID(u32);
 
 impl From<u32> for QueryID {
@@ -560,33 +568,44 @@ impl std::fmt::Display for QueryID {
 
 pub const INVALID_QUERY_ID: QueryID = QueryID(!0);
 
+pub trait Effect: Default {
+    fn merge(&mut self, other: Self);
+}
+
+impl Effect for () {
+    #[inline]
+    fn merge(&mut self, _other: Self) {}
+}
+
 pub trait ExprVisitor {
+    type Cont: Effect;
     type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _e: &Expr) -> ControlFlow<Self::Break> {
-        ControlFlow::Continue(())
+    fn enter(&mut self, _e: &Expr) -> ControlFlow<Self::Break, Self::Cont> {
+        ControlFlow::Continue(Self::Cont::default())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _e: &Expr) -> ControlFlow<Self::Break> {
-        ControlFlow::Continue(())
+    fn leave(&mut self, _e: &Expr) -> ControlFlow<Self::Break, Self::Cont> {
+        ControlFlow::Continue(Self::Cont::default())
     }
 }
 
 pub trait ExprMutVisitor {
+    type Cont: Effect;
     type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _e: &mut Expr) -> ControlFlow<Self::Break> {
-        ControlFlow::Continue(())
+    fn enter(&mut self, _e: &mut Expr) -> ControlFlow<Self::Break, Self::Cont> {
+        ControlFlow::Continue(Self::Cont::default())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _e: &mut Expr) -> ControlFlow<Self::Break> {
-        ControlFlow::Continue(())
+    fn leave(&mut self, _e: &mut Expr) -> ControlFlow<Self::Break, Self::Cont> {
+        ControlFlow::Continue(Self::Cont::default())
     }
 }
 
@@ -594,6 +613,7 @@ pub trait ExprMutVisitor {
 pub struct CollectQryIDs<'a>(pub &'a mut HashSet<QueryID>);
 
 impl ExprVisitor for CollectQryIDs<'_> {
+    type Cont = ();
     type Break = ();
     fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
         if let Expr::Col(Col::QueryCol(qry_id, _)) = e {

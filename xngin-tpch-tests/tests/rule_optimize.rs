@@ -173,9 +173,9 @@ fn check_tpch_rule_optimize(cat: &Arc<dyn QueryCatalog>, sql: &str) {
     let dur_opt = inst.elapsed();
     let mut s = String::new();
     assert!(plan.explain(&mut s).is_ok());
-    println!("Explain plan:\n{}", s);
+    // println!("Explain plan:\n{}", s);
     println!(
-        "parse={:?}, build={:?}, opt={:?}",
+        "vparse={:?}, build={:?}, opt={:?}",
         dur_parse,
         dur_build - dur_parse,
         dur_opt - dur_build
