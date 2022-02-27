@@ -568,6 +568,8 @@ impl std::fmt::Display for QueryID {
 
 pub const INVALID_QUERY_ID: QueryID = QueryID(!0);
 
+pub type QueryCol = (QueryID, u32);
+
 pub trait Effect: Default {
     fn merge(&mut self, other: Self);
 }
@@ -609,12 +611,12 @@ pub trait ExprMutVisitor {
     }
 }
 
-#[derive(Debug)]
 pub struct CollectQryIDs<'a>(pub &'a mut HashSet<QueryID>);
 
 impl ExprVisitor for CollectQryIDs<'_> {
     type Cont = ();
     type Break = ();
+    #[inline]
     fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
         if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
             self.0.insert(*qry_id);

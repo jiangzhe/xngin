@@ -110,6 +110,10 @@ fn test_plan_build_select_table() {
         ("select tpch.lineitem.l_orderkey from lineitem, lineitem as l2 where lineitem.l_orderkey = l2.l_orderkey", 1, plan_shape![Proj, Filt, Join, Proj, Table, Proj, Table]),
         ("select lineitem.l_orderkey from lineitem, lineitem as l2 where lineitem.l_orderkey = l2.l_orderkey", 1, plan_shape![Proj, Filt, Join, Proj, Table, Proj, Table]),
         ("select l_orderkey from lineitem group by l_orderkey", 1, plan_shape![Aggr, Proj, Table]),
+        ("select l_orderkey+1 from lineitem group by l_orderkey+1", 1, plan_shape![Aggr, Proj, Table]),
+        ("select l_orderkey+1 as k from lineitem group by k", 1, plan_shape![Aggr, Proj, Table]),
+        // below case also fails in MySQL, but Oracle supports it, should we support it?
+        // ("select l_orderkey+1, l_orderkey+1+count(*) from lineitem group by l_orderkey+1", 1, plan_shape![Aggr, Proj, Table]),
         ("select 1 from lineitem group by l_orderkey having l_orderkey > 0", 1, plan_shape![Filt, Aggr, Proj, Table]),
         ("select l_orderkey, count(*) from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
         ("select count(*), l_orderkey from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
