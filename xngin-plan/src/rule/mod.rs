@@ -12,6 +12,7 @@ pub mod expr_simplify;
 pub mod joingraph_initialize;
 pub mod op_eliminate;
 pub mod outerjoin_reduce;
+pub mod pred_pullup;
 pub mod pred_pushdown;
 
 pub use col_prune::col_prune;
@@ -20,6 +21,7 @@ pub use expr_simplify::expr_simplify;
 pub use joingraph_initialize::joingraph_initialize;
 pub use op_eliminate::op_eliminate;
 pub use outerjoin_reduce::outerjoin_reduce;
+pub use pred_pullup::pred_pullup;
 pub use pred_pushdown::pred_pushdown;
 
 bitflags! {
@@ -75,11 +77,24 @@ pub fn rule_optimize(plan: &mut QueryPlan) -> Result<()> {
 #[inline]
 pub fn init_rule_optimize(plan: &mut QueryPlan) -> Result<RuleEffect> {
     let mut eff = RuleEffect::NONE;
+    // Run column pruning as first step, to remove unused columns in operator tree.
+    // this will largely reduce effort of other rules.
     eff |= col_prune(plan)?; // onetime
+                             // Run expression simplify as second step, fold constants, normalize expressions.
     eff |= expr_simplify(plan)?;
+    // Run operator eliminate after expression simplify, to remove unnecessary operators.
     eff |= op_eliminate(plan)?;
+    // Run outerjoin reduce to update join type top down.
     eff |= outerjoin_reduce(plan)?; // onetime
+                                    // Run predicate pushdown
     eff |= pred_pushdown(plan)?;
+    // Run predicate pullup with predicate propagate for future predicate pushdown.
+    pred_pullup(plan)?; // onetime
+                        // Run predicate pushdown again
+    eff |= pred_pushdown(plan)?;
+    // Run column pruning again
+    eff |= col_prune(plan)?;
+    // unfold derived tables to gather more tables to join graph.
     eff |= derived_unfold(plan)?; // onetime
     Ok(eff)
 }
