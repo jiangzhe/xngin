@@ -7,7 +7,7 @@ use crate::join::{Join, JoinKind, JoinOp};
 use crate::op::{Op, OpMutVisitor, SortItem};
 use crate::query::{Location, QueryPlan, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
-use crate::rule::expr_simplify::simplify_nested;
+use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::scope::{Scope, Scopes};
 use crate::setop::{SetopKind, SubqOp};
 use smol_str::SmolStr;
@@ -896,7 +896,7 @@ fn validate_proj_aggr(
         } else {
             // constants can also be present in SELECT list
             let mut new_e = e.clone();
-            simplify_nested(&mut new_e)?;
+            simplify_nested(&mut new_e, NullCoalesce::Null)?;
             if !new_e.is_const() {
                 proj_groups.push(e);
             }

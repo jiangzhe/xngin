@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Limit, Op, OpMutVisitor, Proj, Sort};
 use crate::query::{QueryPlan, QuerySet};
-use crate::rule::expr_simplify::update_simplify_nested;
+use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
 use crate::setop::{Setop, SetopKind};
 use std::collections::HashSet;
@@ -18,6 +18,7 @@ use xngin_expr::{Col, Const, Expr, QueryID, Setq};
 /// 5. Any other operators except Join, Setop, Aggr with empty child can be replaced with Empty.
 /// 6. LIMIT 0 can eliminiate entire tree.
 /// 7. ORDER BY in subquery without LIMIT can be removed.
+/// 8. join with false/null condition can be removed.
 #[inline]
 pub fn op_eliminate(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
     eliminate_op(qry_set, *root, false)
@@ -173,12 +174,13 @@ impl<'a> EliminateOp<'a> {
             // all column references to it must be set to null
             let qs = &self.empty_qs;
             for e in op.exprs_mut() {
-                eff |= update_simplify_nested(e, |e| {
+                eff |= update_simplify_nested(e, NullCoalesce::Null, |e| {
                     if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
                         if qs.contains(qry_id) {
                             *e = Expr::const_null();
                         }
                     }
+                    Ok(())
                 })
                 .branch()?;
             }
@@ -195,31 +197,59 @@ impl OpMutVisitor for EliminateOp<'_> {
         let mut eff = RuleEffect::NONE;
         match op {
             Op::Filt(Filt { pred, source }) => {
-                match pred.as_slice() {
-                    [Expr::Const(Const::Null)] => {
-                        // impossible predicates, remove entire sub-tree
-                        *op = Op::Empty;
-                        eff |= RuleEffect::OP;
-                    }
-                    [Expr::Const(c)] => {
-                        if c.is_zero().unwrap_or_default() {
-                            // impossible predicates, remove entire sub-tree
+                if pred.is_empty() {
+                    // no predicates, remove current filter
+                    *op = Op::Empty;
+                    eff |= RuleEffect::OP;
+                } else {
+                    match pair_const_false(pred) {
+                        (false, _) => (),
+                        (true, true) => {
                             *op = Op::Empty;
                             eff |= RuleEffect::OP;
-                        } else {
-                            // true predicates, remove filter
+                        }
+                        (true, false) => {
                             let source = mem::take(source.as_mut());
                             *op = source;
                             eff |= RuleEffect::OP;
-                            // as we replace current operator with its child, we need to
-                            // perform enter() again
                             eff |= self.enter(op)?;
                             return ControlFlow::Continue(eff);
                         }
                     }
-                    _ => (),
                 }
             }
+            Op::Join(join) => match join.as_mut() {
+                Join::Cross(_) => (),
+                Join::Qualified(QualifiedJoin {
+                    kind: JoinKind::Inner,
+                    cond,
+                    ..
+                }) => match pair_const_false(cond) {
+                    (false, _) => (),
+                    (true, true) => {
+                        *op = Op::Empty;
+                        eff |= RuleEffect::OP;
+                    }
+                    (true, false) => {
+                        cond.clear();
+                    }
+                },
+                Join::Qualified(QualifiedJoin {
+                    kind: JoinKind::Left | JoinKind::Full,
+                    filt,
+                    ..
+                }) => match pair_const_false(filt) {
+                    (false, _) => (),
+                    (true, true) => {
+                        *op = Op::Empty;
+                        eff |= RuleEffect::OP;
+                    }
+                    (true, false) => {
+                        filt.clear();
+                    }
+                },
+                _ => todo!(),
+            },
             Op::Limit(Limit { start, end, .. }) => {
                 if *start == *end {
                     *op = Op::Empty;
@@ -271,21 +301,32 @@ impl OpMutVisitor for EliminateOp<'_> {
     }
 }
 
+// treat null as false
+fn pair_const_false(es: &[Expr]) -> (bool, bool) {
+    match es {
+        [Expr::Const(Const::Null)] => (true, true),
+        [Expr::Const(c)] => (true, c.is_zero().unwrap_or_default()),
+        _ => (false, false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{assert_j_plan, get_lvl_queries, print_plan};
+    use crate::builder::tests::{assert_j_plan1, get_lvl_queries, j_catalog, print_plan};
     use crate::op::preorder;
 
     #[test]
     fn test_op_eliminate_false_pred() {
-        assert_j_plan("select c1 from t1 where null", assert_empty_root);
-        assert_j_plan("select c1 from t1 where false", assert_empty_root);
+        let cat = j_catalog();
+        assert_j_plan1(&cat, "select c1 from t1 where null", assert_empty_root);
+        assert_j_plan1(&cat, "select c1 from t1 where false", assert_empty_root);
     }
 
     #[test]
     fn test_op_eliminate_true_pred() {
-        assert_j_plan("select c1 from t1 where true", |s, mut q| {
+        let cat = j_catalog();
+        assert_j_plan1(&cat, "select c1 from t1 where true", |s, mut q| {
             op_eliminate(&mut q).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
@@ -299,20 +340,30 @@ mod tests {
 
     #[test]
     fn test_op_eliminate_derived_table() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c1 from (select c1 as c1 from t1 where null) x1",
             assert_empty_root,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from (select c1 as c1 from (select c1 from t2 limit 0) x2) x1",
+            assert_empty_root,
+        );
+        assert_j_plan1(
+            &cat,
+            "select c1 from (select c1 from t1 where null) x1 where c1 > 0 order by c1 having c1 > 2 limit 1",
             assert_empty_root,
         );
     }
 
     #[test]
     fn test_op_eliminate_order_by() {
+        let cat = j_catalog();
         // remove ORDER BY in subquery
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from (select c1 from t1 order by c0) x1",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -323,7 +374,8 @@ mod tests {
             },
         );
         // do NOT remove ORDER BY because of LIMIT exists
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from (select c1 from t1 order by c0 limit 1) x1",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -341,20 +393,22 @@ mod tests {
 
     #[test]
     fn test_op_eliminate_limit() {
+        let cat = j_catalog();
         // eliminate entire tree if LIMIT 0
-        assert_j_plan("select c1 from t1 limit 0", |s, mut q| {
+        assert_j_plan1(&cat, "select c1 from t1 limit 0", |s, mut q| {
             op_eliminate(&mut q).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
             assert!(matches!(subq.root, Op::Empty));
         });
-        assert_j_plan("select c1 from t1 limit 0 offset 3", |s, mut q| {
+        assert_j_plan1(&cat, "select c1 from t1 limit 0 offset 3", |s, mut q| {
             op_eliminate(&mut q).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
             assert!(matches!(subq.root, Op::Empty));
         });
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where null order by c1 limit 10",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -364,7 +418,7 @@ mod tests {
             },
         );
         // do NOT eliminate if LIMIT non-zero
-        assert_j_plan("select c1 from t1 limit 1", |s, mut q| {
+        assert_j_plan1(&cat, "select c1 from t1 limit 1", |s, mut q| {
             op_eliminate(&mut q).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
@@ -374,11 +428,14 @@ mod tests {
 
     #[test]
     fn test_op_eliminate_union_all() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where false union all select c1 from t1 limit 0",
             assert_empty_root,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where false union all select c1 from t1",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -390,7 +447,8 @@ mod tests {
                 }));
             },
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 union all select c1 from t1 limit 0",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -406,11 +464,14 @@ mod tests {
 
     #[test]
     fn test_op_eliminate_except_all() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where false except all select c1 from t1",
             assert_empty_root,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 except all select c1 from t1 where null",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -426,11 +487,14 @@ mod tests {
 
     #[test]
     fn test_op_eliminate_intersect_all() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 where false intersect all select c1 from t1",
             assert_empty_root,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c1 from t1 intersect all select c1 from t1 where null",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -447,11 +511,14 @@ mod tests {
     // cross join
     #[test]
     fn test_op_eliminate_cross_join() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c2 from (select c1 from t1 where null) x1, (select * from t2 where false) x2",
             assert_empty_root,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c2 from (select c1 from t1) x1, (select * from t2 limit 0) x2",
             assert_empty_root,
         );
@@ -460,11 +527,14 @@ mod tests {
     // inner join
     #[test]
     fn test_op_eliminate_inner_join() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c2 from (select c1 from t1 where null) x1 join (select * from t2) x2",
             assert_empty_root,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c2 from (select c1 from t1) x1 join (select * from t2 limit 0) x2",
             assert_empty_root,
         );
@@ -473,11 +543,14 @@ mod tests {
     // left join
     #[test]
     fn test_op_eliminate_left_join() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c2 from (select c1 from t1 where null) x1 left join (select * from t2) x2",
             assert_empty_root,
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c2 from (select c1 from t1) x1 left join (select * from t2 limit 0) x2",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -499,7 +572,9 @@ mod tests {
     // right join
     #[test]
     fn test_op_eliminate_right_join() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select c2 from (select c1 from t1 where null) x1 right join (select * from t2) x2",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -516,7 +591,8 @@ mod tests {
                 }
             },
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select c2 from (select c1 from t1) x1 right join (select * from t2 where false) x2",
             assert_empty_root,
         );
@@ -525,7 +601,9 @@ mod tests {
     // full join
     #[test]
     fn test_op_eliminate_full_join() {
-        assert_j_plan(
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
             "select x1.c1, c2 from (select c1 from t1 where null) x1 full join (select * from t2) x2",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -543,7 +621,8 @@ mod tests {
                 }
             },
         );
-        assert_j_plan(
+        assert_j_plan1(
+            &cat,
             "select x1.c1, c2 from (select c1 from t1) x1 full join (select * from t2 where false) x2",
             |s, mut q| {
                 op_eliminate(&mut q).unwrap();
@@ -561,8 +640,9 @@ mod tests {
                 }
             },
         );
-        assert_j_plan(
-            "select c2 from (select c1 from t1 limit 0) x1 right join (select * from t2 where false) x2",
+        assert_j_plan1(
+            &cat,
+            "select c2 from (select c1 from t1 limit 0) x1 full join (select * from t2 where false) x2",
             assert_empty_root,
         );
     }

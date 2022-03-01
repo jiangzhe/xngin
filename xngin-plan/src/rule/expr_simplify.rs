@@ -1,14 +1,45 @@
 use crate::error::{Error, Result};
-use crate::op::Op;
+use crate::join::{Join, QualifiedJoin};
 use crate::op::OpMutVisitor;
+use crate::op::{Filt, Op};
 use crate::query::{QueryPlan, QuerySet};
 use crate::rule::RuleEffect;
+use indexmap::{IndexMap, IndexSet};
+use std::cmp::Ordering;
 use std::mem;
+use xngin_datatype::AlignPartialOrd;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::*;
 use xngin_expr::{
-    Const, Expr, ExprMutVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind, QueryID,
+    Col, Const, Expr, ExprMutVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind, QueryCol,
+    QueryID,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullCoalesce {
+    Null,
+    False,
+    True,
+}
+
+impl NullCoalesce {
+    #[inline]
+    fn flip(&mut self) {
+        match self {
+            NullCoalesce::Null => (),
+            NullCoalesce::False => *self = NullCoalesce::True,
+            NullCoalesce::True => *self = NullCoalesce::False,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PartialExpr {
+    // allow operator =, !=, >, >=, <, <=
+    pub(crate) kind: PredFuncKind,
+    // argument on right side, only allow constant
+    pub(crate) r_arg: Const,
+}
 
 /// Simplify expressions.
 #[inline]
@@ -34,12 +65,39 @@ impl OpMutVisitor for ExprSimplify<'_> {
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         match op {
             Op::Query(qry_id) => simplify_expr(self.qry_set, *qry_id).branch(),
+            Op::Filt(Filt { pred, .. }) => {
+                let mut eff = RuleEffect::NONE;
+                for p in pred.iter_mut() {
+                    eff |= simplify_nested(p, NullCoalesce::False).branch()?;
+                    normalize_single(p);
+                }
+                eff |= simplify_conj(pred, NullCoalesce::False).branch()?;
+                ControlFlow::Continue(eff)
+            }
+            Op::Join(join) => match join.as_mut() {
+                Join::Cross(_) => ControlFlow::Continue(RuleEffect::NONE),
+                Join::Qualified(QualifiedJoin { cond, filt, .. }) => {
+                    let mut eff = RuleEffect::NONE;
+                    for c in cond.iter_mut() {
+                        eff |= simplify_nested(c, NullCoalesce::False).branch()?;
+                        normalize_single(c);
+                    }
+                    eff |= simplify_conj(cond, NullCoalesce::False).branch()?;
+                    if !filt.is_empty() {
+                        for f in filt.iter_mut() {
+                            eff |= simplify_nested(f, NullCoalesce::False).branch()?;
+                            normalize_single(f);
+                        }
+                        eff |= simplify_conj(filt, NullCoalesce::False).branch()?;
+                    }
+                    ControlFlow::Continue(eff)
+                }
+            },
             _ => {
                 let mut eff = RuleEffect::NONE;
                 for e in op.exprs_mut() {
-                    eff |= e.walk_mut(self)?;
-                    // we do not count normalize as expression change
-                    normalize_single(e); // normalize after simplifying
+                    eff |= simplify_nested(e, NullCoalesce::Null).branch()?;
+                    normalize_single(e);
                 }
                 ControlFlow::Continue(eff)
             }
@@ -47,35 +105,41 @@ impl OpMutVisitor for ExprSimplify<'_> {
     }
 }
 
-impl ExprMutVisitor for ExprSimplify<'_> {
-    type Cont = RuleEffect;
-    type Break = Error;
-    /// simplify expression bottom up.
-    #[inline]
-    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
-        simplify_single(e).branch()
-    }
-}
-
-pub(crate) fn simplify_nested(e: &mut Expr) -> Result<RuleEffect> {
-    update_simplify_nested(e, |_| {})
+pub(crate) fn simplify_nested(e: &mut Expr, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
+    update_simplify_nested(e, null_coalesce, |_| Ok(()))
 }
 
 #[inline]
-pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr)>(
+pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr) -> Result<()>>(
     e: &mut Expr,
+    null_coalesce: NullCoalesce,
     f: F,
 ) -> Result<RuleEffect> {
-    struct SimplifyNested<F>(F);
-    impl<F: FnMut(&mut Expr)> ExprMutVisitor for SimplifyNested<F> {
+    struct SimplifyNested<F>(F, NullCoalesce);
+    impl<F: FnMut(&mut Expr) -> Result<()>> ExprMutVisitor for SimplifyNested<F> {
         type Cont = RuleEffect;
         type Break = Error;
         #[inline]
+        fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
+            if let Expr::Pred(Pred::Not(_)) = e {
+                self.1.flip();
+            }
+            ControlFlow::Continue(RuleEffect::NONE)
+        }
+
+        #[inline]
         fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
-            update_simplify_single(e, &mut self.0).branch()
+            // we should not change not in enter method, otherwise, we may miss the flip() call
+            // on NullCoalesce.
+            let not = matches!(e, Expr::Pred(Pred::Not(_)));
+            let cf = update_simplify_single(e, self.1, &mut self.0).branch();
+            if not {
+                self.1.flip()
+            }
+            cf
         }
     }
-    let mut sn = SimplifyNested(f);
+    let mut sn = SimplifyNested(f, null_coalesce);
     e.walk_mut(&mut sn).unbranch()
 }
 
@@ -107,16 +171,501 @@ pub(crate) fn normalize_single(e: &mut Expr) {
 /// Simplify single expression.
 /// This method will only simplify the top level of the expression.
 #[inline]
-pub(crate) fn simplify_single(e: &mut Expr) -> Result<RuleEffect> {
-    update_simplify_single(e, |_| {})
+pub(crate) fn simplify_single(e: &mut Expr, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
+    update_simplify_single(e, null_coalesce, |_| Ok(()))
+}
+
+enum ConjCmpEffect {
+    None,
+    Reject, // entire conjunctive expression rejected
+    Reduce,
+}
+
+fn append_conj_cmp(
+    cmps: &mut Vec<(PredFuncKind, Const)>,
+    (qry_id, idx): QueryCol,
+    new_k: PredFuncKind,
+    new_c: Const,
+    null_coalesce: NullCoalesce,
+    conv: &mut IndexSet<Expr>,
+) -> ConjCmpEffect {
+    let mut to_remove = vec![];
+    for (i, (old_k, old_c)) in cmps.iter_mut().enumerate() {
+        // Here we reduce exprs based on kinds
+        match (*old_k, new_k) {
+            (PredFuncKind::Greater, PredFuncKind::Greater)
+            | (PredFuncKind::GreaterEqual, PredFuncKind::GreaterEqual) => {
+                // a > const0 and a > const1, a >= const0 and a >= const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord == Ordering::Less {
+                    *old_c = new_c;
+                }
+                return ConjCmpEffect::Reduce;
+            }
+            (PredFuncKind::Greater, PredFuncKind::GreaterEqual) => {
+                // a > const0 and a >= const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord == Ordering::Less {
+                    *old_c = new_c;
+                    *old_k = new_k;
+                }
+                return ConjCmpEffect::Reduce;
+            }
+            (PredFuncKind::GreaterEqual, PredFuncKind::Greater) => {
+                // a >= const0 and a > const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord != Ordering::Greater {
+                    *old_c = new_c;
+                    *old_k = new_k;
+                }
+                return ConjCmpEffect::Reduce;
+            }
+            (PredFuncKind::Greater, PredFuncKind::Less | PredFuncKind::LessEqual)
+            | (PredFuncKind::GreaterEqual, PredFuncKind::Less) => {
+                // a > const0 and a < const1, a > const0 and a <= const1, a >= const0 and a < const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord != Ordering::Less {
+                    // impossible predicate
+                    match null_coalesce {
+                        NullCoalesce::Null => (),
+                        NullCoalesce::False => return ConjCmpEffect::Reject,
+                        NullCoalesce::True => {
+                            // if column is not null, returns false, if column is null, coalesce to true,
+                            // so we can replace it with IsNull(col)
+                            let e = Expr::pred_func(
+                                PredFuncKind::IsNull,
+                                vec![Expr::query_col(qry_id, idx)],
+                            );
+                            conv.insert(e);
+                            to_remove.push(i);
+                        }
+                    }
+                } // otherwise, do nothing
+            }
+            (PredFuncKind::GreaterEqual, PredFuncKind::LessEqual) => {
+                // a >= const0 and a <= const1
+                match old_c.align_partial_cmp(&new_c).unwrap() {
+                    Ordering::Equal => {
+                        // only equal is possible
+                        *old_k = PredFuncKind::Equal;
+                        return ConjCmpEffect::Reduce;
+                    }
+                    Ordering::Greater => {
+                        // impossible predicate
+                        match null_coalesce {
+                            NullCoalesce::Null => (),
+                            NullCoalesce::False => return ConjCmpEffect::Reject,
+                            NullCoalesce::True => {
+                                // if column is not null, returns false, if column is null, coalesce to true,
+                                // so we can replace it with IsNull(col)
+                                let e = Expr::pred_func(
+                                    PredFuncKind::IsNull,
+                                    vec![Expr::query_col(qry_id, idx)],
+                                );
+                                conv.insert(e);
+                                to_remove.push(i);
+                            }
+                        }
+                    }
+                    Ordering::Less => (),
+                } // otherwise, do nothing
+            }
+            (PredFuncKind::Less, PredFuncKind::Less)
+            | (PredFuncKind::LessEqual, PredFuncKind::LessEqual) => {
+                // a < const0 and a < const1, a <= const0 and a <= const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord == Ordering::Greater {
+                    *old_c = new_c;
+                }
+                return ConjCmpEffect::Reduce;
+            }
+            (PredFuncKind::Less, PredFuncKind::LessEqual) => {
+                // a < const0 and a <= const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord == Ordering::Greater {
+                    *old_c = new_c;
+                    *old_k = new_k;
+                }
+                return ConjCmpEffect::Reduce;
+            }
+            (PredFuncKind::LessEqual, PredFuncKind::Less) => {
+                // a <= const0 and a < const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord != Ordering::Less {
+                    *old_c = new_c;
+                    *old_k = new_k;
+                }
+                return ConjCmpEffect::Reduce;
+            }
+            (PredFuncKind::Less, PredFuncKind::Greater | PredFuncKind::GreaterEqual)
+            | (PredFuncKind::LessEqual, PredFuncKind::Greater) => {
+                // a < const0 and a > const1, a < const0 and a >= const1, a <= const0 and a > const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord != Ordering::Greater {
+                    // impossible predicates
+                    match null_coalesce {
+                        NullCoalesce::Null => (),
+                        NullCoalesce::False => return ConjCmpEffect::Reject,
+                        NullCoalesce::True => {
+                            // if column is not null, returns false, if column is null, coalesce to true,
+                            // so we can replace it with IsNull(col)
+                            let e = Expr::pred_func(
+                                PredFuncKind::IsNull,
+                                vec![Expr::query_col(qry_id, idx)],
+                            );
+                            conv.insert(e);
+                            to_remove.push(i);
+                        }
+                    }
+                } // otherwise, do nothing
+            }
+            (PredFuncKind::LessEqual, PredFuncKind::GreaterEqual) => {
+                // a <= const0 and a >= const1
+                match old_c.align_partial_cmp(&new_c).unwrap() {
+                    Ordering::Equal => {
+                        // only equal is possible
+                        *old_k = PredFuncKind::Equal;
+                        return ConjCmpEffect::Reduce;
+                    }
+                    Ordering::Less => {
+                        // impossible predicate
+                        match null_coalesce {
+                            NullCoalesce::Null => (),
+                            NullCoalesce::False => return ConjCmpEffect::Reject,
+                            NullCoalesce::True => {
+                                // if column is not null, returns false, if column is null, coalesce to true,
+                                // so we can replace it with IsNull(col)
+                                let e = Expr::pred_func(
+                                    PredFuncKind::IsNull,
+                                    vec![Expr::query_col(qry_id, idx)],
+                                );
+                                conv.insert(e);
+                                to_remove.push(i);
+                            }
+                        }
+                    }
+                    Ordering::Greater => (),
+                } // otherwise, do nothing
+            }
+            (
+                PredFuncKind::Equal,
+                PredFuncKind::Equal
+                | PredFuncKind::Greater
+                | PredFuncKind::GreaterEqual
+                | PredFuncKind::Less
+                | PredFuncKind::LessEqual
+                | PredFuncKind::NotEqual,
+            ) => {
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if !check_ord_left_eq(ord, new_k) {
+                    // impossible predicate
+                    match null_coalesce {
+                        NullCoalesce::Null => (),
+                        NullCoalesce::False => return ConjCmpEffect::Reject,
+                        NullCoalesce::True => {
+                            // if column is not null, returns false, if column is null, coalesce to true,
+                            // so we can replace it with IsNull(col)
+                            let e = Expr::pred_func(
+                                PredFuncKind::IsNull,
+                                vec![Expr::query_col(qry_id, idx)],
+                            );
+                            conv.insert(e);
+                            to_remove.push(i);
+                        }
+                    }
+                } else {
+                    // if old equals, new is always true, so keep old and remove new
+                    return ConjCmpEffect::Reduce;
+                }
+            }
+            (
+                PredFuncKind::Greater
+                | PredFuncKind::GreaterEqual
+                | PredFuncKind::Less
+                | PredFuncKind::LessEqual
+                | PredFuncKind::NotEqual,
+                PredFuncKind::Equal,
+            ) => {
+                // flip left and right
+                let ord = new_c.align_partial_cmp(old_c).unwrap();
+                if !check_ord_left_eq(ord, *old_k) {
+                    match null_coalesce {
+                        NullCoalesce::Null => (),
+                        NullCoalesce::False => return ConjCmpEffect::Reject,
+                        NullCoalesce::True => {
+                            // if column is not null, returns false, if column is null, coalesce to true,
+                            // so we can replace it with IsNull(col)
+                            let e = Expr::pred_func(
+                                PredFuncKind::IsNull,
+                                vec![Expr::query_col(qry_id, idx)],
+                            );
+                            conv.insert(e);
+                            to_remove.push(i);
+                        }
+                    }
+                } else {
+                    // if new equals, old is always true, so replace old with new
+                    *old_k = new_k;
+                    *old_c = new_c;
+                    return ConjCmpEffect::Reduce;
+                }
+            }
+            (PredFuncKind::NotEqual, PredFuncKind::Greater) => {
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord != Ordering::Greater {
+                    *old_k = new_k;
+                    *old_c = new_c;
+                    return ConjCmpEffect::Reduce;
+                } // otherwise, nothing
+            }
+            (PredFuncKind::Greater, PredFuncKind::NotEqual) => {
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord != Ordering::Less {
+                    return ConjCmpEffect::Reduce;
+                } // otherwise, nothing
+            }
+            (PredFuncKind::NotEqual, PredFuncKind::GreaterEqual) => {
+                match old_c.align_partial_cmp(&new_c).unwrap() {
+                    Ordering::Equal => {
+                        *old_k = PredFuncKind::Greater;
+                        return ConjCmpEffect::Reduce;
+                    }
+                    Ordering::Less => {
+                        *old_k = new_k;
+                        *old_c = new_c;
+                        return ConjCmpEffect::Reduce;
+                    }
+                    _ => (),
+                }
+            }
+            (PredFuncKind::GreaterEqual, PredFuncKind::NotEqual) => {
+                // a >= const0 and a != const1
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                match ord {
+                    Ordering::Equal => {
+                        *old_k = PredFuncKind::Greater;
+                        return ConjCmpEffect::Reduce;
+                    }
+                    Ordering::Greater => return ConjCmpEffect::Reduce,
+                    _ => (),
+                }
+            }
+            (PredFuncKind::NotEqual, PredFuncKind::Less) => {
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord != Ordering::Less {
+                    *old_k = new_k;
+                    *old_c = new_c;
+                    return ConjCmpEffect::Reduce;
+                } // otherwise, nothing
+            }
+            (PredFuncKind::Less, PredFuncKind::NotEqual) => {
+                let ord = old_c.align_partial_cmp(&new_c).unwrap();
+                if ord != Ordering::Greater {
+                    return ConjCmpEffect::Reduce;
+                } // otherwise, nothing
+            }
+            (PredFuncKind::NotEqual, PredFuncKind::LessEqual) => {
+                match old_c.align_partial_cmp(&new_c).unwrap() {
+                    Ordering::Equal => {
+                        *old_k = PredFuncKind::Less;
+                        return ConjCmpEffect::Reduce;
+                    }
+                    Ordering::Greater => {
+                        *old_k = new_k;
+                        *old_c = new_c;
+                        return ConjCmpEffect::Reduce;
+                    }
+                    _ => (),
+                }
+            }
+            (PredFuncKind::LessEqual, PredFuncKind::NotEqual) => {
+                match old_c.align_partial_cmp(&new_c).unwrap() {
+                    Ordering::Equal => {
+                        *old_k = PredFuncKind::Less;
+                        return ConjCmpEffect::Reduce;
+                    }
+                    Ordering::Less => {
+                        return ConjCmpEffect::Reduce;
+                    }
+                    _ => (),
+                }
+            }
+            _ => (),
+        }
+    }
+    if to_remove.is_empty() {
+        cmps.push((new_k, new_c));
+        return ConjCmpEffect::None;
+    }
+    while let Some(i) = to_remove.pop() {
+        cmps.remove(i);
+    }
+    ConjCmpEffect::Reduce
+}
+
+// Simplify conjunctive expression with short circuit.
+// If returned value is not empty, use it to replace the original expression list,
+// this is called short circuit.
+fn simplify_conj_short_circuit(
+    es: &mut Vec<Expr>,
+    null_coalesce: NullCoalesce,
+    eff: &mut RuleEffect,
+) -> Option<Expr> {
+    let mut eset = IndexSet::new();
+    let mut cmps: IndexMap<QueryCol, Vec<(PredFuncKind, Const)>> = IndexMap::new();
+    for e in es.drain(..) {
+        match &e {
+            Expr::Const(c) => {
+                if let Some(zero) = c.is_zero() {
+                    if zero {
+                        return Some(Expr::const_bool(false));
+                    }
+                    // otherwise, remove it as redundant
+                    *eff |= RuleEffect::EXPR;
+                } else {
+                    match null_coalesce {
+                        NullCoalesce::Null => {
+                            if !eset.insert(e) {
+                                *eff |= RuleEffect::EXPR;
+                            }
+                        }
+                        NullCoalesce::False => return Some(Expr::const_bool(false)),
+                        NullCoalesce::True => {
+                            // remove it
+                            *eff |= RuleEffect::EXPR;
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let Expr::Pred(Pred::Func(PredFunc { kind: new_k, args })) = &e {
+                    match (new_k, args.as_ref()) {
+                        (
+                            PredFuncKind::Equal
+                            | PredFuncKind::NotEqual
+                            | PredFuncKind::Greater
+                            | PredFuncKind::GreaterEqual
+                            | PredFuncKind::Less
+                            | PredFuncKind::LessEqual,
+                            [Expr::Col(Col::QueryCol(qry_id, idx)), Expr::Const(new_c)],
+                        ) => {
+                            let ent = cmps.entry((*qry_id, *idx)).or_default();
+                            match append_conj_cmp(
+                                ent,
+                                (*qry_id, *idx),
+                                *new_k,
+                                new_c.clone(),
+                                null_coalesce,
+                                &mut eset,
+                            ) {
+                                ConjCmpEffect::None => (),
+                                ConjCmpEffect::Reduce => {
+                                    *eff |= RuleEffect::EXPR;
+                                }
+                                ConjCmpEffect::Reject => return Some(Expr::const_bool(false)),
+                            }
+                        }
+                        _ => {
+                            if !eset.insert(e) {
+                                *eff |= RuleEffect::EXPR;
+                            }
+                        }
+                    }
+                } else if !eset.insert(e) {
+                    *eff |= RuleEffect::EXPR;
+                }
+            }
+        }
+    }
+    for ((qid, idx), mut pes) in cmps {
+        if pes.len() == 1 {
+            // keep it as is
+            let (kind, c) = pes.into_iter().next().unwrap();
+            let e = Expr::pred_func(kind, vec![Expr::query_col(qid, idx), Expr::Const(c)]);
+            eset.insert(e);
+        } else {
+            // iteratively simplify cmps
+            loop {
+                let mut progress = false;
+                let tmp = mem::take(&mut pes);
+                for (new_k, new_c) in tmp {
+                    match append_conj_cmp(
+                        &mut pes,
+                        (qid, idx),
+                        new_k,
+                        new_c,
+                        null_coalesce,
+                        &mut eset,
+                    ) {
+                        ConjCmpEffect::None => (),
+                        ConjCmpEffect::Reduce => {
+                            progress = true;
+                        }
+                        ConjCmpEffect::Reject => return Some(Expr::const_bool(false)),
+                    }
+                }
+                if !progress {
+                    break;
+                }
+            }
+            for (k, c) in pes {
+                let e = Expr::pred_func(k, vec![Expr::query_col(qid, idx), Expr::Const(c)]);
+                eset.insert(e);
+            }
+        }
+    }
+    // push back to original list
+    for e in eset {
+        es.push(e)
+    }
+    None
+}
+
+fn check_ord_left_eq(ord: Ordering, r_kind: PredFuncKind) -> bool {
+    match (ord, r_kind) {
+        // a=2 and a>1, a=2 and a>=1, a=2 and a!=1
+        (
+            Ordering::Greater,
+            PredFuncKind::Greater | PredFuncKind::GreaterEqual | PredFuncKind::NotEqual,
+        ) => true,
+        (Ordering::Greater, _) => false,
+        // a=1 and a<2, a=1 and a <=2, a=1 and a!=2
+        (Ordering::Less, PredFuncKind::Less | PredFuncKind::LessEqual | PredFuncKind::NotEqual) => {
+            true
+        }
+        (Ordering::Less, _) => false,
+        // a=1 and a>=1, a=1 and a<=1, a=1 and a=1
+        (
+            Ordering::Equal,
+            PredFuncKind::GreaterEqual | PredFuncKind::LessEqual | PredFuncKind::Equal,
+        ) => true,
+        (Ordering::Equal, _) => false,
+    }
+}
+
+/// Simplify expressions in conjunctive normal form.
+/// The provided expressions should be already simplified.
+#[inline]
+pub(crate) fn simplify_conj(es: &mut Vec<Expr>, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
+    let mut eff = RuleEffect::NONE;
+    if let Some(e) = simplify_conj_short_circuit(es, null_coalesce, &mut eff) {
+        es.clear();
+        es.push(e);
+        eff |= RuleEffect::EXPR;
+    }
+    Ok(eff)
 }
 
 /// Try updating the expression, and then simplify it.
 #[inline]
-fn update_simplify_single<F: FnMut(&mut Expr)>(e: &mut Expr, mut f: F) -> Result<RuleEffect> {
+fn update_simplify_single<F: FnMut(&mut Expr) -> Result<()>>(
+    e: &mut Expr,
+    null_coalesce: NullCoalesce,
+    mut f: F,
+) -> Result<RuleEffect> {
     let mut eff = RuleEffect::NONE;
     // we don't count the replacement as expression change
-    f(e);
+    f(e)?;
     match e {
         Expr::Func(f) => {
             if let Some(new) = simplify_func(f)? {
@@ -125,7 +674,8 @@ fn update_simplify_single<F: FnMut(&mut Expr)>(e: &mut Expr, mut f: F) -> Result
             }
         }
         Expr::Pred(p) => {
-            if let Some(new) = simplify_pred(p)? {
+            // todo: add NullCoalesce
+            if let Some(new) = simplify_pred(p, null_coalesce)? {
                 *e = new;
                 eff |= RuleEffect::EXPR;
             }
@@ -626,7 +1176,7 @@ fn const_sub_expr(c: Const, e: Expr) -> Expr {
 /// 5. EXISTS/NOT EXISTS
 ///
 /// 6. IN/NOT IN
-fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
+fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Expr>> {
     let res = match p {
         Pred::Not(e) => match e.as_mut() {
             // 1.1
@@ -864,6 +1414,16 @@ fn simplify_pred(p: &mut Pred) -> Result<Option<Expr>> {
                 None
             }
         }
+        Pred::Conj(es) => {
+            let eff = simplify_conj(es, null_coalesce)?;
+            if eff == RuleEffect::NONE {
+                None
+            } else if es.len() == 1 {
+                Some(es.pop().unwrap())
+            } else {
+                Some(Expr::pred_conj(mem::take(es)))
+            }
+        }
         _ => None, // todo: handle other predicates
     };
     Ok(res)
@@ -895,27 +1455,17 @@ mod tests {
     #[test]
     fn test_expr_simplify_neg() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where -(2)",
-            "select c1 from t1 where -2",
-            assert_eq_filt_expr,
-        )
+        assert_j_plan1(&cat, "select c1 from t1 where -(2)", assert_no_filt_expr)
     }
 
     #[test]
     fn test_expr_simplify_consts_add_sub() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1+1",
-            "select c1 from t1 where 2",
-            assert_eq_filt_expr,
-        );
+        assert_j_plan1(&cat, "select c1 from t1 where 1+1", assert_no_filt_expr);
         assert_j_plan2(
             &cat,
             "select c1 from t1 where 1-1",
-            "select c1 from t1 where 0",
+            "select c1 from t1 where false",
             assert_eq_filt_expr,
         )
     }
@@ -967,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn test_expr_simplify6_commu() {
+    fn test_expr_simplify6_comm() {
         let cat = j_catalog();
         assert_j_plan2(
             &cat,
@@ -992,219 +1542,78 @@ mod tests {
     #[test]
     fn test_expr_simplify_comm_assoc1() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c1+1+2",
-            "select c1 from t1 where c1+3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c1+1-2",
-            "select c1 from t1 where c1+(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c1-1+2",
-            "select c1 from t1 where c1-(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c1-1-2",
-            "select c1 from t1 where c1-3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1-c1-2",
-            "select c1 from t1 where -1-c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1-c1+2",
-            "select c1 from t1 where 3-c1",
-            assert_eq_filt_expr,
-        );
+        for (s1, s2) in vec![
+            ("c1+1+2", "c1+3"),
+            ("c1+1-2", "c1+(-1)"),
+            ("c1-1+2", "c1-(-1)"),
+            ("c1-1-2", "c1-3"),
+            ("1-c1-2", "-1-c1"),
+            ("1-c1+2", "3-c1"),
+        ] {
+            let s1 = format!("select c1 from t2 where {}", s1);
+            let s2 = format!("select c1 from t2 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
     }
 
     #[test]
     fn test_expr_simplify_comm_assoc2() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1+(c1+2)",
-            "select c1 from t1 where c1+3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1+(2+c1)",
-            "select c1 from t1 where c1+3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1+(c1-2)",
-            "select c1 from t1 where c1+(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1+(2-c1)",
-            "select c1 from t1 where 3-c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1-(c1+2)",
-            "select c1 from t1 where -1-c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1-(c1-2)",
-            "select c1 from t1 where 3-c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1-(2-c1)",
-            "select c1 from t1 where c1+(-1)",
-            assert_eq_filt_expr,
-        );
+        for (s1, s2) in vec![
+            ("1+(c1+2)", "c1+3"),
+            ("1+(2+c1)", "c1+3"),
+            ("1+(c1-2)", "c1+(-1)"),
+            ("1+(2-c1)", "3-c1"),
+            ("1-(c1+2)", "-1-c1"),
+            ("1-(c1-2)", "3-c1"),
+            ("1-(2-c1)", "c1+(-1)"),
+        ] {
+            let s1 = format!("select c1 from t2 where {}", s1);
+            let s2 = format!("select c1 from t2 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
     }
 
     #[test]
     fn test_expr_simplify_comm_assoc3() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1+1)+(c2+2)",
-            "select c1 from t2 where (c1+c2)+3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1-1)+(c2+2)",
-            "select c1 from t2 where (c1+c2)-(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (1-c1)+(c2+2)",
-            "select c1 from t2 where (c2-c1)+3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1+1)+(c2-2)",
-            "select c1 from t2 where (c1+c2)+(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1-1)+(c2-2)",
-            "select c1 from t2 where (c1+c2)-3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (1-c1)+(c2-2)",
-            "select c1 from t2 where (c2-c1)+(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1+1)+(2-c2)",
-            "select c1 from t2 where (c1-c2)+3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1-1)+(2-c2)",
-            "select c1 from t2 where (c1-c2)-(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (1-c1)+(2-c2)",
-            "select c1 from t2 where 3-(c1+c2)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (1-c1)+(c1-c2)",
-            "select c1 from t2 where (1-c1)+(c1-c2)",
-            assert_eq_filt_expr,
-        );
+        for (s1, s2) in vec![
+            ("(c1+1)+(c2+2)", "(c1+c2)+3"),
+            ("(c1-1)+(c2+2)", "(c1+c2)-(-1)"),
+            ("(1-c1)+(c2+2)", "(c2-c1)+3"),
+            ("(c1+1)+(c2-2)", "(c1+c2)+(-1)"),
+            ("(c1-1)+(c2-2)", "(c1+c2)-3"),
+            ("(1-c1)+(c2-2)", "(c2-c1)+(-1)"),
+            ("(c1+1)+(2-c2)", "(c1-c2)+3"),
+            ("(c1-1)+(2-c2)", "(c1-c2)-(-1)"),
+            ("(1-c1)+(2-c2)", "3-(c1+c2)"),
+            ("(1-c1)+(c1-c2)", "(1-c1)+(c1-c2)"),
+        ] {
+            let s1 = format!("select c1 from t2 where {}", s1);
+            let s2 = format!("select c1 from t2 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
     }
 
     #[test]
     fn test_expr_simplify_comm_assoc4() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1+1)-(c2+2)",
-            "select c1 from t2 where (c1-c2)+(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1-1)-(c2+2)",
-            "select c1 from t2 where (c1-c2)-3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (1-c1)-(c2+2)",
-            "select c1 from t2 where -1-(c1+c2)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1+1)-(c2-2)",
-            "select c1 from t2 where (c1-c2)+3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1-1)-(c2-2)",
-            "select c1 from t2 where (c1-c2)-(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (1-c1)-(c2-2)",
-            "select c1 from t2 where 3-(c1+c2)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1+1)-(2-c2)",
-            "select c1 from t2 where (c1+c2)+(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (c1-1)-(2-c2)",
-            "select c1 from t2 where (c1+c2)-3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (1-c1)-(2-c2)",
-            "select c1 from t2 where (c2-c1)+(-1)",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t2 where (1-c1)-(c1-c2)",
-            "select c1 from t2 where (1-c1)-(c1-c2)",
-            assert_eq_filt_expr,
-        );
+        for (s1, s2) in vec![
+            ("(c1+1)-(c2+2)", "(c1-c2)+(-1)"),
+            ("(c1-1)-(c2+2)", "(c1-c2)-3"),
+            ("(1-c1)-(c2+2)", "-1-(c1+c2)"),
+            ("(c1+1)-(c2-2)", "(c1-c2)+3"),
+            ("(c1-1)-(c2-2)", "(c1-c2)-(-1)"),
+            ("(1-c1)-(c2-2)", "3-(c1+c2)"),
+            ("(c1+1)-(2-c2)", "(c1+c2)+(-1)"),
+            ("(c1-1)-(2-c2)", "(c1+c2)-3"),
+            ("(1-c1)-(2-c2)", "(c2-c1)+(-1)"),
+            ("(1-c1)-(c1-c2)", "(1-c1)-(c1-c2)"),
+        ] {
+            let s1 = format!("select c1 from t2 where {}", s1);
+            let s2 = format!("select c1 from t2 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
     }
 
     // fold pred 1.1
@@ -1281,83 +1690,35 @@ mod tests {
     #[test]
     fn test_expr_simplify_not_cmp() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 = c1",
-            "select c1 from t1 where c0 <> c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 > c1",
-            "select c1 from t1 where c0 <= c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 >= c1",
-            "select c1 from t1 where c0 < c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 < c1",
-            "select c1 from t1 where c0 >= c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 <= c1",
-            "select c1 from t1 where c0 > c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 <> c1",
-            "select c1 from t1 where c0 = c1",
-            assert_eq_filt_expr,
-        )
+        for (s1, s2) in vec![
+            ("not c0 = c1", "c0 <> c1"),
+            ("not c0 > c1", "c0 <= c1"),
+            ("not c0 >= c1", "c0 < c1"),
+            ("not c0 < c1", "c0 >= c1"),
+            ("not c0 <= c1", "c0 > c1"),
+            ("not c0 <> c1", "c0 = c1"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
     }
 
     #[test]
     fn test_expr_simplify_not_is() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 is null",
-            "select c1 from t1 where c0 is not null",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 is not null",
-            "select c1 from t1 where c0 is null",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 is true",
-            "select c1 from t1 where c0 is not true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 is not true",
-            "select c1 from t1 where c0 is true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 is false",
-            "select c1 from t1 where c0 is not false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not c0 is not false",
-            "select c1 from t1 where c0 is false",
-            assert_eq_filt_expr,
-        )
+        for (s1, s2) in vec![
+            ("not c0 is null", "c0 is not null"),
+            ("not c0 is not null", "c0 is null"),
+            ("not c0 is true", "c0 is not true"),
+            ("not c0 is not true", "c0 is true"),
+            ("not c0 is false", "c0 is not false"),
+            ("not c0 is not false", "c0 is false"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
     }
 
     #[test]
@@ -1445,361 +1806,109 @@ mod tests {
             "select c1 from t1 where false",
             assert_eq_filt_expr,
         );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not 0",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where not 0.0",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
+        assert_j_plan1(&cat, "select c1 from t1 where not 0", assert_no_filt_expr);
+        assert_j_plan1(&cat, "select c1 from t1 where not 0.0", assert_no_filt_expr);
+        assert_j_plan1(
             &cat,
             "select c1 from t1 where not 0.0e-1",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
+            assert_no_filt_expr,
         )
     }
 
     #[test]
     fn test_expr_simplify_null_cmp() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 = null",
-            "select c1 from t1 where null",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null = 1",
-            "select c1 from t1 where null",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null = null",
-            "select c1 from t1 where null",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 = null",
-            "select c1 from t1 where null",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null = c0",
-            "select c1 from t1 where null",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null <=> null",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 <=> null",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 <=> null",
-            "select c1 from t1 where c0 <=> null",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null is null",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 is null",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null is not null",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 is not null",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null is true",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 is true",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 0 is true",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null is not true",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 is not true",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 0 is not true",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null is false",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 is false",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 0 is false",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where null is not false",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 is not false",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 0 is not false",
-            "select c1 from t1 where false",
-            assert_eq_filt_expr,
-        );
+        for (s1, s2) in vec![
+            ("1 = null", "false"),
+            ("null = 1", "false"),
+            ("null = null", "false"),
+            ("c0 = null", "false"),
+            ("null = c0", "false"),
+            ("1 <=> null", "false"),
+            ("c0 <=> null", "c0 <=> null"),
+            ("1 is null", "false"),
+            ("null is not null", "false"),
+            ("null is true", "false"),
+            ("0 is true", "false"),
+            ("1 is not true", "false"),
+            ("null is false", "false"),
+            ("1 is false", "false"),
+            ("0 is not false", "false"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
+        for s1 in vec![
+            "null is null",
+            "1 is not null",
+            "1 is true",
+            "0 is not true",
+            "0 is false",
+            "null is not false",
+            "1 is not false",
+            "null <=> null",
+            "null is not true",
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            assert_j_plan1(&cat, &s1, assert_no_filt_expr)
+        }
     }
 
     #[test]
     fn test_expr_simplify_cmp_const() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 = 1",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
+        assert_j_plan1(&cat, "select c1 from t1 where 1 = 1", assert_no_filt_expr);
+        assert_j_plan1(
             &cat,
             "select c1 from t1 where 1.0 = true",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
+            assert_no_filt_expr,
         );
-        assert_j_plan2(
+        assert_j_plan1(
             &cat,
             "select c1 from t1 where '1.0' = 1",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
+            assert_no_filt_expr,
         );
-        assert_j_plan2(
+        assert_j_plan1(
             &cat,
             "select c1 from t1 where 'abc' = 0",
-            "select c1 from t1 where true",
-            assert_eq_filt_expr,
+            assert_no_filt_expr,
         )
     }
 
     #[test]
-    fn test_expr_simplify_arith_cmp1() {
+    fn test_expr_simplify_arith_cmp() {
         let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 + 1 = 2",
-            "select c1 from t1 where c0 = 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 - 1 = 2",
-            "select c1 from t1 where c0 = 3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 - c0 >= 2",
-            "select c1 from t1 where c0 <= -1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 = c0 + 2",
-            "select c1 from t1 where c0 = -1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 = c0 - 2",
-            "select c1 from t1 where c0 = 3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 >= 2 - c0",
-            "select c1 from t1 where c0 >= 1",
-            assert_eq_filt_expr,
-        );
-    }
-
-    #[test]
-    fn test_expr_simplify_arith_cmp2() {
-        let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 = c0",
-            "select c1 from t1 where c0 = 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 > c0",
-            "select c1 from t1 where c0 < 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 >= c0",
-            "select c1 from t1 where c0 <= 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 < c0",
-            "select c1 from t1 where c0 > 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 < c0",
-            "select c1 from t1 where c0 > 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 <= c0",
-            "select c1 from t1 where c0 >= 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 <> c0",
-            "select c1 from t1 where c0 <> 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 + 1 = c0",
-            "select c1 from t1 where c0 = 2",
-            assert_eq_filt_expr,
-        );
-    }
-
-    #[test]
-    fn test_expr_simplify_arith_cmp3() {
-        let cat = j_catalog();
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 + 1 = c1 + 1",
-            "select c1 from t1 where c0 = c1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 + 1 = c1 + 2",
-            "select c1 from t1 where c0 = c1 + 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 - 1 = c1 + 2",
-            "select c1 from t1 where c0 = c1 + 3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 - c0 > c1 + 2",
-            "select c1 from t1 where c1 + c0 < -1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 + 1 >= c1 - 2",
-            "select c1 from t1 where c0 >= c1 - 3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 - 1 < c1 - 2",
-            "select c1 from t1 where c0 < c1 - 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 - c0 > c1 - 2",
-            "select c1 from t1 where c1 + c0 < 3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 + 1 <= 2 - c1",
-            "select c1 from t1 where c0 + c1 <= 1",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where c0 - 1 < 2 - c1",
-            "select c1 from t1 where c0 + c1 < 3",
-            assert_eq_filt_expr,
-        );
-        assert_j_plan2(
-            &cat,
-            "select c1 from t1 where 1 - c0 >= 2 - c1",
-            "select c1 from t1 where c0 <= c1 + (-1)",
-            assert_eq_filt_expr,
-        );
+        for (s1, s2) in vec![
+            ("c0 + 1 = 2", "c0 = 1"),
+            ("c0 - 1 = 2", "c0 = 3"),
+            ("1 - c0 >= 2", "c0 <= -1"),
+            ("1 = c0 + 2", "c0 = -1"),
+            ("1 = c0 - 2", "c0 = 3"),
+            ("1 >= 2 - c0", "c0 >= 1"),
+            ("1 = c0", "c0 = 1"),
+            ("1 > c0", "c0 < 1"),
+            ("1 >= c0", "c0 <= 1"),
+            ("1 < c0", "c0 > 1"),
+            ("1 < c0", "c0 > 1"),
+            ("1 <= c0", "c0 >= 1"),
+            ("1 <> c0", "c0 <> 1"),
+            ("1 + 1 = c0", "c0 = 2"),
+            ("c0 + 1 = c1 + 1", "c0 = c1"),
+            ("c0 + 1 = c1 + 2", "c0 = c1 + 1"),
+            ("c0 - 1 = c1 + 2", "c0 = c1 + 3"),
+            ("1 - c0 > c1 + 2", "c1 + c0 < -1"),
+            ("c0 + 1 >= c1 - 2", "c0 >= c1 - 3"),
+            ("c0 - 1 < c1 - 2", "c0 < c1 - 1"),
+            ("1 - c0 > c1 - 2", "c1 + c0 < 3"),
+            ("c0 + 1 <= 2 - c1", "c0 + c1 <= 1"),
+            ("c0 - 1 < 2 - c1", "c0 + c1 < 3"),
+            ("1 - c0 >= 2 - c1", "c0 <= c1 + (-1)"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
     }
 
     #[test]
@@ -1823,6 +1932,195 @@ mod tests {
             "select t1.c1 from t1, t2 where t1.c1 < t2.c0",
             assert_eq_filt_expr,
         );
+    }
+
+    #[test]
+    fn test_expr_simplify_conj_redundant() {
+        let cat = j_catalog();
+        assert_j_plan1(&cat, "select c1 from t1 where 1 and 1", assert_no_filt_expr);
+        for (s1, s2) in vec![
+            ("0 and 1", "false"),
+            ("1 and c0 > 0", "c0 > 0"),
+            ("c0 > 0 and 1", "c0 > 0"),
+            ("false and c0 > 0", "false"),
+            ("c0 > 0 and false", "false"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
+    }
+
+    #[test]
+    fn test_expr_simplify_conj_ge() {
+        let cat = j_catalog();
+        for (s1, s2) in vec![
+            ("c1 >= 1 and c1 > 3", "c1 > 3"),
+            ("c1 >= 1 and c1 > 0", "c1 >= 1"),
+            ("c1 >= 1 and c1 >= 3", "c1 >= 3"),
+            ("c1 >= 1 and c1 >= 0", "c1 >= 1"),
+            ("c1 >= 1 and c1 >= 1", "c1 >= 1"),
+            ("c1 >= 1 and c1 < 3", "c1 >= 1 and c1 < 3"),
+            ("c1 >= 1 and c1 < 0", "false"),
+            ("not(c1 >= 1 and c1 < 0)", "c1 is not null"),
+            ("c1 >= 1 and c1 <= 3", "c1 >= 1 and c1 <= 3"),
+            ("c1 >= 1 and c1 <= 0", "false"),
+            ("not(c1 >= 1 and c1 <= 0)", "c1 is not null"),
+            ("c1 >= 1 and c1 <= 1", "c1 = 1"),
+            ("c1 >= 1 and c1 = 3", "c1 = 3"),
+            ("c1 >= 1 and c1 = 1", "c1 = 1"),
+            ("c1 >= 1 and c1 = 0", "false"),
+            ("not(c1 >= 1 and c1 = 0)", "c1 is not null"),
+            ("c1 >= 1 and c1 <> 3", "c1 >= 1 and c1 <> 3"),
+            ("c1 >= 1 and c1 <> 0", "c1 >= 1"),
+            ("c1 >= 1 and c1 <> 1", "c1 > 1"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
+    }
+
+    #[test]
+    fn test_expr_simplify_conj_gt() {
+        let cat = j_catalog();
+        for (s1, s2) in vec![
+            ("c1 > 1 and c1 > 3", "c1 > 3"),
+            ("c1 > 1 and c1 > 0", "c1 > 1"),
+            ("c1 > 1 and c1 >= 3", "c1 >= 3"),
+            ("c1 > 1 and c1 >= 0", "c1 > 1"),
+            ("c1 > 1 and c1 < 3", "c1 > 1 and c1 < 3"),
+            ("c1 > 1 and c1 < 0", "false"),
+            ("not(c1 > 1 and c1 < 0)", "c1 is not null"),
+            ("c1 > 1 and c1 <= 3", "c1 > 1 and c1 <= 3"),
+            ("c1 > 1 and c1 <= 0", "false"),
+            ("not(c1 > 1 and c1 <= 0)", "c1 is not null"),
+            ("c1 > 1 and c1 <= 1", "false"),
+            ("not(c1 > 1 and c1 <= 1)", "c1 is not null"),
+            ("c1 > 1 and c1 = 3", "c1 = 3"),
+            ("c1 > 1 and c1 = 0", "false"),
+            ("not(c1 > 1 and c1 = 0)", "c1 is not null"),
+            ("c1 > 1 and c1 <> 3", "c1 > 1 and c1 <> 3"),
+            ("c1 > 1 and c1 <> 0", "c1 > 1"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
+    }
+
+    #[test]
+    fn test_expr_simplify_conj_le() {
+        let cat = j_catalog();
+        for (s1, s2) in vec![
+            ("c1 <= 1 and c1 > 3", "false"),
+            ("not(c1 <= 1 and c1 > 3)", "c1 is not null"),
+            ("c1 <= 1 and c1 > 0", "c1 <= 1 and c1 > 0"),
+            ("c1 <= 1 and c1 >= 3", "false"),
+            ("not(c1 <= 1 and c1 >= 3)", "c1 is not null"),
+            ("c1 <= 1 and c1 >= 0", "c1 <= 1 and c1 >= 0"),
+            ("c1 <= 1 and c1 >= 1", "c1 = 1"),
+            ("c1 <= 1 and c1 < 3", "c1 <= 1"),
+            ("c1 <= 1 and c1 < 0", "c1 < 0"),
+            ("c1 <= 1 and c1 <= 3", "c1 <= 1"),
+            ("c1 <= 1 and c1 <= 0", "c1 <= 0"),
+            ("c1 <= 1 and c1 <= 1", "c1 <= 1"),
+            ("c1 <= 1 and c1 = 1", "c1 = 1"),
+            ("c1 <= 1 and c1 = 3", "false"),
+            ("not(c1 <= 1 and c1 = 3)", "c1 is not null"),
+            ("c1 <= 1 and c1 = 0", "c1 = 0"),
+            ("c1 <= 1 and c1 <> 3", "c1 <= 1"),
+            ("c1 <= 1 and c1 <> 0", "c1 <= 1 and c1 <> 0"),
+            ("c1 <= 1 and c1 <> 1", "c1 < 1"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
+    }
+
+    #[test]
+    fn test_expr_simplify_conj_lt() {
+        let cat = j_catalog();
+        for (s1, s2) in vec![
+            ("c1 < 1 and c1 > 3", "false"),
+            ("not(c1 < 1 and c1 > 3)", "c1 is not null"),
+            ("c1 < 1 and c1 > 0", "c1 < 1 and c1 > 0"),
+            ("c1 < 1 and c1 >= 3", "false"),
+            ("not(c1 < 1 and c1 >= 3)", "c1 is not null"),
+            ("c1 < 1 and c1 >= 0", "c1 < 1 and c1 >= 0"),
+            ("c1 < 1 and c1 < 3", "c1 < 1"),
+            ("c1 < 1 and c1 < 0", "c1 < 0"),
+            ("c1 < 1 and c1 <= 3", "c1 < 1"),
+            ("c1 < 1 and c1 <= 0", "c1 <= 0"),
+            ("c1 < 1 and c1 >= 0", "c1 < 1 and c1 >= 0"),
+            ("c1 < 1 and c1 = 3", "false"),
+            ("not(c1 < 1 and c1 = 3)", "c1 is not null"),
+            ("c1 < 1 and c1 = 0", "c1 = 0"),
+            ("c1 < 1 and c1 <> 3", "c1 < 1"),
+            ("c1 < 1 and c1 <> 0", "c1 < 1 and c1 <> 0"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
+    }
+
+    #[test]
+    fn test_expr_simplify_conj_eq() {
+        let cat = j_catalog();
+        for (s1, s2) in vec![
+            ("c1 = 1 and c1 > 0", "c1 = 1"),
+            ("c1 = 1 and c1 > 3", "false"),
+            ("not(c1 = 1 and c1 > 3)", "c1 is not null"),
+            ("c1 = 1 and c1 >= 0", "c1 = 1"),
+            ("c1 = 1 and c1 >= 3", "false"),
+            ("not(c1 = 1 and c1 >= 3)", "c1 is not null"),
+            ("c1 = 1 and c1 >= 1", "c1 = 1"),
+            ("c1 = 1 and c1 < 0", "false"),
+            ("not(c1 = 1 and c1 < 0)", "c1 is not null"),
+            ("c1 = 1 and c1 < 3", "c1 = 1"),
+            ("c1 = 1 and c1 <= 0", "false"),
+            ("not(c1 = 1 and c1 <= 0)", "c1 is not null"),
+            ("c1 = 1 and c1 <= 3", "c1 = 1"),
+            ("c1 = 1 and c1 <= 1", "c1 = 1"),
+            ("c1 = 1 and c1 = 0", "false"),
+            ("not(c1 = 1 and c1 = 0)", "c1 is not null"),
+            ("c1 = 1 and c1 = 1", "c1 = 1"),
+            ("c1 = 1 and c1 <> 0", "c1 = 1"),
+            ("c1 = 1 and c1 <> 1", "false"),
+            ("not(c1 = 1 and c1 <> 1)", "c1 is not null"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
+    }
+
+    #[test]
+    fn test_expr_simplify_conj_ne() {
+        let cat = j_catalog();
+        for (s1, s2) in vec![
+            ("c1 <> 1 and c1 > 3", "c1 > 3"),
+            ("c1 <> 1 and c1 > 0", "c1 <> 1 and c1 > 0"),
+            ("c1 <> 1 and c1 >= 3", "c1 >= 3"),
+            ("c1 <> 1 and c1 >= 0", "c1 <> 1 and c1 >= 0"),
+            ("c1 <> 1 and c1 >= 1", "c1 > 1"),
+            ("c1 <> 1 and c1 < 3", "c1 <> 1 and c1 < 3"),
+            ("c1 <> 1 and c1 < 0", "c1 < 0"),
+            ("c1 <> 1 and c1 <= 3", "c1 <> 1 and c1 <= 3"),
+            ("c1 <> 1 and c1 <= 0", "c1 <= 0"),
+            ("c1 <> 1 and c1 <= 1", "c1 < 1"),
+            ("c1 <> 1 and c1 = 3", "c1 = 3"),
+            ("c1 <> 1 and c1 = 1", "false"),
+            ("not(c1 <> 1 and c1 = 1)", "c1 is not null"),
+            ("c1 <> 1 and c1 <> 3", "c1 <> 1 and c1 <> 3"),
+            ("c1 <> 1 and c1 <> 1", "c1 <> 1"),
+        ] {
+            let s1 = format!("select c1 from t1 where {}", s1);
+            let s2 = format!("select c1 from t1 where {}", s2);
+            assert_j_plan2(&cat, &s1, &s2, assert_eq_filt_expr)
+        }
     }
 
     #[test]
@@ -1925,6 +2223,13 @@ mod tests {
         expr_simplify(&mut q1).unwrap();
         print_plan(s1, &q1);
         assert_eq!(get_filt_expr(&q1), get_filt_expr(&q2));
+    }
+
+    fn assert_no_filt_expr(s1: &str, mut q1: QueryPlan) {
+        expr_simplify(&mut q1).unwrap();
+        print_plan(s1, &q1);
+        let filt = get_filt_expr(&q1);
+        assert!(filt.is_empty());
     }
 
     fn assert_col_rejects_null(s1: &str, q1: QueryPlan) {

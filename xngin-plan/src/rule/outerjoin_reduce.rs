@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::{Location, QueryPlan, QuerySet};
-use crate::rule::expr_simplify::simplify_single;
+use crate::rule::expr_simplify::{simplify_single, NullCoalesce};
 use crate::rule::RuleEffect;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
@@ -268,7 +268,7 @@ impl ExprMutVisitor for TransformCollectSimplify<'_> {
         if let Expr::Col(Col::QueryCol(qry_id, idx)) = e {
             if *qry_id == self.old {
                 let mut new_e = self.mapping[*idx as usize].0.clone();
-                simplify_single(&mut new_e).branch()?;
+                simplify_single(&mut new_e, NullCoalesce::Null).branch()?;
                 *e = new_e;
             }
         }
@@ -282,7 +282,7 @@ impl ExprMutVisitor for TransformCollectSimplify<'_> {
                 self.new_ids.insert(*qry_id);
             }
             _ => {
-                let _ = simplify_single(e).branch()?;
+                let _ = simplify_single(e, NullCoalesce::Null).branch()?;
             }
         }
         ControlFlow::Continue(())

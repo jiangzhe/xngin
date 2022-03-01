@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Op, OpMutVisitor};
 use crate::query::{QryIDs, QueryPlan, QuerySet};
-use crate::rule::expr_simplify::simplify_nested;
+use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
 use smol_str::SmolStr;
 use std::collections::hash_map::Entry;
@@ -204,7 +204,7 @@ fn push_single(
             if let Some(subq) = qry_set.get(qry_id) {
                 pred.rewrite(*qry_id, subq.out_cols());
                 // after rewriting, Simplify it before pushing
-                simplify_nested(&mut pred.e)?;
+                simplify_nested(&mut pred.e, NullCoalesce::Null)?;
                 match &pred.e {
                     Expr::Const(Const::Null) => {
                         *op = Op::Empty;
@@ -266,7 +266,7 @@ fn push_single(
                 let mut old = mem::take(&mut filt.pred);
                 old.push(pred.e);
                 let mut new = Expr::pred_conj(old);
-                eff |= simplify_nested(&mut new)?;
+                eff |= simplify_nested(&mut new, NullCoalesce::False)?;
                 filt.pred = new.into_conj();
                 None
             }
