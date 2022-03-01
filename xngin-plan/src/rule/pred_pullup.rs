@@ -2,14 +2,13 @@ use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Op, OpMutVisitor};
 use crate::query::{QueryPlan, QuerySet};
-use crate::rule::expr_simplify::simplify_single;
+use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce, PartialExpr};
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{
-    Col, Expr, ExprMutVisitor, ExprVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind, QueryCol,
-    QueryID,
+    Col, Expr, ExprVisitor, Func, FuncKind, Pred, PredFunc, PredFuncKind, QueryCol, QueryID,
 };
 
 /// Pullup predicates.
@@ -253,8 +252,10 @@ impl OpMutVisitor for PredPullup<'_> {
                     let mut pred = vec![];
                     for ((qid, idx), pes) in self.c_preds.drain() {
                         for pe in pes {
-                            let new_e =
-                                Expr::pred_func(pe.kind, vec![Expr::query_col(qid, idx), pe.r_arg]);
+                            let new_e = Expr::pred_func(
+                                pe.kind,
+                                vec![Expr::query_col(qid, idx), Expr::Const(pe.r_arg)],
+                            );
                             pred.push(new_e);
                         }
                     }
@@ -267,8 +268,10 @@ impl OpMutVisitor for PredPullup<'_> {
                 if !self.c_preds.is_empty() {
                     for ((qid, idx), pes) in self.c_preds.drain() {
                         for pe in pes {
-                            let new_e =
-                                Expr::pred_func(pe.kind, vec![Expr::query_col(qid, idx), pe.r_arg]);
+                            let new_e = Expr::pred_func(
+                                pe.kind,
+                                vec![Expr::query_col(qid, idx), Expr::Const(pe.r_arg)],
+                            );
                             aggr.filt.push(new_e);
                         }
                     }
@@ -280,18 +283,21 @@ impl OpMutVisitor for PredPullup<'_> {
                     let new_preds = self.propagate_preds(&filt.pred);
                     for ((qid, idx), pes) in self.c_preds.drain() {
                         for pe in pes {
-                            let new_e =
-                                Expr::pred_func(pe.kind, vec![Expr::query_col(qid, idx), pe.r_arg]);
+                            let new_e = Expr::pred_func(
+                                pe.kind,
+                                vec![Expr::query_col(qid, idx), Expr::Const(pe.r_arg)],
+                            );
                             filt.pred.push(new_e);
                         }
                     }
                     for ((qid, idx), pe) in new_preds {
-                        let new_e =
-                            Expr::pred_func(pe.kind, vec![Expr::query_col(qid, idx), pe.r_arg]);
+                        let new_e = Expr::pred_func(
+                            pe.kind,
+                            vec![Expr::query_col(qid, idx), Expr::Const(pe.r_arg)],
+                        );
                         filt.pred.push(new_e);
                     }
                 }
-                // todo: simplify conj
                 self.collect_p_preds(&filt.pred).branch()?;
             }
             Op::Join(join) => match join.as_mut() {
@@ -324,7 +330,7 @@ impl OpMutVisitor for PredPullup<'_> {
                                 if r_qids.contains(&qid) {
                                     let new_e = Expr::pred_func(
                                         pe.kind,
-                                        vec![Expr::query_col(qid, idx), pe.r_arg],
+                                        vec![Expr::query_col(qid, idx), Expr::Const(pe.r_arg)],
                                     );
                                     cond.push(new_e);
                                 } else {
@@ -425,9 +431,19 @@ fn translate_pred(
     mapping: &HashMap<QueryCol, Expr>,
 ) -> Result<Option<(QueryID, u32, PartialExpr)>> {
     let mut new_p = c_pred.clone();
-    let mut mp = MapQryColPred(mapping);
-    match new_p.walk_mut(&mut mp) {
-        ControlFlow::Continue(_) => match new_p {
+    let res = update_simplify_nested(&mut new_p, NullCoalesce::False, |e| match e {
+        Expr::Col(Col::QueryCol(qry_id, idx)) => {
+            if let Some(new_e) = mapping.get(&(*qry_id, *idx)) {
+                *e = new_e.clone();
+                Ok(())
+            } else {
+                Err(Error::Break)
+            }
+        }
+        _ => Ok(()),
+    });
+    match res {
+        Ok(_) => match new_p {
             Expr::Pred(Pred::Func(PredFunc { kind, args })) => match (kind, args.as_ref()) {
                 (
                     PredFuncKind::Equal
@@ -436,7 +452,7 @@ fn translate_pred(
                     | PredFuncKind::Less
                     | PredFuncKind::LessEqual
                     | PredFuncKind::NotEqual,
-                    [Expr::Col(Col::QueryCol(qry_id, idx)), c @ Expr::Const(_)],
+                    [Expr::Col(Col::QueryCol(qry_id, idx)), Expr::Const(c)],
                 ) => {
                     let partial_e = PartialExpr {
                         kind,
@@ -448,38 +464,9 @@ fn translate_pred(
             },
             _ => Ok(None),
         },
-        ControlFlow::Break(Error::Break) => Ok(None),
-        ControlFlow::Break(e) => Err(e),
+        Err(Error::Break) => Ok(None),
+        Err(e) => Err(e),
     }
-}
-
-struct MapQryColPred<'a>(&'a HashMap<QueryCol, Expr>);
-
-impl ExprMutVisitor for MapQryColPred<'_> {
-    type Cont = ();
-    type Break = Error;
-    #[inline]
-    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
-        match e {
-            Expr::Col(Col::QueryCol(qry_id, idx)) => {
-                if let Some(new_e) = self.0.get(&(*qry_id, *idx)) {
-                    *e = new_e.clone();
-                    ControlFlow::Continue(())
-                } else {
-                    ControlFlow::Break(Error::Break)
-                }
-            }
-            _ => simplify_single(e).map(|_| ()).branch(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct PartialExpr {
-    // allow operator =, !=, >, >=, <, <=
-    kind: PredFuncKind,
-    // argument on right side
-    r_arg: Expr,
 }
 
 #[cfg(test)]
@@ -623,6 +610,21 @@ mod tests {
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert!(filt.is_empty())
+            },
+        );
+    }
+
+    #[test]
+    fn test_pred_pullup_aggr() {
+        let cat = j_catalog();
+        assert_j_plan1(
+            &cat,
+            "select 1 from (select c1, count(*) as c2 from t1 group by c1 having count(*) > 0 and c1 > 1) t1 join t2 on t1.c1 = t2.c1",
+            |sql, mut plan| {
+                pred_pullup(&mut plan).unwrap();
+                print_plan(&sql, &plan);
+                let filt = get_filt_expr(&plan);
+                assert_eq!(2, filt.len())
             },
         );
     }
