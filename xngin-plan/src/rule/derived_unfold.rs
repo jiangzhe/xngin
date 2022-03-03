@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor, OpVisitor};
-use crate::query::{Location, QueryPlan, QuerySet, Subquery};
+use crate::query::{Location, QuerySet, Subquery};
 use crate::rule::RuleEffect;
 use crate::setop::{Setop, SubqOp};
 use smol_str::SmolStr;
@@ -20,9 +20,9 @@ use xngin_expr::{Col, Expr, ExprMutVisitor, QueryID};
 ///
 /// Additional case should be taken to unfold once the parent has outer joins.
 #[inline]
-pub fn derived_unfold(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
+pub fn derived_unfold(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
     let mut mapping = HashMap::new();
-    unfold_derived(qry_set, *root, &mut mapping, Mode::Full)
+    unfold_derived(qry_set, qry_id, &mut mapping, Mode::Full)
 }
 
 fn unfold_derived(
@@ -134,12 +134,14 @@ impl OpMutVisitor for Unfold<'_> {
                 ControlFlow::Continue(eff)
             }
             Op::JoinGraph(_) => todo!(),
-            Op::Proj(_) | Op::Filt(_) | Op::Aggr(_) | Op::Sort(_) | Op::Limit(_) => {
-                ControlFlow::Continue(RuleEffect::NONE)
-            } // fine to bypass
+            Op::Proj(_)
+            | Op::Filt(_)
+            | Op::Aggr(_)
+            | Op::Sort(_)
+            | Op::Limit(_)
+            | Op::Attach(..) => ControlFlow::Continue(RuleEffect::NONE), // fine to bypass
             Op::Empty => ControlFlow::Continue(RuleEffect::NONE), // as join op is set to empty, it's safe to bypass
             Op::Table(..) | Op::Row(_) => unreachable!(),
-            Op::Apply(_) => todo!(),
         }
     }
 
@@ -267,7 +269,12 @@ impl OpVisitor for Detect {
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {
         match op {
-            Op::Aggr(_) | Op::Filt(_) | Op::Sort(_) | Op::Limit(_) | Op::Setop(_) => {
+            Op::Aggr(_)
+            | Op::Filt(_)
+            | Op::Sort(_)
+            | Op::Limit(_)
+            | Op::Setop(_)
+            | Op::Attach(..) => {
                 self.res = false;
                 ControlFlow::Break(())
             }
@@ -280,7 +287,7 @@ impl OpVisitor for Detect {
                     ControlFlow::Break(())
                 }
             }
-            Op::Join(_) | Op::JoinGraph(_) | Op::Query(_) => {
+            Op::Join(_) | Op::Query(_) => {
                 if !self.top_proj {
                     self.res = false;
                     ControlFlow::Break(())
@@ -288,8 +295,7 @@ impl OpVisitor for Detect {
                     ControlFlow::Continue(())
                 }
             }
-            Op::Apply(_) => todo!(),
-            Op::Row(_) | Op::Table(..) | Op::Empty => unreachable!(),
+            Op::JoinGraph(_) | Op::Row(_) | Op::Table(..) | Op::Empty => unreachable!(),
         }
     }
 }
@@ -365,8 +371,8 @@ mod tests {
             ),
         ] {
             let mut p = build_plan(&cat, sql);
-            col_prune(&mut p).unwrap();
-            derived_unfold(&mut p).unwrap();
+            col_prune(&mut p.qry_set, p.root).unwrap();
+            derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
         }
@@ -390,9 +396,9 @@ mod tests {
             ),
         ] {
             let mut p = build_plan(&cat, sql);
-            col_prune(&mut p).unwrap();
-            pred_pushdown(&mut p).unwrap();
-            derived_unfold(&mut p).unwrap();
+            col_prune(&mut p.qry_set, p.root).unwrap();
+            pred_pushdown(&mut p.qry_set, p.root).unwrap();
+            derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
         }
@@ -416,9 +422,9 @@ mod tests {
             ),
         ] {
             let mut p = build_plan(&cat, sql);
-            col_prune(&mut p).unwrap();
-            pred_pushdown(&mut p).unwrap();
-            derived_unfold(&mut p).unwrap();
+            col_prune(&mut p.qry_set, p.root).unwrap();
+            pred_pushdown(&mut p.qry_set, p.root).unwrap();
+            derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
         }
@@ -447,9 +453,9 @@ mod tests {
             ),
         ] {
             let mut p = build_plan(&cat, sql);
-            col_prune(&mut p).unwrap();
-            pred_pushdown(&mut p).unwrap();
-            derived_unfold(&mut p).unwrap();
+            col_prune(&mut p.qry_set, p.root).unwrap();
+            pred_pushdown(&mut p.qry_set, p.root).unwrap();
+            derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
         }
@@ -470,9 +476,9 @@ mod tests {
             ("select * from (select c1+1 from t1 where c1 > 0) t1 full join (select c2+1 from t2 where c2 > 0) t2", vec![Proj, Join, Proj, Proj, Filt, Table, Proj, Proj, Filt, Table]),
         ] {
             let mut p = build_plan(&cat, sql);
-            col_prune(&mut p).unwrap();
-            pred_pushdown(&mut p).unwrap();
-            derived_unfold(&mut p).unwrap();
+            col_prune(&mut p.qry_set, p.root).unwrap();
+            pred_pushdown(&mut p.qry_set, p.root).unwrap();
+            derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
         }
@@ -487,8 +493,8 @@ mod tests {
             ("select t1.c1 from (select t1.c1 from t1 join t2) t1 join (select t2.c2 from t2 join t3) t2", vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table]),
         ] {
             let mut p = build_plan(&cat, sql);
-            col_prune(&mut p).unwrap();
-            derived_unfold(&mut p).unwrap();
+            col_prune(&mut p.qry_set, p.root).unwrap();
+            derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
         }
@@ -512,8 +518,8 @@ mod tests {
             ),
         ] {
             let mut p = build_plan(&cat, sql);
-            col_prune(&mut p).unwrap();
-            derived_unfold(&mut p).unwrap();
+            col_prune(&mut p.qry_set, p.root).unwrap();
+            derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
         }

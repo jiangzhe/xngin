@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::join::graph::{Edge, VertexID, VertexSet, MAX_JOIN_QUERIES};
 use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
-use crate::query::{Location, QueryPlan, QuerySet};
+use crate::query::{Location, QuerySet};
 use bitflags::bitflags;
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
@@ -61,8 +61,8 @@ impl JoinSpec for JoinKind {
 /// From the topmost join operator, collect all queries to be joined.
 /// Then replace the topmost join with the generated graph.
 #[inline]
-pub fn joingraph_initialize(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
-    init_joingraph(qry_set, *root)
+pub fn joingraph_initialize(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
+    init_joingraph(qry_set, qry_id)
 }
 
 fn init_joingraph(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
@@ -360,6 +360,7 @@ impl BuildGraph<'_> {
 mod tests {
     use super::*;
     use crate::builder::tests::{assert_j_plan1, get_join_graph, j_catalog, print_plan};
+    use crate::query::QueryPlan;
     use crate::rule::derived_unfold;
 
     #[test]
@@ -390,8 +391,8 @@ mod tests {
             &cat,
             "select 1 from t1 join t2 on t1.c1 = t2.c2 join t3 on t2.c2 = t3.c3",
             |s1, mut q1| {
-                derived_unfold(&mut q1).unwrap();
-                joingraph_initialize(&mut q1).unwrap();
+                derived_unfold(&mut q1.qry_set, q1.root).unwrap();
+                joingraph_initialize(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 // we have 2 inner edge
                 let subq = q1.root_query().unwrap();
@@ -414,8 +415,8 @@ mod tests {
         assert_j_plan1(&cat,
             "select 1 from t1 left join (select t1.c1, t2.c2 from t1 join t2 on t1.c1 = t2.c1) tt on t1.c1 = tt.c1",
             |s1, mut q1| {
-                derived_unfold(&mut q1).unwrap();
-                joingraph_initialize(&mut q1).unwrap();
+                derived_unfold(&mut q1.qry_set, q1.root).unwrap();
+                joingraph_initialize(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 // we have 1 inner edge: l=1, r=1, e=2, 1 left edge: l=1, r=2, e=3
                 let subq = q1.root_query().unwrap();
@@ -439,8 +440,8 @@ mod tests {
         assert_j_plan1(&cat,
             "select 1 from t1 join (select t1.c1 from t1 left join t2 on t1.c1 = t2.c1) tt on t1.c1 = tt.c1",
             |s1, mut q1| {
-                derived_unfold(&mut q1).unwrap();
-                joingraph_initialize(&mut q1).unwrap();
+                derived_unfold(&mut q1.qry_set, q1.root).unwrap();
+                joingraph_initialize(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 // we have 1 left edge: l=1, r=1, e=2, 1 inner edge: l=1, r=2, e=2
                 let subq = q1.root_query().unwrap();
@@ -464,8 +465,8 @@ mod tests {
         assert_j_plan1(&cat,
             "select 1 from t0 join t1 on t0.c0 = t1.c0 full join (select t2.c2 from t2 join t3 on t2.c2 = t3.c2) tt on t1.c1 = tt.c2",
             |s1, mut q1| {
-                derived_unfold(&mut q1).unwrap();
-                joingraph_initialize(&mut q1).unwrap();
+                derived_unfold(&mut q1.qry_set, q1.root).unwrap();
+                joingraph_initialize(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 // we have 2 inner edges, 1 full edge
                 let subq = q1.root_query().unwrap();
@@ -486,7 +487,7 @@ mod tests {
     }
 
     fn assert_join_graph_exists(sql: &str, mut plan: QueryPlan) {
-        joingraph_initialize(&mut plan).unwrap();
+        joingraph_initialize(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
         assert!(get_join_graph(&subq).is_some());

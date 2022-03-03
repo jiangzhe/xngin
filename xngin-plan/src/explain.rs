@@ -20,6 +20,20 @@ pub trait Explain {
 
 impl Explain for QueryPlan {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+        for attach in &self.attaches {
+            match self.qry_set.get(attach) {
+                Some(subq) => {
+                    let mut qe = QueryExplain {
+                        title: Some(format!("(aq{})", **attach)),
+                        queries: &self.qry_set,
+                        f,
+                        spans: vec![],
+                    };
+                    subq.root.walk(&mut qe).unbranch()?
+                }
+                None => f.write_str("No attached plan found")?,
+            }
+        }
         match self.qry_set.get(&self.root) {
             Some(subq) => {
                 let mut qe = QueryExplain {
@@ -48,7 +62,11 @@ impl Explain for Op {
             Op::JoinGraph(graph) => graph.explain(f),
             Op::Setop(setop) => setop.explain(f),
             Op::Limit(limit) => limit.explain(f),
-            Op::Apply(apply) => apply.explain(f),
+            Op::Attach(_, qry_id) => {
+                f.write_str("Attach{")?;
+                qry_id.explain(f)?;
+                f.write_char('}')
+            }
             Op::Row(row) => {
                 f.write_str("Row{")?;
                 write_exprs(f, row.iter().map(|(e, _)| e), ", ")?;
@@ -217,8 +235,11 @@ impl Explain for Expr {
                 write_exprs(f, es, ", ")?;
                 f.write_char(')')
             }
-            Expr::Subq(_, query_id) => {
-                write!(f, "subq({})", **query_id)
+            Expr::Subq(_, qry_id) => {
+                write!(f, "subq({})", **qry_id)
+            }
+            Expr::Attval(qry_id) => {
+                write!(f, "attval({})", **qry_id)
             }
             Expr::Plhd(_) => write!(f, "(placeholder todo)"),
             Expr::Farg(_) => write!(f, "(funcarg todo)"),

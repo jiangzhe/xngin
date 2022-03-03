@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Op, OpMutVisitor};
-use crate::query::{QueryPlan, QuerySet};
+use crate::query::QuerySet;
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce, PartialExpr};
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
@@ -25,9 +25,9 @@ use xngin_expr::{
 /// 4. left join has limitation that predicates can be propagated
 ///    only from left side to right side.
 #[inline]
-pub fn pred_pullup(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<()> {
+pub fn pred_pullup(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     let mut p_preds = HashMap::new();
-    let _ = pullup_pred(qry_set, *root, HashSet::new(), &mut p_preds)?; // pass empty parent columns, so pulled preds must be empty
+    let _ = pullup_pred(qry_set, qry_id, HashSet::new(), &mut p_preds)?; // pass empty parent columns, so pulled preds must be empty
     Ok(())
 }
 
@@ -235,9 +235,14 @@ impl OpMutVisitor for PredPullup<'_> {
                     .collect();
                 pullup_pred(self.qry_set, *qry_id, p_cols, &mut self.c_preds).branch()?;
             }
-            Op::Sort(_) | Op::Limit(_) | Op::Setop(_) => (),
-            Op::Apply(_) => unimplemented!(),
-            Op::Table(..) | Op::JoinGraph(_) | Op::Row(_) | Op::Empty => (),
+            Op::Sort(_)
+            | Op::Limit(_)
+            | Op::Setop(_)
+            | Op::Attach(..)
+            | Op::Table(..)
+            | Op::JoinGraph(_)
+            | Op::Row(_)
+            | Op::Empty => (),
         }
         ControlFlow::Continue(())
     }
@@ -350,9 +355,15 @@ impl OpMutVisitor for PredPullup<'_> {
                     _ => todo!(),
                 },
             },
-            Op::Sort(_) | Op::Limit(_) | Op::Setop(_) => (),
-            Op::Apply(_) => unimplemented!(),
-            Op::Table(..) | Op::JoinGraph(_) | Op::Query(_) | Op::Row(_) | Op::Empty => (),
+            Op::Sort(_)
+            | Op::Limit(_)
+            | Op::Setop(_)
+            | Op::Attach(..)
+            | Op::Table(..)
+            | Op::JoinGraph(_)
+            | Op::Query(_)
+            | Op::Row(_)
+            | Op::Empty => (),
         }
         ControlFlow::Continue(())
     }
@@ -481,7 +492,7 @@ mod tests {
             &cat,
             "select 1 from (select c1 from t1 where c1 = 0) t1, t2 where t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(3, filt.len());
@@ -491,7 +502,7 @@ mod tests {
             &cat,
             "select 1 from (select c1 from t1 where c1 = 0 and c0 = 0) t1, t2 where t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(3, filt.len());
@@ -501,7 +512,7 @@ mod tests {
             &cat,
             "select 1 from (select c1+1 as c1 from t1 where c1 = 0) t1, t2 where t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(3, filt.len());
@@ -511,7 +522,7 @@ mod tests {
             &cat,
             "select 1 from (select c1-1 as c1 from t1 where c1 = 0) t1, t2 where t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(3, filt.len());
@@ -521,7 +532,7 @@ mod tests {
             &cat,
             "select 1 from (select 1-c1 as c1 from t1 where c1 = 0) t1, t2 where t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(3, filt.len());
@@ -536,7 +547,7 @@ mod tests {
             &cat,
             "select 1 from (select c1 from t1 where c1 = 0) t1 join t2 on t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(2, filt.len());
@@ -546,7 +557,7 @@ mod tests {
             &cat,
             "select 1 from t1 join (select c1 from t2 where c1 = 0) t2 on t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(2, filt.len());
@@ -556,7 +567,7 @@ mod tests {
             &cat,
             "select 1 from (select c0, c1 from t1 where c1 = 0 and c0 > 5) t1 join t2 on t1.c1 = t2.c1 and t1.c0 = t2.c0",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(4, filt.len());
@@ -571,7 +582,7 @@ mod tests {
             &cat,
             "select 1 from (select c1 from t1 where c1 = 0) t1 left join t2 on t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(1, filt.len());
@@ -581,7 +592,7 @@ mod tests {
             &cat,
             "select 1 from t1 left join (select c1 from t2 where c1 = 0) t2 on t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert!(filt.is_empty())
@@ -596,7 +607,7 @@ mod tests {
             &cat,
             "select 1 from (select c1 from t1 where c1 = 0) t1 full join t2 on t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert!(filt.is_empty())
@@ -606,7 +617,7 @@ mod tests {
             &cat,
             "select 1 from (select c1 from t1 where c1 = 0) t1 full join (select c1 from t2 where c1 > 0) t2 on t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert!(filt.is_empty())
@@ -621,7 +632,7 @@ mod tests {
             &cat,
             "select 1 from (select c1, count(*) as c2 from t1 group by c1 having count(*) > 0 and c1 > 1) t1 join t2 on t1.c1 = t2.c1",
             |sql, mut plan| {
-                pred_pullup(&mut plan).unwrap();
+                pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
                 let filt = get_filt_expr(&plan);
                 assert_eq!(2, filt.len())

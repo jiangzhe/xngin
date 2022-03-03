@@ -26,7 +26,7 @@ pub enum OpKind {
     JoinGraph,
     Sort,
     Limit,
-    Apply,
+    Attach,
     Row,
     Query,
     Table,
@@ -53,8 +53,10 @@ pub enum Op {
     Sort(Sort),
     /// Limit node.
     Limit(Limit),
-    /// Apply node.
-    Apply(Box<Apply>),
+    /// Attach node.
+    /// Attach a deferred scalar value into result set.
+    /// This node is converted from a non-correlated scalar subquery.
+    Attach(Box<Op>, QueryID),
     /// Row represents a single select without source table. e.g. "SELECT 1"
     Row(Vec<(Expr, SmolStr)>),
     /// Query node represents a single row, a concrete table or
@@ -87,7 +89,7 @@ impl Op {
             Op::JoinGraph(_) => OpKind::JoinGraph,
             Op::Sort(_) => OpKind::Sort,
             Op::Limit(_) => OpKind::Limit,
-            Op::Apply(_) => OpKind::Apply,
+            Op::Attach(..) => OpKind::Attach,
             Op::Row(_) => OpKind::Row,
             Op::Query(_) => OpKind::Query,
             Op::Table(..) => OpKind::Table,
@@ -190,7 +192,6 @@ impl Op {
                 Op::Aggr(aggr) => return Some(&aggr.proj),
                 Op::Proj(proj) => return Some(&proj.cols),
                 Op::Row(row) => return Some(row),
-                Op::Empty => return Some(&[]),
                 Op::Sort(sort) => op = sort.source.as_ref(),
                 Op::Limit(limit) => op = limit.source.as_ref(),
                 Op::Filt(filt) => op = filt.source.as_ref(),
@@ -199,7 +200,8 @@ impl Op {
                 | Op::Setop(_)
                 | Op::Join(_)
                 | Op::JoinGraph(_)
-                | Op::Apply(_) => return None,
+                | Op::Attach(..)
+                | Op::Empty => return None,
             }
         }
     }
@@ -212,7 +214,6 @@ impl Op {
                 Op::Aggr(aggr) => return Some(&mut aggr.proj),
                 Op::Proj(proj) => return Some(&mut proj.cols),
                 Op::Row(row) => return Some(row.as_mut()),
-                Op::Empty => return Some(&mut []),
                 Op::Sort(sort) => op = sort.source.as_mut(),
                 Op::Limit(limit) => op = limit.source.as_mut(),
                 Op::Filt(filt) => op = filt.source.as_mut(),
@@ -221,7 +222,8 @@ impl Op {
                 | Op::Setop(_)
                 | Op::Join(_)
                 | Op::JoinGraph(_)
-                | Op::Apply(_) => return None,
+                | Op::Attach(..)
+                | Op::Empty => return None,
             }
         }
     }
@@ -238,7 +240,7 @@ impl Op {
             Op::Join(_)
             | Op::JoinGraph(_)
             | Op::Setop(_)
-            | Op::Apply(_)
+            | Op::Attach(..)
             | Op::Row(_)
             | Op::Table(..)
             | Op::Query(_)
@@ -255,7 +257,7 @@ impl Op {
             Op::Aggr(aggr) => smallvec![&aggr.source],
             Op::Sort(sort) => smallvec![sort.source.as_ref()],
             Op::Limit(limit) => smallvec![limit.source.as_ref()],
-            Op::Apply(apply) => smallvec![&apply.left, &apply.right],
+            Op::Attach(c, _) => smallvec![c.as_ref()],
             Op::Join(join) => match join.as_ref() {
                 Join::Cross(jos) => jos.iter().map(AsRef::as_ref).collect(),
                 Join::Qualified(QualifiedJoin { left, right, .. }) => {
@@ -279,7 +281,7 @@ impl Op {
             Op::Aggr(aggr) => smallvec![&mut aggr.source],
             Op::Sort(sort) => smallvec![sort.source.as_mut()],
             Op::Limit(limit) => smallvec![limit.source.as_mut()],
-            Op::Apply(apply) => smallvec![&mut apply.left, &mut apply.right],
+            Op::Attach(c, _) => smallvec![c.as_mut()],
             Op::Join(join) => match join.as_mut() {
                 Join::Cross(jos) => jos.iter_mut().map(AsMut::as_mut).collect(),
                 Join::Qualified(QualifiedJoin { left, right, .. }) => {
@@ -306,10 +308,14 @@ impl Op {
                 .chain(aggr.proj.iter().map(|(e, _)| e))
                 .collect(),
             Op::Sort(sort) => sort.items.iter().map(|si| &si.expr).collect(),
-            Op::Limit(_) | Op::Query(_) | Op::Table(..) | Op::Setop(_) | Op::Empty => {
+            Op::Limit(_)
+            | Op::Query(_)
+            | Op::Table(..)
+            | Op::Setop(_)
+            | Op::Empty
+            | Op::Attach(..) => {
                 smallvec![]
             }
-            Op::Apply(apply) => apply.vars.iter().collect(),
             Op::Join(j) => match j.as_ref() {
                 Join::Cross(_) => smallvec![],
                 Join::Qualified(QualifiedJoin { cond, filt, .. }) => {
@@ -340,10 +346,14 @@ impl Op {
                 .chain(aggr.proj.iter_mut().map(|(e, _)| e))
                 .collect(),
             Op::Sort(sort) => sort.items.iter_mut().map(|si| &mut si.expr).collect(),
-            Op::Limit(_) | Op::Query(_) | Op::Table(..) | Op::Setop(_) | Op::Empty => {
+            Op::Limit(_)
+            | Op::Query(_)
+            | Op::Table(..)
+            | Op::Setop(_)
+            | Op::Empty
+            | Op::Attach(..) => {
                 smallvec![]
             }
-            Op::Apply(apply) => apply.vars.iter_mut().collect(),
             Op::Join(j) => match j.as_mut() {
                 Join::Cross(_) => smallvec![],
                 Join::Qualified(QualifiedJoin { cond, filt, .. }) => {

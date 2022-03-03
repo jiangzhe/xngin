@@ -1,5 +1,5 @@
 use super::*;
-use crate::join::{JoinGraph, QualifiedJoin};
+use crate::join::{Join, JoinGraph, QualifiedJoin};
 use crate::op::OpKind;
 use crate::op::OpVisitor;
 use std::sync::Arc;
@@ -343,6 +343,111 @@ fn test_plan_build_location() {
     }
 }
 
+#[test]
+fn test_plan_build_setop() {
+    let cat = tpch_catalog();
+    for (sql, shape) in vec![
+        (
+            "select * from lineitem union select * from lineitem",
+            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
+        ),
+        (
+            "select * from lineitem union all select * from lineitem",
+            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
+        ),
+        ("select 1 union select 2", plan_shape![Setop, Row, Row]),
+        (
+            "select l_orderkey from lineitem union select 1",
+            plan_shape![Setop, Proj, Proj, Table, Row],
+        ),
+        (
+            "select 1 union select l_orderkey from lineitem",
+            plan_shape![Setop, Row, Proj, Proj, Table],
+        ),
+        (
+            "select 1 union select 2 union select 3",
+            plan_shape![Setop, Setop, Row, Row, Row],
+        ),
+        (
+            "select l_orderkey from lineitem union select 1 union select l_orderkey from lineitem",
+            plan_shape![Setop, Setop, Proj, Proj, Table, Row, Proj, Proj, Table],
+        ),
+        (
+            "select 1 union select l_orderkey from lineitem union select 1",
+            plan_shape![Setop, Setop, Row, Proj, Proj, Table, Row],
+        ),
+        (
+            "select l_orderkey from lineitem except select l_linenumber from lineitem",
+            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
+        ),
+        (
+            "select l_orderkey from lineitem except all select l_linenumber from lineitem",
+            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
+        ),
+        (
+            "select l_orderkey from lineitem intersect select l_linenumber from lineitem",
+            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
+        ),
+        (
+            "select l_orderkey from lineitem intersect all select l_linenumber from lineitem",
+            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
+        ),
+    ] {
+        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
+        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let plan = builder.build_plan(&qr).unwrap();
+        assert_eq!(shape, plan.shape());
+        print_plan(sql, &plan)
+    }
+}
+
+#[test]
+fn test_plan_build_with() {
+    let cat = tpch_catalog();
+    for (sql, n_cols, shape) in vec![
+        ("with a as (select 1) select * from a", 1, plan_shape![Proj, Row]),
+        ("with a as (select 1) select 2", 1, plan_shape![Row]),
+        ("with a as (select 1, 2) select * from a", 2, plan_shape![Proj, Row]),
+        ("with a as (select count(*) from lineitem) select `count(*)` from a", 1, plan_shape![Proj, Aggr, Proj, Table]),
+        ("with a as (select count(*) c from lineitem) select c from a", 1, plan_shape![Proj, Aggr, Proj, Table]),
+        ("with a (c) as (select count(*) from lineitem) select a.c from a", 1, plan_shape![Proj, Aggr, Proj, Table]),
+        ("with a (x, y) as (select l_orderkey, count(*) from lineitem group by l_orderkey) select x, y from a", 2, plan_shape![Proj, Aggr, Proj, Table]),
+        ("with a as (select 1), b as (select 2) select * from a, b", 2, plan_shape![Proj, Join, Row, Row]),
+        ("with a as (select 1) select * from lineitem, a", 17, plan_shape![Proj, Join, Proj, Table, Row]),
+        ("with a as (select 1) select lineitem.* from lineitem, a", 16, plan_shape![Proj, Join, Proj, Table, Row]),
+        ("with a as (select 1) select tpch.lineitem.* from lineitem, a", 16, plan_shape![Proj, Join, Proj, Table, Row]),
+        ("with a as (select 1) select l_orderkey from lineitem, a", 1, plan_shape![Proj, Join, Proj, Table, Row]),
+        ("with a as (select l_orderkey, count(*) cnt from (select * from lineitem) li group by l_orderkey) select l_orderkey from a where cnt > 10", 1, plan_shape![Proj, Filt, Aggr, Proj, Proj, Table]),
+        ("with a as (select l_orderkey, n from lineitem, (select 1 as n) b) select * from a", 2, plan_shape![Proj, Proj, Join, Proj, Table, Row]),
+    ] {
+        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
+        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let plan = builder.build_plan(&qr).unwrap();
+        assert_eq!(shape, plan.shape());
+        let p = plan.qry_set.get(&plan.root).unwrap();
+        assert_eq!(n_cols, p.out_cols().len());
+        print_plan(sql, &plan)
+    }
+}
+
+#[test]
+fn test_plan_build_attach_value() {
+    let cat = j_catalog();
+    for sql in vec![
+        "select (select count(*) from t1)",
+        "select (select c1 from t1 where c1 = 1), (select count(*) from t2)",
+        "select c1 = (select count(*) from t1) from t1",
+        "select * from t1 where c1 = (select max(c2) from t2)",
+    ] {
+        assert_j_plan1(&cat, sql, |s1, q1| {
+            print_plan(s1, &q1);
+            assert!(!q1.attaches.is_empty());
+        })
+    }
+}
+
+/* below are helper functions to setup and test planning */
+
 pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("j").unwrap();
@@ -596,93 +701,6 @@ impl<'a, 'b> OpVisitor for CollectSubqByLocation<'a, 'b> {
             _ => (),
         }
         ControlFlow::Continue(())
-    }
-}
-
-#[test]
-fn test_plan_build_setop() {
-    let cat = tpch_catalog();
-    for (sql, shape) in vec![
-        (
-            "select * from lineitem union select * from lineitem",
-            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
-        ),
-        (
-            "select * from lineitem union all select * from lineitem",
-            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
-        ),
-        ("select 1 union select 2", plan_shape![Setop, Row, Row]),
-        (
-            "select l_orderkey from lineitem union select 1",
-            plan_shape![Setop, Proj, Proj, Table, Row],
-        ),
-        (
-            "select 1 union select l_orderkey from lineitem",
-            plan_shape![Setop, Row, Proj, Proj, Table],
-        ),
-        (
-            "select 1 union select 2 union select 3",
-            plan_shape![Setop, Setop, Row, Row, Row],
-        ),
-        (
-            "select l_orderkey from lineitem union select 1 union select l_orderkey from lineitem",
-            plan_shape![Setop, Setop, Proj, Proj, Table, Row, Proj, Proj, Table],
-        ),
-        (
-            "select 1 union select l_orderkey from lineitem union select 1",
-            plan_shape![Setop, Setop, Row, Proj, Proj, Table, Row],
-        ),
-        (
-            "select l_orderkey from lineitem except select l_linenumber from lineitem",
-            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
-        ),
-        (
-            "select l_orderkey from lineitem except all select l_linenumber from lineitem",
-            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
-        ),
-        (
-            "select l_orderkey from lineitem intersect select l_linenumber from lineitem",
-            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
-        ),
-        (
-            "select l_orderkey from lineitem intersect all select l_linenumber from lineitem",
-            plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
-        ),
-    ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
-        let plan = builder.build_plan(&qr).unwrap();
-        assert_eq!(shape, plan.shape());
-        print_plan(sql, &plan)
-    }
-}
-
-#[test]
-fn test_plan_build_with() {
-    let cat = tpch_catalog();
-    for (sql, n_cols, shape) in vec![
-        ("with a as (select 1) select * from a", 1, plan_shape![Proj, Row]),
-        ("with a as (select 1) select 2", 1, plan_shape![Row]),
-        ("with a as (select 1, 2) select * from a", 2, plan_shape![Proj, Row]),
-        ("with a as (select count(*) from lineitem) select `count(*)` from a", 1, plan_shape![Proj, Aggr, Proj, Table]),
-        ("with a as (select count(*) c from lineitem) select c from a", 1, plan_shape![Proj, Aggr, Proj, Table]),
-        ("with a (c) as (select count(*) from lineitem) select a.c from a", 1, plan_shape![Proj, Aggr, Proj, Table]),
-        ("with a (x, y) as (select l_orderkey, count(*) from lineitem group by l_orderkey) select x, y from a", 2, plan_shape![Proj, Aggr, Proj, Table]),
-        ("with a as (select 1), b as (select 2) select * from a, b", 2, plan_shape![Proj, Join, Row, Row]),
-        ("with a as (select 1) select * from lineitem, a", 17, plan_shape![Proj, Join, Proj, Table, Row]),
-        ("with a as (select 1) select lineitem.* from lineitem, a", 16, plan_shape![Proj, Join, Proj, Table, Row]),
-        ("with a as (select 1) select tpch.lineitem.* from lineitem, a", 16, plan_shape![Proj, Join, Proj, Table, Row]),
-        ("with a as (select 1) select l_orderkey from lineitem, a", 1, plan_shape![Proj, Join, Proj, Table, Row]),
-        ("with a as (select l_orderkey, count(*) cnt from (select * from lineitem) li group by l_orderkey) select l_orderkey from a where cnt > 10", 1, plan_shape![Proj, Filt, Aggr, Proj, Proj, Table]),
-        ("with a as (select l_orderkey, n from lineitem, (select 1 as n) b) select * from a", 2, plan_shape![Proj, Proj, Join, Proj, Table, Row]),
-    ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
-        let plan = builder.build_plan(&qr).unwrap();
-        assert_eq!(shape, plan.shape());
-        let p = plan.qry_set.get(&plan.root).unwrap();
-        assert_eq!(n_cols, p.out_cols().len());
-        print_plan(sql, &plan)
     }
 }
 

@@ -21,6 +21,11 @@ pub enum Expr {
     Tuple(Vec<Expr>),
     /// Subquery that returns single value.
     Subq(SubqKind, QueryID),
+    /// Attval represents single value returned by
+    /// an attached plan.
+    /// If multiple values returned, it throws runtime error.
+    /// If no values returned, it use NULL by default.
+    Attval(QueryID),
     /// Placeholder can represent any intermediate value
     /// generated in building phase. It should be
     /// resolved as a normal expression later.
@@ -266,7 +271,12 @@ impl Expr {
     #[inline]
     pub fn n_args(&self) -> usize {
         match self {
-            Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => 0,
+            Expr::Const(_)
+            | Expr::Col(..)
+            | Expr::Plhd(_)
+            | Expr::Subq(..)
+            | Expr::Farg(_)
+            | Expr::Attval(_) => 0,
             Expr::Aggf(_) => 1,
             Expr::Func(f) => f.args.len(),
             Expr::Pred(p) => match p {
@@ -285,7 +295,12 @@ impl Expr {
     #[inline]
     pub fn args(&self) -> smallvec::IntoIter<[&Expr; 2]> {
         match self {
-            Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => {
+            Expr::Const(_)
+            | Expr::Col(..)
+            | Expr::Plhd(_)
+            | Expr::Subq(..)
+            | Expr::Farg(_)
+            | Expr::Attval(_) => {
                 smallvec![]
             }
             Expr::Aggf(af) => smallvec![af.arg.as_ref()],
@@ -308,7 +323,12 @@ impl Expr {
     #[inline]
     pub fn args_mut(&mut self) -> smallvec::IntoIter<[&mut Expr; 2]> {
         match self {
-            Expr::Const(_) | Expr::Col(..) | Expr::Plhd(_) | Expr::Subq(..) | Expr::Farg(_) => {
+            Expr::Const(_)
+            | Expr::Col(..)
+            | Expr::Plhd(_)
+            | Expr::Subq(..)
+            | Expr::Farg(_)
+            | Expr::Attval(_) => {
                 smallvec![]
             }
             Expr::Aggf(af) => smallvec![af.arg.as_mut()],

@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::join::{Join, QualifiedJoin};
 use crate::op::OpMutVisitor;
 use crate::op::{Filt, Op};
-use crate::query::{QueryPlan, QuerySet};
+use crate::query::QuerySet;
 use crate::rule::RuleEffect;
 use indexmap::{IndexMap, IndexSet};
 use std::cmp::Ordering;
@@ -43,8 +43,8 @@ pub(crate) struct PartialExpr {
 
 /// Simplify expressions.
 #[inline]
-pub fn expr_simplify(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
-    simplify_expr(qry_set, *root)
+pub fn expr_simplify(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
+    simplify_expr(qry_set, qry_id)
 }
 
 fn simplify_expr(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
@@ -1440,6 +1440,7 @@ mod tests {
     use crate::builder::tests::{
         assert_j_plan1, assert_j_plan2, get_filt_expr, j_catalog, print_plan,
     };
+    use crate::query::QueryPlan;
 
     #[test]
     fn test_expr_simplify_neg_neg() {
@@ -1624,7 +1625,7 @@ mod tests {
             &cat,
             "select c1 from t1 where not exists (select 1 from t1)",
             |s1, mut q1| {
-                expr_simplify(&mut q1).unwrap();
+                expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 match get_filt_expr(&q1).as_slice() {
                     [Expr::Pred(Pred::NotExists(_))] => (),
@@ -1636,7 +1637,7 @@ mod tests {
             &cat,
             "select c1 from t1 where not not exists (select 1 from t1)",
             |s1, mut q1| {
-                expr_simplify(&mut q1).unwrap();
+                expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 match get_filt_expr(&q1).as_slice() {
                     [Expr::Pred(Pred::Exists(_))] => (),
@@ -1653,7 +1654,7 @@ mod tests {
             &cat,
             "select c1 from t1 where not c1 in (select c1 from t2)",
             |s1, mut q1| {
-                expr_simplify(&mut q1).unwrap();
+                expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 match get_filt_expr(&q1).as_slice() {
                     [Expr::Pred(Pred::NotInSubquery(..))] => (),
@@ -1671,7 +1672,7 @@ mod tests {
             &cat,
             "select c1 from t1 where not c1 not in (select c1 from t2)",
             |s1, mut q1| {
-                expr_simplify(&mut q1).unwrap();
+                expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 match get_filt_expr(&q1).as_slice() {
                     [Expr::Pred(Pred::InSubquery(..))] => (),
@@ -2220,13 +2221,13 @@ mod tests {
     }
 
     fn assert_eq_filt_expr(s1: &str, mut q1: QueryPlan, _s2: &str, q2: QueryPlan) {
-        expr_simplify(&mut q1).unwrap();
+        expr_simplify(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         assert_eq!(get_filt_expr(&q1), get_filt_expr(&q2));
     }
 
     fn assert_no_filt_expr(s1: &str, mut q1: QueryPlan) {
-        expr_simplify(&mut q1).unwrap();
+        expr_simplify(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let filt = get_filt_expr(&q1);
         assert!(filt.is_empty());
