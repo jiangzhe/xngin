@@ -83,6 +83,8 @@ pub enum Error {
     InvalidOpertorTransformation,
     #[error("Invalid join condition")]
     InvalidJoinCondition,
+    #[error("Cross join not supported")]
+    CrossJoinNotSupport,
     #[error("Break")]
     Break,
 }

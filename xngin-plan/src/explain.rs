@@ -141,7 +141,11 @@ impl Explain for JoinGraph {
         f.write_str("]")?;
         if !self.edges.is_empty() {
             f.write_str(", es=[{")?;
-            write_exprs(f, self.edges.values(), "}, {")?;
+            write_exprs(
+                f,
+                self.edges.values().flat_map(|edges| edges.iter()),
+                "}, {",
+            )?;
             f.write_str("}]")?
         }
         f.write_char('}')
@@ -157,8 +161,13 @@ impl Explain for QueryID {
 impl Explain for JoinEdge {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str(self.kind.to_lower())?;
-        // currently do not support display left, right and arbitrary
-        f.write_str(", cond=[")?;
+        write!(
+            f,
+            ", ls={}, rs={}, es={}, cond=[",
+            self.l_vset.len(),
+            self.r_vset.len(),
+            self.e_vset.len()
+        )?;
         write_exprs(f, &self.cond, " and ")?;
         if !self.filt.is_empty() {
             f.write_str("], filt=[")?;

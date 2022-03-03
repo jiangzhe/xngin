@@ -319,7 +319,11 @@ impl Op {
             Op::JoinGraph(graph) => graph
                 .edges
                 .values()
-                .flat_map(|jc| jc.cond.iter().chain(jc.filt.iter()))
+                .flat_map(|edges| {
+                    edges
+                        .iter()
+                        .flat_map(|e| e.cond.iter().chain(e.filt.iter()))
+                })
                 .collect(),
             Op::Row(row) => row.iter().map(|(e, _)| e).collect(),
         }
@@ -349,7 +353,11 @@ impl Op {
             Op::JoinGraph(graph) => graph
                 .edges
                 .values_mut()
-                .flat_map(|jc| jc.cond.iter_mut().chain(jc.filt.iter_mut()))
+                .flat_map(|edges| {
+                    edges
+                        .iter_mut()
+                        .flat_map(|e| e.cond.iter_mut().chain(e.filt.iter_mut()))
+                })
                 .collect(),
             Op::Row(row) => row.iter_mut().map(|(e, _)| e).collect(),
         }

@@ -224,19 +224,6 @@ fn translate_rn_exprs(
 }
 
 #[inline]
-pub(crate) fn reject_null(expr: &Expr, qry_ids: &HashSet<QueryID>) -> Result<bool> {
-    expr.clone()
-        .reject_null(|e| {
-            if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
-                if qry_ids.contains(qry_id) {
-                    *e = Expr::const_null();
-                }
-            }
-        })
-        .map_err(Into::into)
-}
-
-#[inline]
 pub(crate) fn reject_null_single(expr: &Expr, qry_id: QueryID) -> Result<bool> {
     expr.clone()
         .reject_null(|e| {

@@ -418,16 +418,6 @@ pub(crate) fn assert_j_plan1<F: FnOnce(&str, QueryPlan)>(
     f(sql, plan)
 }
 
-pub(crate) fn assert_j_dup_plan<F: FnOnce(&str, QueryPlan, QueryPlan)>(
-    cat: &Arc<dyn QueryCatalog>,
-    sql: &str,
-    f: F,
-) {
-    let plan1 = build_plan(&cat, sql);
-    let plan2 = build_plan(&cat, sql);
-    f(sql, plan1, plan2)
-}
-
 pub(crate) fn assert_j_plan2<F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
     cat: &Arc<dyn QueryCatalog>,
     sql1: &str,
@@ -483,6 +473,7 @@ pub(crate) fn extract_join_kinds(op: &Op) -> Vec<&'static str> {
     ex.0
 }
 
+#[allow(dead_code)]
 pub(crate) fn extract_join_graph(op: &Op) -> Option<JoinGraph> {
     struct ExtractJoinGraph(Option<JoinGraph>);
     impl OpVisitor for ExtractJoinGraph {
@@ -543,6 +534,26 @@ pub(crate) fn get_subq_by_location<'a>(
         let _ = subq.root.walk(&mut csbl);
     }
     subqs
+}
+
+pub(crate) fn get_join_graph(subq: &Subquery) -> Option<JoinGraph> {
+    struct CollectGraph(Option<JoinGraph>);
+    impl OpVisitor for CollectGraph {
+        type Cont = ();
+        type Break = ();
+        fn enter(&mut self, op: &Op) -> ControlFlow<()> {
+            match op {
+                Op::JoinGraph(g) => {
+                    self.0 = Some(g.as_ref().clone());
+                    ControlFlow::Break(())
+                }
+                _ => ControlFlow::Continue(()),
+            }
+        }
+    }
+    let mut c = CollectGraph(None);
+    let _ = subq.root.walk(&mut c);
+    c.0
 }
 
 struct CollectFiltExpr(Vec<xngin_expr::Expr>);
