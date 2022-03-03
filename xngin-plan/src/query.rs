@@ -16,6 +16,11 @@ use xngin_expr::{Expr, QueryID};
 pub struct QueryPlan {
     pub qry_set: QuerySet,
     pub root: QueryID,
+    /// Original plan contains standalone queries
+    /// that can be executed separately.
+    /// Such queries are gathered and should be
+    /// executed in parallel.
+    pub attaches: Vec<QueryID>,
 }
 
 impl QueryPlan {

@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::op::{Op, OpMutVisitor, OpVisitor};
-use crate::query::{Location, QueryPlan, QuerySet, Subquery};
+use crate::query::{Location, QuerySet, Subquery};
 use crate::rule::RuleEffect;
 use fnv::FnvHashMap;
 use smol_str::SmolStr;
@@ -13,9 +13,9 @@ use xngin_expr::{Col, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 /// It is invoked top down. First collect all output columns from current
 /// query, then apply the pruning to each of its child query.
 #[inline]
-pub fn col_prune(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
+pub fn col_prune(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
     let mut use_set = FnvHashMap::default();
-    prune_col(qry_set, *root, &mut use_set)
+    prune_col(qry_set, qry_id, &mut use_set)
 }
 
 fn prune_col(
@@ -200,7 +200,7 @@ mod tests {
         assert_j_plan("select 1 from t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(4, subq[0].out_cols().len());
-            col_prune(&mut plan).unwrap();
+            col_prune(&mut plan.qry_set, plan.root).unwrap();
             print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(1, subq.len());
@@ -214,7 +214,7 @@ mod tests {
         assert_j_plan("select c1, c3 from t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(4, subq[0].out_cols().len());
-            col_prune(&mut plan).unwrap();
+            col_prune(&mut plan.qry_set, plan.root).unwrap();
             print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(1, subq.len());
@@ -227,7 +227,7 @@ mod tests {
         assert_j_plan("select c3, c1 from t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(4, subq[0].out_cols().len());
-            col_prune(&mut plan).unwrap();
+            col_prune(&mut plan.qry_set, plan.root).unwrap();
             print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(2, subq[0].out_cols().len());
@@ -239,7 +239,7 @@ mod tests {
         assert_j_plan("select c2, c2, c2 from t3", |sql, mut plan| {
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(4, subq[0].out_cols().len());
-            col_prune(&mut plan).unwrap();
+            col_prune(&mut plan.qry_set, plan.root).unwrap();
             print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             // remove duplicates and keep 1 column from source
@@ -254,7 +254,7 @@ mod tests {
             assert_eq!(2, subq.len());
             assert_eq!(3, subq[0].out_cols().len());
             assert_eq!(4, subq[1].out_cols().len());
-            col_prune(&mut plan).unwrap();
+            col_prune(&mut plan.qry_set, plan.root).unwrap();
             print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(1, subq[0].out_cols().len());
@@ -267,7 +267,7 @@ mod tests {
         assert_j_plan(
             "select t2.c0 from t2, t3 where t2.c1 = t3.c1",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 // additional column is requied from t2 for filter
@@ -282,7 +282,7 @@ mod tests {
         assert_j_plan(
             "select t2.c0 from t2 join t3 on t2.c1 = t3.c1 and t2.c2 = t3.c2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 // additional column is required from t2 for join
@@ -298,7 +298,7 @@ mod tests {
         assert_j_plan(
             "select t1.c0, tmp.x from t1, (select 1 as x, 2 as y) tmp",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(1, subq[0].out_cols().len());
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn test_col_prune_aggr_col() {
         assert_j_plan("select sum(c2) from t2", |sql, mut plan| {
-            col_prune(&mut plan).unwrap();
+            col_prune(&mut plan.qry_set, plan.root).unwrap();
             print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(1, subq[0].out_cols().len());
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn test_col_prune_aggr_asterisk() {
         assert_j_plan("select count(*) from t2", |sql, mut plan| {
-            col_prune(&mut plan).unwrap();
+            col_prune(&mut plan.qry_set, plan.root).unwrap();
             print_plan(sql, &plan);
             let subq = get_lvl_queries(&plan, 1);
             assert_eq!(0, subq[0].out_cols().len());
@@ -332,7 +332,7 @@ mod tests {
         assert_j_plan(
             "select count(*) from t2, t3 where t2.c2 = t3.c2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(1, subq[0].out_cols().len());
@@ -346,7 +346,7 @@ mod tests {
         assert_j_plan(
             "select (select c0 from t3 where t3.c1 = t2.c1) from t2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(1, subq[0].out_cols().len());
@@ -359,7 +359,7 @@ mod tests {
         assert_j_plan(
             "select (select sum(c0) from t3 where t3.c1 = t2.c1 and t3.c2 = t2.c2) from t2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(2, subq[0].out_cols().len());
@@ -372,7 +372,7 @@ mod tests {
         assert_j_plan(
             "select (select sum(c0) from t3 where t3.c1 = t2.c1 and t3.c2 = t2.c2), c0 from t2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(3, subq[0].out_cols().len());
@@ -385,7 +385,7 @@ mod tests {
         assert_j_plan(
             "select (select sum(c0) from t3 where t3.c1 = t2.c1 and t3.c2 = t2.c2), c1 from t2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(2, subq[0].out_cols().len());
                 print_plan(sql, &plan)
@@ -398,7 +398,7 @@ mod tests {
         assert_j_plan(
             "select s1 from (select sum(c1) as s1, sum(c2) as s2 from t2) x2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(1, subq[0].out_cols().len());
@@ -411,7 +411,7 @@ mod tests {
         assert_j_plan(
             "select s1 from (select 1 as s1, 2 as s2) x2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(1, subq[0].out_cols().len());
@@ -424,7 +424,7 @@ mod tests {
         assert_j_plan(
             "select count(*) from (select count(*) as c from t1) x2",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 1);
                 assert_eq!(0, subq[0].out_cols().len());
@@ -437,7 +437,7 @@ mod tests {
         assert_j_plan(
             "select x from (select c1+1 as x from t1 where c1 > 0) t",
             |sql, mut plan| {
-                col_prune(&mut plan).unwrap();
+                col_prune(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(sql, &plan);
                 let subq = get_lvl_queries(&plan, 2);
                 assert_eq!(1, subq[0].out_cols().len());

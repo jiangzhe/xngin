@@ -2,9 +2,9 @@
 //! in early stage. "Canonical" means if the rule applies, the plan
 //! is supposed to be always better, so that no cost model involved.
 use crate::error::Result;
-use crate::query::QueryPlan;
+use crate::query::{QueryPlan, QuerySet};
 use bitflags::bitflags;
-use xngin_expr::Effect;
+use xngin_expr::{Effect, QueryID};
 
 pub mod col_prune;
 pub mod derived_unfold;
@@ -49,52 +49,60 @@ impl Effect for RuleEffect {
 
 #[inline]
 pub fn rule_optimize(plan: &mut QueryPlan) -> Result<()> {
-    let mut eff = init_rule_optimize(plan)?;
+    for qry_id in &plan.attaches {
+        rule_optimize_each(&mut plan.qry_set, *qry_id)?
+    }
+    rule_optimize_each(&mut plan.qry_set, plan.root)
+}
+
+#[inline]
+pub fn rule_optimize_each(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
+    let mut eff = init_rule_optimize(qry_set, qry_id)?;
     for _ in 0..10 {
         match eff {
             RuleEffect::OPEXPR => {
                 eff = RuleEffect::NONE;
-                eff |= expr_simplify(plan)?;
-                eff |= op_eliminate(plan)?;
-                eff |= pred_pushdown(plan)?;
+                eff |= expr_simplify(qry_set, qry_id)?;
+                eff |= op_eliminate(qry_set, qry_id)?;
+                eff |= pred_pushdown(qry_set, qry_id)?;
             }
             RuleEffect::OP => {
                 eff = RuleEffect::NONE;
-                eff |= expr_simplify(plan)?;
+                eff |= expr_simplify(qry_set, qry_id)?;
             }
             RuleEffect::EXPR => {
                 eff = RuleEffect::NONE;
-                eff |= pred_pushdown(plan)?;
-                eff |= op_eliminate(plan)?;
+                eff |= pred_pushdown(qry_set, qry_id)?;
+                eff |= op_eliminate(qry_set, qry_id)?;
             }
             _ => break,
         }
     }
-    joingraph_initialize(plan)?;
+    joingraph_initialize(qry_set, qry_id)?;
     Ok(())
 }
 
 #[inline]
-pub fn init_rule_optimize(plan: &mut QueryPlan) -> Result<RuleEffect> {
+pub fn init_rule_optimize(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
     let mut eff = RuleEffect::NONE;
     // Run column pruning as first step, to remove unused columns in operator tree.
     // this will largely reduce effort of other rules.
-    eff |= col_prune(plan)?; // onetime
-                             // Run expression simplify as second step, fold constants, normalize expressions.
-    eff |= expr_simplify(plan)?;
+    eff |= col_prune(qry_set, qry_id)?; // onetime
+                                        // Run expression simplify as second step, fold constants, normalize expressions.
+    eff |= expr_simplify(qry_set, qry_id)?;
     // Run operator eliminate after expression simplify, to remove unnecessary operators.
-    eff |= op_eliminate(plan)?;
+    eff |= op_eliminate(qry_set, qry_id)?;
     // Run outerjoin reduce to update join type top down.
-    eff |= outerjoin_reduce(plan)?; // onetime
-                                    // Run predicate pushdown
-    eff |= pred_pushdown(plan)?;
+    eff |= outerjoin_reduce(qry_set, qry_id)?; // onetime
+                                               // Run predicate pushdown
+    eff |= pred_pushdown(qry_set, qry_id)?;
     // Run predicate pullup with predicate propagate for future predicate pushdown.
-    pred_pullup(plan)?; // onetime
-                        // Run predicate pushdown again
-    eff |= pred_pushdown(plan)?;
+    pred_pullup(qry_set, qry_id)?; // onetime
+                                   // Run predicate pushdown again
+    eff |= pred_pushdown(qry_set, qry_id)?;
     // Run column pruning again
-    eff |= col_prune(plan)?;
+    eff |= col_prune(qry_set, qry_id)?;
     // unfold derived tables to gather more tables to join graph.
-    eff |= derived_unfold(plan)?; // onetime
+    eff |= derived_unfold(qry_set, qry_id)?; // onetime
     Ok(eff)
 }

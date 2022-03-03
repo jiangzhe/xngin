@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Limit, Op, OpMutVisitor, Proj, Sort};
-use crate::query::{QueryPlan, QuerySet};
+use crate::query::QuerySet;
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
 use crate::setop::{Setop, SetopKind};
@@ -20,8 +20,8 @@ use xngin_expr::{Col, Const, Expr, QueryID, Setq};
 /// 7. ORDER BY in subquery without LIMIT can be removed.
 /// 8. join with false/null condition can be removed.
 #[inline]
-pub fn op_eliminate(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
-    eliminate_op(qry_set, *root, false)
+pub fn op_eliminate(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
+    eliminate_op(qry_set, qry_id, false)
 }
 
 fn eliminate_op(qry_set: &mut QuerySet, qry_id: QueryID, is_subq: bool) -> Result<RuleEffect> {
@@ -164,9 +164,13 @@ impl<'a> EliminateOp<'a> {
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Apply(_) => unimplemented!(),
-            Op::Query(_) | Op::Table(..) | Op::Row(_) => unreachable!(),
-            Op::JoinGraph(_) => todo!(),
+            Op::Attach(source, _) => {
+                if source.is_empty() {
+                    *op = Op::Empty;
+                    eff |= RuleEffect::OP;
+                }
+            }
+            Op::Query(_) | Op::Table(..) | Op::Row(_) | Op::JoinGraph(_) => unreachable!(),
             Op::Empty => (),
         }
         if !op.is_empty() && !self.empty_qs.is_empty() {
@@ -315,6 +319,7 @@ mod tests {
     use super::*;
     use crate::builder::tests::{assert_j_plan1, get_lvl_queries, j_catalog, print_plan};
     use crate::op::preorder;
+    use crate::query::QueryPlan;
 
     #[test]
     fn test_op_eliminate_false_pred() {
@@ -327,7 +332,7 @@ mod tests {
     fn test_op_eliminate_true_pred() {
         let cat = j_catalog();
         assert_j_plan1(&cat, "select c1 from t1 where true", |s, mut q| {
-            op_eliminate(&mut q).unwrap();
+            op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
             if let Op::Proj(proj) = &subq.root {
@@ -366,7 +371,7 @@ mod tests {
             &cat,
             "select c1 from (select c1 from t1 order by c0) x1",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subqs = get_lvl_queries(&q, 1);
                 assert_eq!(subqs.len(), 1);
@@ -378,7 +383,7 @@ mod tests {
             &cat,
             "select c1 from (select c1 from t1 order by c0 limit 1) x1",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subqs = get_lvl_queries(&q, 1);
                 assert_eq!(subqs.len(), 1);
@@ -396,13 +401,13 @@ mod tests {
         let cat = j_catalog();
         // eliminate entire tree if LIMIT 0
         assert_j_plan1(&cat, "select c1 from t1 limit 0", |s, mut q| {
-            op_eliminate(&mut q).unwrap();
+            op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
             assert!(matches!(subq.root, Op::Empty));
         });
         assert_j_plan1(&cat, "select c1 from t1 limit 0 offset 3", |s, mut q| {
-            op_eliminate(&mut q).unwrap();
+            op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
             assert!(matches!(subq.root, Op::Empty));
@@ -411,7 +416,7 @@ mod tests {
             &cat,
             "select c1 from t1 where null order by c1 limit 10",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 assert!(matches!(subq.root, Op::Empty));
@@ -419,7 +424,7 @@ mod tests {
         );
         // do NOT eliminate if LIMIT non-zero
         assert_j_plan1(&cat, "select c1 from t1 limit 1", |s, mut q| {
-            op_eliminate(&mut q).unwrap();
+            op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
             assert!(matches!(subq.root, Op::Limit(_)));
@@ -438,7 +443,7 @@ mod tests {
             &cat,
             "select c1 from t1 where false union all select c1 from t1",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 subq.root.walk(&mut preorder(|op| match op {
@@ -451,7 +456,7 @@ mod tests {
             &cat,
             "select c1 from t1 union all select c1 from t1 limit 0",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 subq.root.walk(&mut preorder(|op| match op {
@@ -474,7 +479,7 @@ mod tests {
             &cat,
             "select c1 from t1 except all select c1 from t1 where null",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 subq.root.walk(&mut preorder(|op| match op {
@@ -497,7 +502,7 @@ mod tests {
             &cat,
             "select c1 from t1 intersect all select c1 from t1 where null",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 subq.root.walk(&mut preorder(|op| match op {
@@ -553,7 +558,7 @@ mod tests {
             &cat,
             "select c2 from (select c1 from t1) x1 left join (select * from t2 limit 0) x2",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 subq.root.walk(&mut preorder(|op| match op {
@@ -577,7 +582,7 @@ mod tests {
             &cat,
             "select c2 from (select c1 from t1 where null) x1 right join (select * from t2) x2",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 subq.root.walk(&mut preorder(|op| match op {
@@ -606,7 +611,7 @@ mod tests {
             &cat,
             "select x1.c1, c2 from (select c1 from t1 where null) x1 full join (select * from t2) x2",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 subq.root.walk(&mut preorder(|op| match op {
@@ -625,7 +630,7 @@ mod tests {
             &cat,
             "select x1.c1, c2 from (select c1 from t1) x1 full join (select * from t2 where false) x2",
             |s, mut q| {
-                op_eliminate(&mut q).unwrap();
+                op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
                 subq.root.walk(&mut preorder(|op| match op {
@@ -648,7 +653,7 @@ mod tests {
     }
 
     fn assert_empty_root(s1: &str, mut q1: QueryPlan) {
-        op_eliminate(&mut q1).unwrap();
+        op_eliminate(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let root = &q1.root_query().unwrap().root;
         assert_eq!(&Op::Empty, root);

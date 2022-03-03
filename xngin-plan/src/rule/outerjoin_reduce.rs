@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
-use crate::query::{Location, QueryPlan, QuerySet};
+use crate::query::{Location, QuerySet};
 use crate::rule::expr_simplify::{simplify_single, NullCoalesce};
 use crate::rule::RuleEffect;
 use smol_str::SmolStr;
@@ -17,8 +17,8 @@ use xngin_expr::{Col, Expr, ExprMutVisitor, QueryID};
 /// The fully predicates pushdown will be applied after
 /// join graph initialization.
 #[inline]
-pub fn outerjoin_reduce(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
-    reduce_outerjoin(qry_set, *root, None)
+pub fn outerjoin_reduce(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
+    reduce_outerjoin(qry_set, qry_id, None)
 }
 
 fn reduce_outerjoin(
@@ -165,8 +165,12 @@ impl OpMutVisitor for Reduce<'_> {
             Op::JoinGraph(_) => {
                 unreachable!("Outerjoin reduce should be applied before initializing join graph")
             }
-            Op::Proj(_) | Op::Sort(_) | Op::Limit(_) | Op::Empty | Op::Setop(_) => (),
-            Op::Apply(_) => todo!(),
+            Op::Proj(_)
+            | Op::Sort(_)
+            | Op::Limit(_)
+            | Op::Empty
+            | Op::Setop(_)
+            | Op::Attach(..) => (),
             Op::Table(..) | Op::Row(_) => unreachable!(),
         }
         ControlFlow::Continue(eff)
@@ -282,6 +286,7 @@ mod tests {
     use crate::builder::tests::{
         assert_j_plan1, extract_join_kinds, get_lvl_queries, j_catalog, print_plan,
     };
+    use crate::query::QueryPlan;
 
     #[test]
     fn test_outerjoin_reduce_left_join() {
@@ -408,7 +413,7 @@ mod tests {
     }
 
     fn assert_inner(sql: &str, mut plan: QueryPlan) {
-        outerjoin_reduce(&mut plan).unwrap();
+        outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
         let joins = extract_join_kinds(&subq.root);
@@ -416,7 +421,7 @@ mod tests {
     }
 
     fn assert_subq_inner(sql: &str, mut plan: QueryPlan) {
-        outerjoin_reduce(&mut plan).unwrap();
+        outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         // let subq = plan.root_query().unwrap();
         let subq = get_lvl_queries(&plan, 1);
@@ -425,7 +430,7 @@ mod tests {
     }
 
     fn assert_left(sql: &str, mut plan: QueryPlan) {
-        outerjoin_reduce(&mut plan).unwrap();
+        outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
         let joins = extract_join_kinds(&subq.root);
@@ -433,7 +438,7 @@ mod tests {
     }
 
     fn assert_full(sql: &str, mut plan: QueryPlan) {
-        outerjoin_reduce(&mut plan).unwrap();
+        outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
         let joins = extract_join_kinds(&subq.root);
@@ -441,7 +446,7 @@ mod tests {
     }
 
     fn assert_cross(sql: &str, mut plan: QueryPlan) {
-        outerjoin_reduce(&mut plan).unwrap();
+        outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
         let joins = extract_join_kinds(&subq.root);

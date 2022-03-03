@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Filt, Op, OpMutVisitor};
-use crate::query::{QryIDs, QueryPlan, QuerySet};
+use crate::query::{QryIDs, QuerySet};
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
 use smol_str::SmolStr;
@@ -14,8 +14,8 @@ use xngin_expr::{Col, Const, Expr, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Pushdown predicates.
 #[inline]
-pub fn pred_pushdown(QueryPlan { qry_set, root }: &mut QueryPlan) -> Result<RuleEffect> {
-    pushdown_pred(qry_set, *root)
+pub fn pred_pushdown(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
+    pushdown_pred(qry_set, qry_id)
 }
 
 fn pushdown_pred(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
@@ -93,6 +93,7 @@ impl OpMutVisitor for PredPushdown<'_> {
 struct ExprAttr {
     qry_ids: QryIDs,
     has_aggf: bool,
+    // whether the predicate contains subquery that cannot be pushed down.
     has_subq: bool,
 }
 
@@ -119,7 +120,7 @@ impl ExprVisitor for ExprAttr {
                     hs.insert(*qry_id);
                 }
             },
-            Expr::Subq(..) => {
+            Expr::Subq(..) | Expr::Attval(_) => {
                 self.has_subq = true;
             }
             _ => (),
@@ -240,9 +241,9 @@ fn push_single(
         // Empty just ignores
         Op::Empty => None,
         Op::Row(_) => todo!(), // todo: evaluate immediately
-        Op::Apply(_) => todo!(),
-        // Proj/Sort/Limit will try pushing pred, and if fails just accept.
-        Op::Proj(_) | Op::Sort(_) | Op::Limit(_) => {
+        // Proj/Sort/Limit/Attach will try pushing pred, and if fails just accept.
+        // todo: pushdown to limit should be forbidden
+        Op::Proj(_) | Op::Sort(_) | Op::Limit(_) | Op::Attach(..) => {
             let (e, item) = push_or_accept(qry_set, op, pred)?;
             eff |= e;
             item
@@ -288,23 +289,6 @@ fn push_single(
             assert!(item.is_none());
             None
         }
-        // Op::JoinGraph(graph) => {
-        //     let extra = graph.add_single_filt(pred.e)?;
-        //     eff |= RuleEffect::EXPR;
-        //     for (e, qry_id) in extra {
-        //         // try pushing extra expressions
-        //         eff |= qry_set.transform_op(qry_id, |qry_set, _, op| {
-        //             match push_single(qry_set, op, ExprItem::new(e)) {
-        //                 Ok((ef, None)) => Ok(ef),
-        //                 Err(e) => Err(e),
-        //                 _ => Err(Error::InternalError(
-        //                     "Predicate pushdown failed on subquery".to_string(),
-        //                 )),
-        //             }
-        //         })??;
-        //     }
-        //     None
-        // }
         Op::JoinGraph(_) => unreachable!("Predicates pushdown to join graph is not supported"),
         Op::Join(join) => match join.as_mut() {
             Join::Cross(jos) => {
@@ -730,7 +714,7 @@ mod tests {
         assert_j_plan1, extract_join_kinds, get_subq_by_location, get_subq_filt_expr, j_catalog,
         print_plan,
     };
-    use crate::query::Location;
+    use crate::query::{Location, QueryPlan};
 
     #[test]
     fn test_pred_pushdown_single_table() {
@@ -779,7 +763,7 @@ mod tests {
             &cat,
             "select 1 from (select 1 as c1 from t1) x1 where c1 = 0",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 if let Op::Proj(proj) = &subq.root {
@@ -791,7 +775,7 @@ mod tests {
             &cat,
             "select 1 from (select null as c1 from t1) x1 where c1 = 0",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 if let Op::Proj(proj) = &subq.root {
@@ -828,7 +812,7 @@ mod tests {
             &cat,
             "select 1 from t1, t2 where t1.c1 = t2.c1",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -839,7 +823,7 @@ mod tests {
             &cat,
             "select 1 from t1, t2, t3 where t1.c1 = t2.c1 and t1.c1 = t3.c1",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -850,7 +834,7 @@ mod tests {
             &cat,
             "select 1 from t1, t2, t3 where t1.c1 = t2.c1 and t1.c1 = t3.c1 and t2.c1 = t3.c1",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -936,7 +920,7 @@ mod tests {
             &cat,
             "select 1 from t1 left join t2 left join t3 on t1.c1 = t3.c3 where t1.c1 = t2.c2",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -949,7 +933,7 @@ mod tests {
             &cat,
             "select 1 from t1 left join t2 left join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c3 where t2.c2 = t3.c3",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -965,7 +949,7 @@ mod tests {
             &cat,
             "select 1 from t1 left join t2 left join t3 where t2.c2 = t3.c3",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -978,7 +962,7 @@ mod tests {
             &cat,
             "select 1 from t1 join t2 left join t3 left join t4 where t1.c1 = t2.c2 and t3.c3 is null",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -1011,7 +995,7 @@ mod tests {
             &cat,
             "select 1 from t1 full join t2 where t1.c1 = 0",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq1 = get_subq_by_location(&q1, Location::Disk);
                 // converted to right table, then left table
@@ -1030,7 +1014,7 @@ mod tests {
             &cat,
             "select 1 from t1 full join t2 where t1.c1 = t2.c2",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -1041,7 +1025,7 @@ mod tests {
             &cat,
             "select 1 from t1 full join t2 on t1.c1 = t2.c2 where t1.c1 is null and t2.c2 is null",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -1053,7 +1037,7 @@ mod tests {
             &cat,
             "select 1 from t1 full join t2 on t1.c1 = t2.c2 where t1.c0 > 0 and t2.c2 is null",
             |s1, mut q1| {
-                pred_pushdown(&mut q1).unwrap();
+                pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
@@ -1063,21 +1047,21 @@ mod tests {
     }
 
     fn assert_filt_on_disk_table1(s1: &str, mut q1: QueryPlan) {
-        pred_pushdown(&mut q1).unwrap();
+        pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
     }
 
     fn assert_filt_on_disk_table1r(s1: &str, mut q1: QueryPlan) {
-        pred_pushdown(&mut q1).unwrap();
+        pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
     }
 
     fn assert_filt_on_disk_table2(s1: &str, mut q1: QueryPlan) {
-        pred_pushdown(&mut q1).unwrap();
+        pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
@@ -1085,7 +1069,7 @@ mod tests {
     }
 
     fn assert_no_filt_on_disk_table(s1: &str, mut q1: QueryPlan) {
-        pred_pushdown(&mut q1).unwrap();
+        pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(subq1

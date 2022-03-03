@@ -3,7 +3,7 @@ pub(crate) mod tests;
 
 use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
-use crate::join::{Join, JoinKind, JoinOp};
+use crate::join::{JoinKind, JoinOp};
 use crate::op::{Op, OpMutVisitor, SortItem};
 use crate::query::{Location, QueryPlan, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
@@ -22,6 +22,7 @@ pub struct PlanBuilder {
     default_schema: SchemaID,
     qs: QuerySet,
     scopes: Scopes,
+    attaches: Vec<QueryID>,
 }
 
 impl PlanBuilder {
@@ -38,6 +39,7 @@ impl PlanBuilder {
             default_schema,
             qs,
             scopes: Scopes::default(),
+            attaches: vec![],
         })
     }
 
@@ -47,6 +49,7 @@ impl PlanBuilder {
         Ok(QueryPlan {
             qry_set: self.qs,
             root,
+            attaches: self.attaches,
         })
     }
 
@@ -68,13 +71,18 @@ impl PlanBuilder {
         // first setup subqueries
         for PlaceholderQuery { uid, kind, qry, .. } in phc.subqueries {
             let QueryExpr { with, query } = qry;
-            let (query_id, _) = self.build_subquery(with, query, true)?;
+            let (qry_id, correlated) = self.build_subquery(with, query, true)?;
             let _ = root.walk_mut(&mut ReplaceSubq {
                 uid,
                 kind,
-                query_id,
-                updated: false,
+                qry_id,
+                correlated,
             });
+            if kind == SubqKind::Scalar && !correlated {
+                // this means the subquery can be executed separately, so attach it
+                // to main plan.
+                self.attaches.push(qry_id);
+            }
         }
         // then resolve correlated columns against outer scopes.
         let mut scope = self.scopes.pop().unwrap(); // won't fail
@@ -285,7 +293,6 @@ impl PlanBuilder {
     ) -> Result<(Op, Location)> {
         match query {
             Query::Row(row) => {
-                // todo: support correlated row
                 let mut cols = Vec::with_capacity(row.len());
                 let resolver = ResolveNone;
                 for c in row {
@@ -1197,8 +1204,9 @@ impl OpMutVisitor for ReplaceCorrelatedCol {
 struct ReplaceSubq {
     uid: u32,
     kind: SubqKind,
-    query_id: QueryID,
-    updated: bool,
+    qry_id: QueryID,
+    // updated: bool,
+    correlated: bool,
 }
 
 impl OpMutVisitor for ReplaceSubq {
@@ -1206,47 +1214,8 @@ impl OpMutVisitor for ReplaceSubq {
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
-        match op {
-            Op::Proj(proj) => {
-                for (e, _) in &mut proj.cols {
-                    let _ = e.walk_mut(self);
-                    if self.updated {
-                        return ControlFlow::Break(());
-                    }
-                }
-            }
-            Op::Filt(filt) => {
-                for e in &mut filt.pred {
-                    let _ = e.walk_mut(self);
-                }
-                if self.updated {
-                    return ControlFlow::Break(());
-                }
-            }
-            Op::Aggr(aggr) => {
-                for e in aggr
-                    .proj
-                    .iter_mut()
-                    .map(|(e, _)| e)
-                    .chain(aggr.filt.iter_mut())
-                {
-                    let _ = e.walk_mut(self);
-                    if self.updated {
-                        return ControlFlow::Break(());
-                    }
-                }
-            }
-            Op::Join(join) => {
-                if let Join::Qualified(qj) = join.as_mut() {
-                    for e in qj.cond.iter_mut().chain(qj.filt.iter_mut()) {
-                        let _ = e.walk_mut(self);
-                    }
-                    if self.updated {
-                        return ControlFlow::Break(());
-                    }
-                }
-            }
-            _ => (), // do not try others
+        for e in op.exprs_mut() {
+            e.walk_mut(self)?
         }
         ControlFlow::Continue(())
     }
@@ -1259,7 +1228,11 @@ impl ExprMutVisitor for ReplaceSubq {
     fn enter(&mut self, e: &mut expr::Expr) -> ControlFlow<()> {
         match e {
             expr::Expr::Plhd(Plhd::Subquery(_, uid)) if *uid == self.uid => {
-                *e = expr::Expr::Subq(self.kind, self.query_id);
+                if !self.correlated && self.kind == SubqKind::Scalar {
+                    *e = expr::Expr::Attval(self.qry_id);
+                } else {
+                    *e = expr::Expr::Subq(self.kind, self.qry_id);
+                }
                 return ControlFlow::Break(());
             }
             _ => (),
