@@ -288,26 +288,24 @@ fn push_single(
             assert!(item.is_none());
             None
         }
-        // todo:
-        // Maybe remove this branch makes the pushdown logic clearer, so that
-        // we forbid predicate pushdown when join graph is established.
-        Op::JoinGraph(graph) => {
-            let extra = graph.add_single_filt(pred.e)?;
-            eff |= RuleEffect::EXPR;
-            for (e, qry_id) in extra {
-                // try pushing extra expressions
-                eff |= qry_set.transform_op(qry_id, |qry_set, _, op| {
-                    match push_single(qry_set, op, ExprItem::new(e)) {
-                        Ok((ef, None)) => Ok(ef),
-                        Err(e) => Err(e),
-                        _ => Err(Error::InternalError(
-                            "Predicate pushdown failed on subquery".to_string(),
-                        )),
-                    }
-                })??;
-            }
-            None
-        }
+        // Op::JoinGraph(graph) => {
+        //     let extra = graph.add_single_filt(pred.e)?;
+        //     eff |= RuleEffect::EXPR;
+        //     for (e, qry_id) in extra {
+        //         // try pushing extra expressions
+        //         eff |= qry_set.transform_op(qry_id, |qry_set, _, op| {
+        //             match push_single(qry_set, op, ExprItem::new(e)) {
+        //                 Ok((ef, None)) => Ok(ef),
+        //                 Err(e) => Err(e),
+        //                 _ => Err(Error::InternalError(
+        //                     "Predicate pushdown failed on subquery".to_string(),
+        //                 )),
+        //             }
+        //         })??;
+        //     }
+        //     None
+        // }
+        Op::JoinGraph(_) => unreachable!("Predicates pushdown to join graph is not supported"),
         Op::Join(join) => match join.as_mut() {
             Join::Cross(jos) => {
                 if pred.load_attr().has_aggf {
@@ -729,52 +727,50 @@ impl ExprMutVisitor for RewriteOutExpr<'_> {
 mod tests {
     use super::*;
     use crate::builder::tests::{
-        assert_j_dup_plan, assert_j_plan1, extract_join_graph, extract_join_kinds,
-        get_subq_by_location, get_subq_filt_expr, j_catalog, print_plan,
+        assert_j_plan1, extract_join_kinds, get_subq_by_location, get_subq_filt_expr, j_catalog,
+        print_plan,
     };
-    use crate::join::JoinKind;
     use crate::query::Location;
-    use crate::rule::joingraph_initialize;
 
     #[test]
     fn test_pred_pushdown_single_table() {
         let cat = j_catalog();
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 where c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 where c0 + c1 = c1 + c0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select c1 from t1 having c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from (select c1 from t1) x1 where x1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from (select c1 from t1 where c1 > 0) x1",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select c1, count(*) from t1 group by c1 having c1 > 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from (select c1 from t1 order by c0 limit 10) x1 where c1 > 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from (select 1 as c1 from t1) x1 where c1 > 0",
             assert_no_filt_on_disk_table,
@@ -808,22 +804,22 @@ mod tests {
     #[test]
     fn test_pred_pushdown_cross_join() {
         let cat = j_catalog();
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1, t2 where t1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select t1.c1 from t1, t2 having t1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from (select t1.c1 from t1, t2) x1 where x1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select t1.c1, count(*) from t1, t2 group by t1.c1 having c1 > 0",
             assert_filt_on_disk_table1,
@@ -866,27 +862,27 @@ mod tests {
     #[test]
     fn test_pred_pushdown_inner_join() {
         let cat = j_catalog();
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 join t2 where t1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 join t2 where c2 = 0",
             assert_filt_on_disk_table1r,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select t1.c1 from t1 join t2 having t1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from (select t1.c1 from t1 join t2) x1 where x1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select t1.c1, c2, count(*) from t1 join t2 where t1.c1 = 0 group by t1.c1, t2.c2 having c2 > 100",
             assert_filt_on_disk_table2,
@@ -896,94 +892,63 @@ mod tests {
     #[test]
     fn test_pred_pushdown_left_join() {
         let cat = j_catalog();
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 left join t2 where t1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 left join t2 where c2 = 0",
             assert_filt_on_disk_table1r,
         );
         // filter expression NOT rejects null, so cannot be pushed
         // to table scan.
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 left join t2 where c2 is null",
             assert_no_filt_on_disk_table,
         );
         // involve both sides, cannot be pushed to table scan,
         // join type will be converted to inner join.
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 left join t2 where t1.c1 = c2",
             assert_no_filt_on_disk_table,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select t1.c1 from t1 left join t2 having t1.c1 = 0 order by c1",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from (select t1.c1 from t1 left join t2) x1 where x1.c1 = 0",
             assert_filt_on_disk_table1,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select t1.c1, c2, count(*) from t1 left join t2 where t1.c1 = 0 group by t1.c1, t2.c2 having c2 > 100",
             assert_filt_on_disk_table2,
         );
         // one left join converted to inner join
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 left join t2 left join t3 on t1.c1 = t3.c3 where t1.c1 = t2.c2",
-            |s1: &str, mut q1: QueryPlan, q2: QueryPlan| {
-                joingraph_initialize(&mut q1).unwrap();
-                pred_pushdown(&mut q1).unwrap();
-                print_plan(s1, &q1);
-                let subq = q1.root_query().unwrap();
-                let g = extract_join_graph(&subq.root).unwrap();
-                // one inner join, one left join
-                assert_eq!(2, g.edges.len());
-                assert_eq!(
-                    1,
-                    g.edges
-                        .values()
-                        .filter(|e| e.kind == JoinKind::Inner)
-                        .count()
-                );
-                assert_eq!(
-                    1,
-                    g.edges
-                        .values()
-                        .filter(|e| e.kind == JoinKind::Left)
-                        .count()
-                );
-
-                q1 = q2;
+            |s1, mut q1| {
                 pred_pushdown(&mut q1).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 let jks = extract_join_kinds(&subq.root);
+                // the predicate pushdown only change the topmost join type.
                 assert_eq!(vec!["left", "inner"], jks);
             },
         );
         // both left joins converted to inner joins, and one more inner join added.
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 left join t2 left join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c3 where t2.c2 = t3.c3",
-            |s1: &str, mut q1: QueryPlan, q2: QueryPlan| {
-                joingraph_initialize(&mut q1).unwrap();
-                pred_pushdown(&mut q1).unwrap();
-                print_plan(s1, &q1);
-                let subq = q1.root_query().unwrap();
-                let g = extract_join_graph(&subq.root).unwrap();
-                assert_eq!(3, g.edges.len());
-                assert!(g.edges.values().all(|e| e.kind == JoinKind::Inner));
-
-                q1 = q2;
+            |s1, mut q1| {
                 pred_pushdown(&mut q1).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
@@ -996,19 +961,10 @@ mod tests {
         );
         // both left joins converted to inner joins, and remove as no join condition,
         // one more inner join added.
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 left join t2 left join t3 where t2.c2 = t3.c3",
-            |s1: &str, mut q1: QueryPlan, q2: QueryPlan| {
-                joingraph_initialize(&mut q1).unwrap();
-                pred_pushdown(&mut q1).unwrap();
-                print_plan(s1, &q1);
-                let subq = q1.root_query().unwrap();
-                let g = extract_join_graph(&subq.root).unwrap();
-                assert_eq!(1, g.edges.len());
-                assert!(g.edges.values().all(|e| e.kind == JoinKind::Inner));
-
-                q1 = q2;
+            |s1, mut q1| {
                 pred_pushdown(&mut q1).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
@@ -1018,20 +974,10 @@ mod tests {
             },
         );
         // one is pushed as join condition, one is pushed as filter
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 join t2 left join t3 left join t4 where t1.c1 = t2.c2 and t3.c3 is null",
-            |s1: &str, mut q1: QueryPlan, q2: QueryPlan| {
-                joingraph_initialize(&mut q1).unwrap();
-                pred_pushdown(&mut q1).unwrap();
-                print_plan(s1, &q1);
-                let subq = q1.root_query().unwrap();
-                let g = extract_join_graph(&subq.root).unwrap();
-                assert_eq!(3, g.edges.len());
-                assert_eq!(1usize, g.edges.values().map(|e| e.cond.len()).sum());
-                assert_eq!(1usize, g.edges.values().map(|e| e.filt.len()).sum());
-
-                q1 = q2;
+            |s1, mut q1| {
                 pred_pushdown(&mut q1).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
@@ -1045,12 +991,12 @@ mod tests {
     fn test_pred_pushdown_right_join() {
         let cat = j_catalog();
         // right join is replaced by left join, so right table 2 is t1.
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 right join t2 where t1.c1 = 0",
             assert_filt_on_disk_table1r,
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 right join t2 where t2.c2 = 0",
             assert_filt_on_disk_table1,
@@ -1061,17 +1007,10 @@ mod tests {
     fn test_pred_pushdown_full_join() {
         let cat = j_catalog();
         // full join converted to left join
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 full join t2 where t1.c1 = 0",
-            |s1, mut q1, q2| {
-                joingraph_initialize(&mut q1).unwrap();
-                pred_pushdown(&mut q1).unwrap();
-                print_plan(s1, &q1);
-                let subq1 = get_subq_by_location(&q1, Location::Disk);
-                assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
-
-                q1 = q2;
+            |s1, mut q1| {
                 pred_pushdown(&mut q1).unwrap();
                 print_plan(s1, &q1);
                 let subq1 = get_subq_by_location(&q1, Location::Disk);
@@ -1081,25 +1020,16 @@ mod tests {
             },
         );
         // full join converted to right join, then left join
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 full join t2 where t2.c2 = 0",
             assert_filt_on_disk_table1r,
         );
         // full join converted to inner join
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 full join t2 where t1.c1 = t2.c2",
-            |s1: &str, mut q1: QueryPlan, q2: QueryPlan| {
-                joingraph_initialize(&mut q1).unwrap();
-                pred_pushdown(&mut q1).unwrap();
-                print_plan(s1, &q1);
-                let subq = q1.root_query().unwrap();
-                let g = extract_join_graph(&subq.root).unwrap();
-                assert_eq!(1, g.edges.len());
-                assert!(g.edges.values().all(|e| e.kind == JoinKind::Inner));
-
-                q1 = q2;
+            |s1, mut q1| {
                 pred_pushdown(&mut q1).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
@@ -1107,19 +1037,10 @@ mod tests {
                 assert_eq!(vec!["inner"], jks);
             },
         );
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 full join t2 on t1.c1 = t2.c2 where t1.c1 is null and t2.c2 is null",
-            |s1: &str, mut q1: QueryPlan, q2: QueryPlan| {
-                joingraph_initialize(&mut q1).unwrap();
-                pred_pushdown(&mut q1).unwrap();
-                print_plan(s1, &q1);
-                let subq = q1.root_query().unwrap();
-                let g = extract_join_graph(&subq.root).unwrap();
-                assert_eq!(1, g.edges.len());
-                assert_eq!(2usize, g.edges.values().map(|e| e.filt.len()).sum());
-
-                q1 = q2;
+            |s1, mut q1| {
                 pred_pushdown(&mut q1).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
@@ -1128,20 +1049,10 @@ mod tests {
             },
         );
         // convert to left join and add one filt
-        assert_j_dup_plan(
+        assert_j_plan1(
             &cat,
             "select 1 from t1 full join t2 on t1.c1 = t2.c2 where t1.c0 > 0 and t2.c2 is null",
-            |s1: &str, mut q1: QueryPlan, q2: QueryPlan| {
-                joingraph_initialize(&mut q1).unwrap();
-                pred_pushdown(&mut q1).unwrap();
-                print_plan(s1, &q1);
-                let subq = q1.root_query().unwrap();
-                let g = extract_join_graph(&subq.root).unwrap();
-                assert_eq!(1, g.edges.len());
-                assert!(g.edges.values().all(|e| e.kind == JoinKind::Left));
-                assert_eq!(1usize, g.edges.values().map(|e| e.filt.len()).sum());
-
-                q1 = q2;
+            |s1, mut q1| {
                 pred_pushdown(&mut q1).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
@@ -1151,43 +1062,21 @@ mod tests {
         );
     }
 
-    fn assert_filt_on_disk_table1(s1: &str, mut q1: QueryPlan, q2: QueryPlan) {
-        joingraph_initialize(&mut q1).unwrap();
-        pred_pushdown(&mut q1).unwrap();
-        print_plan(s1, &q1);
-        let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
-
-        q1 = q2;
+    fn assert_filt_on_disk_table1(s1: &str, mut q1: QueryPlan) {
         pred_pushdown(&mut q1).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
     }
 
-    fn assert_filt_on_disk_table1r(s1: &str, mut q1: QueryPlan, q2: QueryPlan) {
-        joingraph_initialize(&mut q1).unwrap();
-        pred_pushdown(&mut q1).unwrap();
-        print_plan(s1, &q1);
-        let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
-
-        q1 = q2;
+    fn assert_filt_on_disk_table1r(s1: &str, mut q1: QueryPlan) {
         pred_pushdown(&mut q1).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
     }
 
-    fn assert_filt_on_disk_table2(s1: &str, mut q1: QueryPlan, q2: QueryPlan) {
-        joingraph_initialize(&mut q1).unwrap();
-        pred_pushdown(&mut q1).unwrap();
-        print_plan(s1, &q1);
-        let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
-        assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
-
-        q1 = q2;
+    fn assert_filt_on_disk_table2(s1: &str, mut q1: QueryPlan) {
         pred_pushdown(&mut q1).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
@@ -1195,16 +1084,7 @@ mod tests {
         assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
     }
 
-    fn assert_no_filt_on_disk_table(s1: &str, mut q1: QueryPlan, q2: QueryPlan) {
-        joingraph_initialize(&mut q1).unwrap();
-        pred_pushdown(&mut q1).unwrap();
-        print_plan(s1, &q1);
-        let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(subq1
-            .into_iter()
-            .all(|subq| get_subq_filt_expr(subq).is_empty()));
-
-        q1 = q2;
+    fn assert_no_filt_on_disk_table(s1: &str, mut q1: QueryPlan) {
         pred_pushdown(&mut q1).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);

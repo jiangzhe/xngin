@@ -1,6 +1,4 @@
-pub mod edge;
 pub mod graph;
-pub mod vertex;
 
 use crate::error::{Error, Result};
 use crate::op::Op;
@@ -8,8 +6,7 @@ use std::collections::HashSet;
 use xngin_expr::{Expr, QueryID};
 
 // aliases of join graph and edge
-pub use edge::Edge as JoinEdge;
-pub use graph::Graph as JoinGraph;
+pub use graph::{Edge as JoinEdge, Graph as JoinGraph};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
