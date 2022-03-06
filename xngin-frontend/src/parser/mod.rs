@@ -405,17 +405,6 @@ parse!(
     }
 );
 
-// fn spcmt0x<'a, I: ParseInput<'a>, E: ParseError<I>>(i: I) -> () {
-//     fold_many0(
-//         alt((
-//             value((), multispace1),
-//             value((), comment),
-//         )),
-//         || (),
-//         |_, _| (),
-//     )(i)
-// }
-
 parse!(
     /// Parse at least one whitespace or comment.
     fn spcmt1 -> () = {

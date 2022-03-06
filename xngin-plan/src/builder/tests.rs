@@ -2,6 +2,7 @@ use super::*;
 use crate::join::{Join, JoinGraph, QualifiedJoin};
 use crate::op::OpKind;
 use crate::op::OpVisitor;
+use std::collections::HashMap;
 use std::sync::Arc;
 use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
 use xngin_catalog::ColumnAttr;
@@ -447,7 +448,7 @@ fn test_plan_build_attach_value() {
 }
 
 /* below are helper functions to setup and test planning */
-
+#[inline]
 pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("j").unwrap();
@@ -506,6 +507,21 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
         .unwrap();
     let cat = builder.build();
     Arc::new(cat)
+}
+
+#[inline]
+pub(crate) fn table_map(
+    cat: &dyn QueryCatalog,
+    schema_name: &'static str,
+    tbl_names: Vec<&'static str>,
+) -> HashMap<&'static str, TableID> {
+    let schema = cat.find_schema_by_name(schema_name).unwrap();
+    let mut m = HashMap::with_capacity(tbl_names.len());
+    for tn in tbl_names {
+        let tbl = cat.find_table_by_name(&schema.id, tn).unwrap();
+        m.insert(tn, tbl.id);
+    }
+    m
 }
 
 pub(crate) fn assert_j_plan<F: FnOnce(&str, QueryPlan)>(sql: &str, f: F) {
@@ -659,6 +675,27 @@ pub(crate) fn get_join_graph(subq: &Subquery) -> Option<JoinGraph> {
     let mut c = CollectGraph(None);
     let _ = subq.root.walk(&mut c);
     c.0
+}
+
+pub(crate) fn get_tbl_id(qry_set: &mut QuerySet, qry_id: QueryID) -> Option<TableID> {
+    struct Find;
+    impl OpVisitor for Find {
+        type Cont = ();
+        type Break = TableID;
+        #[inline]
+        fn enter(&mut self, op: &Op) -> ControlFlow<TableID> {
+            match op {
+                Op::Table(_, tbl_id) => ControlFlow::Break(*tbl_id),
+                _ => ControlFlow::Continue(()),
+            }
+        }
+    }
+    qry_set
+        .transform_op(qry_id, |_, _, op| match op.walk(&mut Find) {
+            ControlFlow::Break(tbl_id) => Some(tbl_id),
+            _ => None,
+        })
+        .unwrap()
 }
 
 struct CollectFiltExpr(Vec<xngin_expr::Expr>);
