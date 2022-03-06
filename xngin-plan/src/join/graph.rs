@@ -1,3 +1,4 @@
+use crate::error::{Error, Result};
 use crate::join::JoinKind;
 use crate::op::Op;
 use indexmap::IndexMap;
@@ -37,6 +38,51 @@ impl Graph {
     }
 }
 
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn qid_to_vid(map: &HashMap<QueryID, VertexID>, qid: QueryID) -> Result<VertexID> {
+    map.get(&qid).cloned().ok_or(Error::QueryNotFound(qid))
+}
+
+#[inline]
+pub(crate) fn vid_to_qid(map: &HashMap<VertexID, QueryID>, vid: VertexID) -> Result<QueryID> {
+    map.get(&vid).cloned().ok_or(Error::InvalidJoinVertexSet)
+}
+
+#[inline]
+pub(crate) fn qids_to_vset<'a, I>(map: &HashMap<QueryID, VertexID>, qry_ids: I) -> Result<VertexSet>
+where
+    I: IntoIterator<Item = &'a QueryID>,
+{
+    let mut vset = VertexSet::default();
+    for qry_id in qry_ids {
+        if let Some(vid) = map.get(qry_id) {
+            vset |= *vid;
+        } else {
+            return Err(Error::QueryNotFound(*qry_id));
+        }
+    }
+    Ok(vset)
+}
+
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn vset_to_qids<C>(map: &HashMap<VertexID, QueryID>, vset: VertexSet) -> Result<C>
+where
+    C: FromIterator<QueryID>,
+{
+    if let Some(vid) = vset.single() {
+        map.get(&vid)
+            .cloned()
+            .ok_or(Error::InvalidJoinVertexSet)
+            .map(|qid| std::iter::once(qid).collect::<C>())
+    } else {
+        vset.into_iter()
+            .map(|vid| map.get(&vid).cloned().ok_or(Error::InvalidJoinVertexSet))
+            .collect::<Result<C>>()
+    }
+}
+
 /// Edge of join graph.
 /// This is the "hyperedge" introduced in paper
 /// "Dynamic Programming Strikes Back".
@@ -64,7 +110,7 @@ pub struct Edge {
     pub filt: Vec<Expr>,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VertexSet {
     // Use bitmap to encode query id as vertexes in the graph
     bits: u32,
@@ -121,6 +167,24 @@ impl IntoIterator for VertexSet {
             value: 1,
             count: self.bits.count_ones(),
         }
+    }
+}
+
+impl FromIterator<VertexSet> for VertexSet {
+    #[inline]
+    fn from_iter<T: IntoIterator<Item = VertexSet>>(iter: T) -> Self {
+        let mut res = VertexSet::default();
+        for it in iter {
+            res |= it;
+        }
+        res
+    }
+}
+
+impl From<VertexID> for VertexSet {
+    #[inline]
+    fn from(src: VertexID) -> Self {
+        VertexSet { bits: src.0 }
     }
 }
 
@@ -192,5 +256,5 @@ impl BitAndAssign for VertexSet {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VertexID(pub(crate) u32);

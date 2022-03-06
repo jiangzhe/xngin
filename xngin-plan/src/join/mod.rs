@@ -1,4 +1,6 @@
+pub mod estimate;
 pub mod graph;
+pub mod reorder;
 
 use crate::error::{Error, Result};
 use crate::op::Op;

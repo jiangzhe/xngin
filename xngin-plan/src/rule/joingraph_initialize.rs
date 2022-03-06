@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::join::graph::{Edge, VertexID, VertexSet, MAX_JOIN_QUERIES};
+use crate::join::graph::{qids_to_vset, Edge, VertexID, VertexSet, MAX_JOIN_QUERIES};
 use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::{Location, QuerySet};
@@ -169,7 +169,7 @@ impl BuildGraph<'_> {
                             // for inner join, there must be two tables involved in join condition,
                             // otherwise, the predicate can be pushed down
                             assert!(tmp_qset.len() > 1);
-                            let e_vset = self.qids_to_vset(&tmp_qset)?;
+                            let e_vset = qids_to_vset(&self.rev_vmap, &tmp_qset)?;
                             vset_conds.entry(e_vset).or_default().push(c);
                         }
                         for (e_vset, cond) in vset_conds {
@@ -184,7 +184,7 @@ impl BuildGraph<'_> {
                         for p in cond.iter().chain(filt.iter()) {
                             p.collect_qry_ids(&mut tmp_qset);
                         }
-                        let e_vset = self.qids_to_vset(&tmp_qset)?;
+                        let e_vset = qids_to_vset(&self.rev_vmap, &tmp_qset)?;
                         self.add_edge(*kind, l_vset, r_vset, e_vset, cond, filt);
                     }
                     _ => todo!(),
@@ -316,43 +316,6 @@ impl BuildGraph<'_> {
         self.rev_vmap.insert(qry_id, vid);
         self.queries.push(Op::Query(qry_id));
         Ok(vid)
-    }
-
-    fn qids_to_vset<'a, I>(&self, qry_ids: I) -> Result<VertexSet>
-    where
-        I: IntoIterator<Item = &'a QueryID>,
-    {
-        let mut vset = VertexSet::default();
-        for qry_id in qry_ids {
-            if let Some(vid) = self.rev_vmap.get(qry_id) {
-                vset |= *vid;
-            } else {
-                return Err(Error::QueryNotFound(*qry_id));
-            }
-        }
-        Ok(vset)
-    }
-
-    fn vset_to_qids<C>(&self, vset: VertexSet) -> Result<C>
-    where
-        C: FromIterator<QueryID>,
-    {
-        if let Some(vid) = vset.single() {
-            self.vmap
-                .get(&vid)
-                .cloned()
-                .ok_or(Error::InvalidJoinVertexSet)
-                .map(|qid| std::iter::once(qid).collect::<C>())
-        } else {
-            vset.into_iter()
-                .map(|vid| {
-                    self.vmap
-                        .get(&vid)
-                        .cloned()
-                        .ok_or(Error::InvalidJoinVertexSet)
-                })
-                .collect::<Result<C>>()
-        }
     }
 }
 

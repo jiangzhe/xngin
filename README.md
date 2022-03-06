@@ -34,9 +34,9 @@ There are lots of things to do. Just list some as below.
 | Catalog Maintain | Todo |
 | Statistics Definition | Todo |
 | Statistics Maintain | Todo |
-| Optimizer Framework | Todo |
+| Optimizer Framework | In progress |
 | Cost Model | Todo |
-| Optimizer implementation | Todo |
+| Optimizer implementation | In progress |
 | Plan Cache | Todo |
 | Physical Plan Definition | Todo |
 | Execution Framework | Todo |
