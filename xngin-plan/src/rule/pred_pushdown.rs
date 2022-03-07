@@ -767,7 +767,7 @@ mod tests {
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 if let Op::Proj(proj) = &subq.root {
-                    assert_eq!(&Op::Empty, proj.source.as_ref());
+                    assert!(matches!(proj.source.as_ref(), Op::Empty));
                 }
             },
         );
@@ -779,7 +779,7 @@ mod tests {
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
                 if let Op::Proj(proj) = &subq.root {
-                    assert_eq!(&Op::Empty, proj.source.as_ref());
+                    assert!(matches!(proj.source.as_ref(), Op::Empty));
                 }
             },
         )

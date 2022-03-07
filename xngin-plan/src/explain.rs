@@ -1,4 +1,5 @@
-use crate::join::{Join, JoinEdge, JoinGraph, QualifiedJoin};
+use crate::join::graph::Edge;
+use crate::join::{Join, JoinGraph, QualifiedJoin};
 use crate::op::{Aggr, Apply, Filt, Limit, Op, OpVisitor, Proj, Sort, SortItem};
 use crate::query::{QueryPlan, QuerySet};
 use crate::setop::Setop;
@@ -69,7 +70,7 @@ impl Explain for Op {
             }
             Op::Row(row) => {
                 f.write_str("Row{")?;
-                write_exprs(f, row.iter().map(|(e, _)| e), ", ")?;
+                write_refs(f, row.iter().map(|(e, _)| e), ", ")?;
                 f.write_char('}')
             }
             Op::Table(_, table_id) => {
@@ -84,7 +85,7 @@ impl Explain for Op {
 impl Explain for Proj {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Proj{")?;
-        write_exprs(f, self.cols.iter().map(|(e, _)| e), ", ")?;
+        write_refs(f, self.cols.iter().map(|(e, _)| e), ", ")?;
         f.write_str("}")
     }
 }
@@ -93,7 +94,7 @@ impl Explain for Filt {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Filt{")?;
         if !self.pred.is_empty() {
-            write_exprs(f, &self.pred, " and ")?;
+            write_refs(f, &self.pred, " and ")?;
         }
 
         f.write_char('}')
@@ -103,7 +104,7 @@ impl Explain for Filt {
 impl Explain for Sort {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Sort{")?;
-        write_exprs(f, &*self.items, ", ")?;
+        write_refs(f, &*self.items, ", ")?;
         f.write_char('}')
     }
 }
@@ -122,7 +123,7 @@ impl Explain for Aggr {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Aggr{")?;
         f.write_str("proj=[")?;
-        write_exprs(f, self.proj.iter().map(|(e, _)| e), ", ")?;
+        write_refs(f, self.proj.iter().map(|(e, _)| e), ", ")?;
         f.write_str("]}")
     }
 }
@@ -138,12 +139,12 @@ impl Explain for Join {
                 f.write_str(kind.to_lower())?;
                 if !cond.is_empty() {
                     f.write_str(", cond=[")?;
-                    write_exprs(f, cond, " and ")?;
+                    write_refs(f, cond, " and ")?;
                     f.write_char(']')?
                 }
                 if !filt.is_empty() {
                     f.write_str(", filt=[")?;
-                    write_exprs(f, filt, " and ")?;
+                    write_refs(f, filt, " and ")?;
                     f.write_char(']')?
                 }
             }
@@ -155,13 +156,16 @@ impl Explain for Join {
 impl Explain for JoinGraph {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("JoinGraph{vs=[")?;
-        write_exprs(f, &self.queries(), ", ")?;
+        write_refs(f, &self.queries(), ", ")?;
         f.write_str("]")?;
-        if !self.edges.is_empty() {
+        if self.n_edges() > 0 {
             f.write_str(", es=[{")?;
-            write_exprs(
+            write_objs(
                 f,
-                self.edges.values().flat_map(|edges| edges.iter()),
+                self.eids().map(|eid| GraphEdge {
+                    g: self,
+                    e: self.edge(eid),
+                }),
                 "}, {",
             )?;
             f.write_str("}]")?
@@ -176,20 +180,25 @@ impl Explain for QueryID {
     }
 }
 
-impl Explain for JoinEdge {
+struct GraphEdge<'a> {
+    g: &'a JoinGraph,
+    e: &'a Edge,
+}
+
+impl<'a> Explain for GraphEdge<'a> {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        f.write_str(self.kind.to_lower())?;
+        f.write_str(self.e.kind.to_lower())?;
         write!(
             f,
             ", ls={}, rs={}, es={}, cond=[",
-            self.l_vset.len(),
-            self.r_vset.len(),
-            self.e_vset.len()
+            self.e.l_vset.len(),
+            self.e.r_vset.len(),
+            self.e.e_vset.len()
         )?;
-        write_exprs(f, &self.cond, " and ")?;
-        if !self.filt.is_empty() {
+        write_refs(f, self.g.preds(self.e.cond.clone()), " and ")?;
+        if !self.e.filt.is_empty() {
             f.write_str("], filt=[")?;
-            write_exprs(f, &self.filt, " and ")?;
+            write_refs(f, self.g.preds(self.e.filt.clone()), " and ")?;
         }
         f.write_char(']')
     }
@@ -198,7 +207,7 @@ impl Explain for JoinEdge {
 impl Explain for Apply {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Apply{[")?;
-        write_exprs(f, &self.vars, ", ")?;
+        write_refs(f, &self.vars, ", ")?;
         f.write_str("]}")
     }
 }
@@ -232,7 +241,7 @@ impl Explain for Expr {
             Expr::Pred(p) => p.explain(f),
             Expr::Tuple(es) => {
                 f.write_char('(')?;
-                write_exprs(f, es, ", ")?;
+                write_refs(f, es, ", ")?;
                 f.write_char(')')
             }
             Expr::Subq(_, qry_id) => {
@@ -300,7 +309,7 @@ impl Explain for Func {
         if self.args.is_empty() {
             return f.write_char(')');
         }
-        write_exprs(f, &*self.args, ", ")?;
+        write_refs(f, &*self.args, ", ")?;
         f.write_char(')')
     }
 }
@@ -308,9 +317,9 @@ impl Explain for Func {
 impl Explain for Pred {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         match self {
-            Pred::Conj(es) => write_exprs(f, es, " and "),
-            Pred::Disj(es) => write_exprs(f, es, " or "),
-            Pred::Xor(es) => write_exprs(f, es, " xor "),
+            Pred::Conj(es) => write_refs(f, es, " and "),
+            Pred::Disj(es) => write_refs(f, es, " or "),
+            Pred::Xor(es) => write_refs(f, es, " xor "),
             Pred::Func(pf) => pf.explain(f),
             Pred::Not(e) => {
                 f.write_str("not ")?;
@@ -342,16 +351,33 @@ impl Explain for PredFunc {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str(self.kind.to_lower())?;
         f.write_char('(')?;
-        write_exprs(f, &*self.args, ", ")?;
+        write_refs(f, &*self.args, ", ")?;
         f.write_char(')')
     }
 }
 
-fn write_exprs<'i, F, E: 'i, I>(f: &mut F, exprs: I, delimiter: &str) -> fmt::Result
+fn write_refs<'i, F, E: 'i, I>(f: &mut F, exprs: I, delimiter: &str) -> fmt::Result
 where
     F: Write,
     E: Explain,
     I: IntoIterator<Item = &'i E>,
+{
+    let mut exprs = exprs.into_iter();
+    if let Some(head) = exprs.next() {
+        head.explain(f)?
+    }
+    for e in exprs {
+        f.write_str(delimiter)?;
+        e.explain(f)?
+    }
+    Ok(())
+}
+
+fn write_objs<'i, F, E: 'i, I>(f: &mut F, exprs: I, delimiter: &str) -> fmt::Result
+where
+    F: Write,
+    E: Explain,
+    I: IntoIterator<Item = E>,
 {
     let mut exprs = exprs.into_iter();
     if let Some(head) = exprs.next() {

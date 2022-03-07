@@ -83,9 +83,9 @@ impl Reorder for Sequential {
             joined.insert(VertexSet::from(vid), Op::Query(qid));
         }
 
-        for (vset, edges) in &graph.edges {
-            if edges.len() == 1 {
-                let edge = &edges[0];
+        for (vset, eids) in graph.vset_eids() {
+            if eids.len() == 1 {
+                let edge = graph.edge(eids[0]);
                 let l = joined
                     .remove(&edge.l_vset)
                     .ok_or(Error::InvalidJoinVertexSet)?;
@@ -96,8 +96,14 @@ impl Reorder for Sequential {
                     edge.kind,
                     JoinOp::try_from(l)?,
                     JoinOp::try_from(r)?,
-                    edge.cond.clone(),
-                    edge.filt.clone(),
+                    edge.cond
+                        .iter()
+                        .map(|cid| graph.pred(*cid).clone())
+                        .collect(),
+                    edge.filt
+                        .iter()
+                        .map(|fid| graph.pred(*fid).clone())
+                        .collect(),
                 );
                 joined.insert(*vset, op);
             } else {
@@ -106,8 +112,10 @@ impl Reorder for Sequential {
                 // In above case, we will have two edges to join A, B, C together.
                 // vset(ABC) => [ edge(A <=> C), edge(B <=> C) ]
                 // So we fold two edges into one, rebuild the join.
-                assert!(edges.iter().all(|e| e.kind == JoinKind::Inner));
-                let e1 = &edges[0];
+                debug_assert!(eids
+                    .iter()
+                    .all(|eid| graph.edge(*eid).kind == JoinKind::Inner));
+                let e1 = graph.edge(eids[0]);
                 // use first edge to retrieve both sides from joined list
                 let mut l_vset = VertexSet::default();
                 let mut r_vset = VertexSet::default();
@@ -122,13 +130,18 @@ impl Reorder for Sequential {
                     return Err(Error::InvalidJoinVertexSet);
                 }
                 // check if all edges are included in two sides
-                assert!(edges.iter().all(|e| {
+                assert!(eids.iter().all(|eid| {
+                    let e = graph.edge(*eid);
                     (l_vset.includes(e.l_vset) && r_vset.includes(e.r_vset))
                         || (l_vset.includes(e.r_vset) && r_vset.includes(e.l_vset))
                 }));
                 let l = joined.remove(&l_vset).ok_or(Error::InvalidJoinVertexSet)?;
                 let r = joined.remove(&r_vset).ok_or(Error::InvalidJoinVertexSet)?;
-                let cond: Vec<_> = edges.iter().flat_map(|e| e.cond.iter()).cloned().collect();
+                let cond: Vec<_> = eids
+                    .iter()
+                    .flat_map(|eid| graph.preds(graph.edge(*eid).cond.clone()))
+                    .cloned()
+                    .collect();
                 let op = Op::qualified_join(
                     JoinKind::Inner,
                     JoinOp::try_from(l)?,
@@ -154,6 +167,7 @@ mod tests {
         table_map,
     };
     use crate::join::estimate::Estimate;
+    use crate::join::graph::{Edge, Graph};
     use crate::rule::joingraph_initialize;
     use xngin_catalog::TableID;
 
@@ -253,19 +267,21 @@ mod tests {
         #[inline]
         fn estimated_join_rows(
             &mut self,
-            _kind: JoinKind,
+            _graph: &Graph,
             l_vset: VertexSet,
             r_vset: VertexSet,
-            e_vset: VertexSet,
-            _cond: &[xngin_expr::Expr],
-            _filt: &[xngin_expr::Expr],
+            edge: &Edge,
         ) -> Result<f64> {
             match (
                 self.qmap.get(&l_vset).cloned(),
                 self.qmap.get(&r_vset).cloned(),
             ) {
                 (Some(l_rows), Some(r_rows)) => {
-                    if let Some(sel) = self.jmap.get(&(e_vset & l_vset, e_vset & r_vset)).cloned() {
+                    if let Some(sel) = self
+                        .jmap
+                        .get(&(edge.e_vset & l_vset, edge.e_vset & r_vset))
+                        .cloned()
+                    {
                         let rows = l_rows * r_rows * sel;
                         self.qmap.insert(l_vset | r_vset, rows);
                         Ok(rows)

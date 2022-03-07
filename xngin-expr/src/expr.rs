@@ -644,3 +644,21 @@ impl ExprVisitor for CollectQryIDs<'_> {
         ControlFlow::Continue(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_size_of_smallvec_expr_ref() {
+        use std::mem::size_of;
+        println!(
+            "size of SmallVec<[&Expr; 2]> is {}",
+            size_of::<SmallVec<[&Expr; 2]>>()
+        );
+        println!(
+            "size of SmallVec<[&Expr; 3]> is {}",
+            size_of::<SmallVec<[&Expr; 3]>>()
+        );
+    }
+}
