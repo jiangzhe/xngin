@@ -19,39 +19,59 @@ pub const MAX_JOIN_QUERIES: usize = 31;
 /// join conditions.
 #[derive(Debug, Clone, Default)]
 pub struct Graph {
-    pub(crate) vertexes: VertexSet,
-    pub(crate) vmap: HashMap<VertexID, QueryID>,
-    pub(crate) rev_vmap: HashMap<QueryID, VertexID>,
-    pub(crate) edge_map: IndexMap<VertexSet, EdgeIDs>,
-    pub(crate) queries: Vec<Op>,
-    pub(crate) edge_arena: Arena<Edge>,
-    pub(crate) pred_arena: Arena<Expr>,
+    vs: VertexSet,
+    v2q: HashMap<VertexID, QueryID>,
+    q2v: HashMap<QueryID, VertexID>,
+    edge_map: IndexMap<VertexSet, EdgeIDs>,
+    qs: Vec<Op>,
+    edge_arena: Arena<Edge>,
+    pred_arena: Arena<Expr>,
 }
 
 impl Graph {
     #[inline]
     pub fn add_qry(&mut self, qry_id: QueryID) -> Result<VertexID> {
-        let v_idx = self.queries.len();
+        let v_idx = self.qs.len();
         if v_idx >= MAX_JOIN_QUERIES {
             return Err(Error::TooManyTablesToJoin);
         }
         let vid = VertexID(1u32 << v_idx);
-        self.vertexes |= vid;
-        self.vmap.insert(vid, qry_id);
-        self.rev_vmap.insert(qry_id, vid);
-        self.queries.push(Op::Query(qry_id));
+        self.vs |= vid;
+        self.v2q.insert(vid, qry_id);
+        self.q2v.insert(qry_id, vid);
+        self.qs.push(Op::Query(qry_id));
         Ok(vid)
     }
 
     #[inline]
     pub fn queries(&self) -> Vec<QueryID> {
-        self.queries
+        self.qs
             .iter()
             .filter_map(|op| match op {
                 Op::Query(qry_id) => Some(*qry_id),
                 _ => None,
             })
             .collect()
+    }
+
+    #[inline]
+    pub fn n_vertexes(&self) -> usize {
+        self.vs.len()
+    }
+
+    #[inline]
+    pub fn vids(&self) -> impl Iterator<Item = VertexID> {
+        self.vs.into_iter()
+    }
+
+    #[inline]
+    pub fn children(&self) -> SmallVec<[&Op; 2]> {
+        self.qs.iter().collect()
+    }
+
+    #[inline]
+    pub fn children_mut(&mut self) -> SmallVec<[&mut Op; 2]> {
+        self.qs.iter_mut().collect()
     }
 
     #[inline]
@@ -99,6 +119,10 @@ impl Graph {
         self.edge_map.get(&vset).cloned()
     }
 
+    /// Add one edge to join graph.
+    /// The arguments l_vset and r_vset are original tables specified on
+    /// left and right side of this join edge.
+    /// They are super set of eligibility set this join requires.
     #[inline]
     pub fn add_edge(
         &mut self,
@@ -156,7 +180,7 @@ impl Graph {
     {
         let mut vset = VertexSet::default();
         for qry_id in qry_ids {
-            if let Some(vid) = self.rev_vmap.get(qry_id) {
+            if let Some(vid) = self.q2v.get(qry_id) {
                 vset |= *vid;
             } else {
                 return Err(Error::QueryNotFound(*qry_id));
@@ -164,17 +188,20 @@ impl Graph {
         }
         Ok(vset)
     }
+
+    #[inline]
+    pub(crate) fn vid_to_qid(&self, vid: VertexID) -> Result<QueryID> {
+        self.v2q
+            .get(&vid)
+            .cloned()
+            .ok_or(Error::InvalidJoinVertexSet)
+    }
 }
 
 #[allow(dead_code)]
 #[inline]
 pub(crate) fn qid_to_vid(map: &HashMap<QueryID, VertexID>, qid: QueryID) -> Result<VertexID> {
     map.get(&qid).cloned().ok_or(Error::QueryNotFound(qid))
-}
-
-#[inline]
-pub(crate) fn vid_to_qid(map: &HashMap<VertexID, QueryID>, vid: VertexID) -> Result<QueryID> {
-    map.get(&vid).cloned().ok_or(Error::InvalidJoinVertexSet)
 }
 
 #[allow(dead_code)]

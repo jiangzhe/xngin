@@ -5,9 +5,9 @@ use crate::join::graph::{Edge, Graph, VertexSet};
 /// Query is represented by VertexSet and Join is represented
 /// by two VertexSet with join conditions and filter predicates.
 pub trait Estimate {
-    fn estimated_qry_rows(&mut self, vset: VertexSet) -> Result<f64>;
+    fn estimate_qry_rows(&mut self, vset: VertexSet) -> Result<f64>;
 
-    fn estimated_join_rows(
+    fn estimate_join_rows(
         &mut self,
         graph: &Graph,
         l_vset: VertexSet,

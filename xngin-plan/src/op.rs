@@ -264,7 +264,7 @@ impl Op {
                     smallvec![left.as_ref(), right.as_ref()]
                 }
             },
-            Op::JoinGraph(graph) => graph.queries.iter().collect(),
+            Op::JoinGraph(graph) => graph.children(),
             Op::Setop(set) => {
                 let Setop { left, right, .. } = set.as_ref();
                 smallvec![left.as_ref(), right.as_ref()]
@@ -288,7 +288,7 @@ impl Op {
                     smallvec![left.as_mut(), right.as_mut()]
                 }
             },
-            Op::JoinGraph(graph) => graph.queries.iter_mut().collect(),
+            Op::JoinGraph(graph) => graph.children_mut(),
             Op::Setop(set) => {
                 let Setop { left, right, .. } = set.as_mut();
                 smallvec![left.as_mut(), right.as_mut()]
