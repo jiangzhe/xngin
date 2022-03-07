@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::join::estimate::Estimate;
-use crate::join::graph::{vid_to_qid, Edge, Graph, VertexSet};
+use crate::join::graph::{vid_to_qid, Edge, EdgeRefs, Graph, VertexSet};
 use crate::join::reorder::Reorder;
 use crate::join::{JoinKind, JoinOp};
 use crate::op::Op;
@@ -27,10 +27,17 @@ impl<E: Estimate> Reorder for Goo<E> {
     #[inline]
     fn reorder(mut self, graph: &Graph) -> Result<Op> {
         let mut joined = BTreeMap::new();
-        let mut edges: IndexMap<VertexSet, Vec<&Edge>> = graph
-            .edges
-            .iter()
-            .map(|(vset, es)| (*vset, es.iter().collect()))
+        // let mut edges: IndexMap<VertexSet, Vec<&Edge>> = graph
+        //     .edges
+        //     .iter()
+        //     .map(|(vset, es)| (*vset, es.iter().collect()))
+        //     .collect();
+        let mut edge_refs: IndexMap<VertexSet, EdgeRefs> = graph
+            .vset_eids()
+            .map(|(vset, eids)| {
+                let refs = eids.iter().map(|eid| graph.edge(*eid)).collect();
+                (*vset, refs)
+            })
             .collect();
         // initialize single queries.
         for vid in graph.vertexes {
@@ -42,14 +49,14 @@ impl<E: Estimate> Reorder for Goo<E> {
         }
         // combine join sets until only one join left.
         while joined.len() > 1 {
-            if edges.is_empty() {
+            if edge_refs.is_empty() {
                 return Err(Error::CrossJoinNotSupport);
             }
-            let (e, pks) = min_res(&edges, &mut self.0, &joined)?;
+            let (e, pks) = min_res(graph, &edge_refs, &mut self.0, &joined)?;
             for (k0, k1) in pks {
-                let es = edges.get_mut(&k0).unwrap();
+                let es = edge_refs.get_mut(&k0).unwrap();
                 if es.len() == 1 {
-                    edges.remove(&k0).unwrap();
+                    edge_refs.remove(&k0).unwrap();
                 } else {
                     let pos = es.iter().position(|e| e.e_vset == k1).unwrap();
                     es.remove(pos);
@@ -63,8 +70,8 @@ impl<E: Estimate> Reorder for Goo<E> {
                 edge.kind,
                 JoinOp::try_from(l)?,
                 JoinOp::try_from(r)?,
-                edge.cond,
-                edge.filt,
+                graph.preds(edge.cond).cloned().collect(),
+                graph.preds(edge.filt).cloned().collect(),
             );
             joined.insert(vset, op);
         }
@@ -76,7 +83,8 @@ impl<E: Estimate> Reorder for Goo<E> {
 }
 
 fn min_res<'a, E: Estimate>(
-    edges: &IndexMap<VertexSet, Vec<&'a Edge>>,
+    graph: &Graph,
+    edges: &IndexMap<VertexSet, EdgeRefs<'a>>,
     est: &mut E,
     join_map: &BTreeMap<VertexSet, Op>,
 ) -> Result<(MinEdge<'a>, PurgeKeys)> {
@@ -127,14 +135,7 @@ fn min_res<'a, E: Estimate>(
                             }
                         }
                         // now we can estimate join rows and choose the best plan
-                        let rows = est.estimated_join_rows(
-                            join_edge.kind,
-                            l_vset,
-                            r_vset,
-                            join_edge.e_vset,
-                            &join_edge.cond,
-                            &join_edge.filt,
-                        )?;
+                        let rows = est.estimated_join_rows(graph, l_vset, r_vset, &join_edge)?;
                         if let Some(min_edge) = min_edge.as_mut() {
                             if rows < min_edge.rows {
                                 min_edge.l_vset = l_vset;

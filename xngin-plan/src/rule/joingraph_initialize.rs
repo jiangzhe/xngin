@@ -1,11 +1,11 @@
 use crate::error::{Error, Result};
-use crate::join::graph::{qids_to_vset, Edge, VertexID, VertexSet, MAX_JOIN_QUERIES};
-use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
+use crate::join::graph::{Edge, EdgeID, Graph, VertexSet};
+use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::{Location, QuerySet};
 use bitflags::bitflags;
 use indexmap::IndexMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{Expr, QueryID};
@@ -104,36 +104,22 @@ impl OpMutVisitor for InitGraph<'_> {
 
 struct BuildGraph<'a> {
     qry_set: &'a mut QuerySet,
-    vertexes: VertexSet,
-    vmap: HashMap<VertexID, QueryID>,
-    rev_vmap: HashMap<QueryID, VertexID>,
-    edges: IndexMap<VertexSet, Vec<Edge>>,
-    queries: Vec<Op>,
+    graph: Graph,
 }
 
 impl<'a> BuildGraph<'a> {
     fn new(qry_set: &'a mut QuerySet) -> Self {
         BuildGraph {
             qry_set,
-            vertexes: VertexSet::default(),
-            vmap: HashMap::new(),
-            rev_vmap: HashMap::new(),
-            edges: IndexMap::new(),
-            queries: vec![],
+            graph: Graph::default(),
         }
     }
 }
 
 impl BuildGraph<'_> {
-    fn build(mut self, join: &mut Join) -> Result<JoinGraph> {
+    fn build(mut self, join: &mut Join) -> Result<Graph> {
         let _ = self.process_join(join)?;
-        Ok(JoinGraph {
-            vertexes: self.vertexes,
-            vmap: self.vmap,
-            rev_vmap: self.rev_vmap,
-            edges: self.edges,
-            queries: self.queries,
-        })
+        Ok(self.graph)
     }
 
     // Process join, add vertexes and edges into join graph.
@@ -169,7 +155,7 @@ impl BuildGraph<'_> {
                             // for inner join, there must be two tables involved in join condition,
                             // otherwise, the predicate can be pushed down
                             assert!(tmp_qset.len() > 1);
-                            let e_vset = qids_to_vset(&self.rev_vmap, &tmp_qset)?;
+                            let e_vset = self.graph.qids_to_vset(&tmp_qset)?;
                             vset_conds.entry(e_vset).or_default().push(c);
                         }
                         for (e_vset, cond) in vset_conds {
@@ -184,7 +170,7 @@ impl BuildGraph<'_> {
                         for p in cond.iter().chain(filt.iter()) {
                             p.collect_qry_ids(&mut tmp_qset);
                         }
-                        let e_vset = qids_to_vset(&self.rev_vmap, &tmp_qset)?;
+                        let e_vset = self.graph.qids_to_vset(&tmp_qset)?;
                         self.add_edge(*kind, l_vset, r_vset, e_vset, cond, filt);
                     }
                     _ => todo!(),
@@ -206,18 +192,20 @@ impl BuildGraph<'_> {
     ) {
         e_vset |= self.update_elig_set(kind.left_spec(), l_vset, e_vset & l_vset);
         e_vset |= self.update_elig_set(kind.right_spec(), r_vset, e_vset & r_vset);
-        let edge = Edge {
-            kind,
-            l_vset,
-            r_vset,
-            e_vset,
-            cond,
-            filt,
-        };
-        let edges = self.edges.entry(l_vset | r_vset).or_default();
-        // only inner join could be separated to multiple edges upon same join tree.
-        assert!(edges.iter().all(|e| e.kind == JoinKind::Inner));
-        edges.push(edge);
+        self.graph
+            .add_edge(kind, l_vset, r_vset, e_vset, cond, filt)
+        // let edge = Edge {
+        //     kind,
+        //     l_vset,
+        //     r_vset,
+        //     e_vset,
+        //     cond,
+        //     filt,
+        // };
+        // let edges = self.edges.entry(l_vset | r_vset).or_default();
+        // // only inner join could be separated to multiple edges upon same join tree.
+        // assert!(edges.iter().all(|e| e.kind == JoinKind::Inner));
+        // edges.push(edge);
     }
 
     fn update_elig_set(&self, spec: Spec, vset: VertexSet, mut join_vset: VertexSet) -> VertexSet {
@@ -228,20 +216,21 @@ impl BuildGraph<'_> {
         if vset.len() == 1 {
             return join_vset;
         }
-        let edges = self.edges.get(&vset).unwrap();
-        for edge in edges {
+        let eids = self.graph.eids_by_vset(vset).unwrap(); // won't fail
+        for eid in eids {
             if spec.contains(Spec::A) {
-                self.extend_elig(Spec::A, Spec::D, edge, &mut join_vset);
+                self.extend_elig(Spec::A, Spec::D, eid, &mut join_vset);
             }
             if spec.contains(Spec::D) {
-                self.extend_elig(Spec::D, Spec::A, edge, &mut join_vset);
+                self.extend_elig(Spec::D, Spec::A, eid, &mut join_vset);
             }
         }
         join_vset
     }
 
     #[inline]
-    fn extend_elig(&self, base: Spec, rev: Spec, edge: &Edge, join_vset: &mut VertexSet) {
+    fn extend_elig(&self, base: Spec, rev: Spec, eid: EdgeID, join_vset: &mut VertexSet) {
+        let edge = self.graph.edge(eid);
         match (
             join_vset.intersects(edge.l_vset),
             join_vset.intersects(edge.r_vset),
@@ -292,7 +281,7 @@ impl BuildGraph<'_> {
             JoinOp(Op::Query(qry_id)) => {
                 // recursively build join group in derived table
                 init_joingraph(self.qry_set, *qry_id)?;
-                let vid = self.add_query(*qry_id)?;
+                let vid = self.graph.add_qry(*qry_id)?;
                 vset |= vid;
             }
             JoinOp(Op::Join(join)) => {
@@ -303,19 +292,6 @@ impl BuildGraph<'_> {
             _ => unreachable!(),
         }
         Ok(vset)
-    }
-
-    fn add_query(&mut self, qry_id: QueryID) -> Result<VertexID> {
-        let v_idx = self.queries.len();
-        if v_idx >= MAX_JOIN_QUERIES {
-            return Err(Error::TooManyTablesToJoin);
-        }
-        let vid = VertexID(1u32 << v_idx);
-        self.vertexes |= vid;
-        self.vmap.insert(vid, qry_id);
-        self.rev_vmap.insert(qry_id, vid);
-        self.queries.push(Op::Query(qry_id));
-        Ok(vid)
     }
 }
 
@@ -360,9 +336,9 @@ mod tests {
                 // we have 2 inner edge
                 let subq = q1.root_query().unwrap();
                 let g = get_join_graph(subq).unwrap();
-                assert_eq!(2, g.edges.len());
-                assert_eq!(2, count_edges(&g.edges, |e| e.kind == JoinKind::Inner));
-                assert_any_edge(&g.edges, |e| {
+                assert_eq!(2, g.n_edges());
+                assert_eq!(2, count_edges(&g, |e| e.kind == JoinKind::Inner));
+                assert_any_edge(&g, |e| {
                     if e.kind == JoinKind::Inner {
                         // that means, 2 joins can be reordered
                         assert_eq!(2, e.e_vset.len());
@@ -384,10 +360,10 @@ mod tests {
                 // we have 1 inner edge: l=1, r=1, e=2, 1 left edge: l=1, r=2, e=3
                 let subq = q1.root_query().unwrap();
                 let g = get_join_graph(subq).unwrap();
-                assert_eq!(2, g.edges.len());
-                assert_eq!(1, count_edges(&g.edges, |e| e.kind == JoinKind::Inner));
-                assert_eq!(1, count_edges(&g.edges, |e| e.kind == JoinKind::Left));
-                assert_any_edge(&g.edges, |e| {
+                assert_eq!(2, g.n_edges());
+                assert_eq!(1, count_edges(&g, |e| e.kind == JoinKind::Inner));
+                assert_eq!(1, count_edges(&g, |e| e.kind == JoinKind::Left));
+                assert_any_edge(&g, |e| {
                     if e.kind == JoinKind::Left {
                         // that means, left join must be topmost, reorder is impossible
                         assert_eq!(3, e.e_vset.len());
@@ -409,10 +385,10 @@ mod tests {
                 // we have 1 left edge: l=1, r=1, e=2, 1 inner edge: l=1, r=2, e=2
                 let subq = q1.root_query().unwrap();
                 let g = get_join_graph(subq).unwrap();
-                assert_eq!(2, g.edges.len());
-                assert_eq!(1, count_edges(&g.edges, |e| e.kind == JoinKind::Inner));
-                assert_eq!(1, count_edges(&g.edges, |e| e.kind == JoinKind::Left));
-                assert_any_edge(&g.edges, |e| {
+                assert_eq!(2, g.n_edges());
+                assert_eq!(1, count_edges(&g, |e| e.kind == JoinKind::Inner));
+                assert_eq!(1, count_edges(&g, |e| e.kind == JoinKind::Left));
+                assert_any_edge(&g, |e| {
                     if e.kind == JoinKind::Inner {
                         // that means, left and inner can be reordered
                         assert_eq!(2, e.e_vset.len());
@@ -434,10 +410,10 @@ mod tests {
                 // we have 2 inner edges, 1 full edge
                 let subq = q1.root_query().unwrap();
                 let g = get_join_graph(subq).unwrap();
-                assert_eq!(3, g.edges.len());
-                assert_eq!(2, count_edges(&g.edges, |e| e.kind == JoinKind::Inner));
-                assert_eq!(1, count_edges(&g.edges, |e| e.kind == JoinKind::Full));
-                assert_any_edge(&g.edges, |e| {
+                assert_eq!(3, g.n_edges());
+                assert_eq!(2, count_edges(&g, |e| e.kind == JoinKind::Inner));
+                assert_eq!(1, count_edges(&g, |e| e.kind == JoinKind::Full));
+                assert_any_edge(&g, |e| {
                     if e.kind == JoinKind::Inner {
                         assert_eq!(2, e.e_vset.len());
                     } else if e.kind == JoinKind::Full {
@@ -456,24 +432,19 @@ mod tests {
         assert!(get_join_graph(&subq).is_some());
     }
 
-    fn count_edges<F>(edges: &IndexMap<VertexSet, Vec<Edge>>, f: F) -> usize
+    fn count_edges<F>(g: &Graph, f: F) -> usize
     where
         F: Fn(&Edge) -> bool,
     {
-        edges
-            .values()
-            .map(|es| es.iter().filter(|e| f(e)).count())
-            .sum()
+        g.eids().filter(|eid| f(g.edge(*eid))).count()
     }
 
-    fn assert_any_edge<F>(edges: &IndexMap<VertexSet, Vec<Edge>>, f: F)
+    fn assert_any_edge<F>(g: &Graph, f: F)
     where
         F: Fn(&Edge),
     {
-        for es in edges.values() {
-            for e in es {
-                f(e)
-            }
+        for eid in g.eids() {
+            f(g.edge(eid))
         }
     }
 }

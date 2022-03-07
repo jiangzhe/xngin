@@ -36,7 +36,7 @@ pub enum OpKind {
 
 /// Op stands for logical operator.
 /// This is the general enum containing all nodes of logical plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Op {
     /// Projection node.
     Proj(Proj),
@@ -322,15 +322,7 @@ impl Op {
                     cond.iter().chain(filt.iter()).collect()
                 }
             },
-            Op::JoinGraph(graph) => graph
-                .edges
-                .values()
-                .flat_map(|edges| {
-                    edges
-                        .iter()
-                        .flat_map(|e| e.cond.iter().chain(e.filt.iter()))
-                })
-                .collect(),
+            Op::JoinGraph(graph) => graph.exprs().into_iter().collect(),
             Op::Row(row) => row.iter().map(|(e, _)| e).collect(),
         }
     }
@@ -360,15 +352,7 @@ impl Op {
                     cond.iter_mut().chain(filt.iter_mut()).collect()
                 }
             },
-            Op::JoinGraph(graph) => graph
-                .edges
-                .values_mut()
-                .flat_map(|edges| {
-                    edges
-                        .iter_mut()
-                        .flat_map(|e| e.cond.iter_mut().chain(e.filt.iter_mut()))
-                })
-                .collect(),
+            Op::JoinGraph(graph) => graph.exprs_mut().into_iter().collect(),
             Op::Row(row) => row.iter_mut().map(|(e, _)| e).collect(),
         }
     }
@@ -410,7 +394,7 @@ impl Op {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Proj {
     pub cols: Vec<(Expr, SmolStr)>,
     pub source: Box<Op>,
@@ -422,7 +406,7 @@ pub struct Proj {
 /// The normal filter won't include projection, but here we
 /// add proj to allow combine them into one node.
 /// Actually all Scan node will be converted to Filter
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Filt {
     pub pred: Vec<Expr>,
     pub source: Box<Op>,
@@ -437,7 +421,7 @@ pub enum AggrKind {
     Min,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Aggr {
     pub groups: Vec<Expr>,
     pub proj: Vec<(Expr, SmolStr)>,
@@ -452,7 +436,7 @@ pub enum AggrProjKind {
     Func,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Apply {
     pub kind: ApplyKind,
     /// Free variables of subquery.
@@ -473,7 +457,7 @@ pub enum ApplyKind {
     Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Sort {
     pub items: Vec<SortItem>,
     pub limit: Option<u64>,
@@ -486,14 +470,14 @@ pub struct SortItem {
     pub desc: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Limit {
     pub start: u64,
     pub end: u64,
     pub source: Box<Op>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Col {
     pub expr: Expr,
     pub alias: Option<SmolStr>,
@@ -552,16 +536,21 @@ mod tests {
 
     #[test]
     fn test_size_of_logical_nodes() {
-        println!("size of Op {}", std::mem::size_of::<Op>());
-        println!("size of Proj {}", std::mem::size_of::<Proj>());
-        println!("size of Filt {}", std::mem::size_of::<Filt>());
-        println!("size of Join {}", std::mem::size_of::<Join>());
-        println!("size of JoinKind {}", std::mem::size_of::<JoinKind>());
-        println!("size of Aggr {}", std::mem::size_of::<Aggr>());
-        println!("size of Aggr {}", std::mem::size_of::<JoinGraph>());
+        use std::mem::size_of;
+        println!("size of Op {}", size_of::<Op>());
+        println!("size of Proj {}", size_of::<Proj>());
+        println!("size of Filt {}", size_of::<Filt>());
+        println!("size of Join {}", size_of::<Join>());
+        println!("size of JoinKind {}", size_of::<JoinKind>());
+        println!("size of Aggr {}", size_of::<Aggr>());
+        println!("size of Aggr {}", size_of::<JoinGraph>());
         println!(
-            "size of smallvec qids {}",
-            std::mem::size_of::<SmallVec<[QueryID; 4]>>()
+            "size of SmallVec<[QueryID;4]> is {}",
+            size_of::<SmallVec<[QueryID; 4]>>()
+        );
+        println!(
+            "size of SmallVec<[QueryID;5]> is {}",
+            size_of::<SmallVec<[QueryID; 5]>>()
         );
     }
 }

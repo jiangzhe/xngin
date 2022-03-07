@@ -1,7 +1,5 @@
 use crate::error::Result;
-use crate::join::graph::VertexSet;
-use crate::join::JoinKind;
-use xngin_expr::Expr;
+use crate::join::graph::{Edge, Graph, VertexSet};
 
 /// Estimates the row count of queries and joins.
 /// Query is represented by VertexSet and Join is represented
@@ -11,11 +9,9 @@ pub trait Estimate {
 
     fn estimated_join_rows(
         &mut self,
-        kind: JoinKind,
+        graph: &Graph,
         l_vset: VertexSet,
         r_vset: VertexSet,
-        e_vset: VertexSet,
-        cond: &[Expr],
-        filt: &[Expr],
+        edge: &Edge,
     ) -> Result<f64>;
 }

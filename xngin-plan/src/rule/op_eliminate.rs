@@ -656,6 +656,6 @@ mod tests {
         op_eliminate(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let root = &q1.root_query().unwrap().root;
-        assert_eq!(&Op::Empty, root);
+        assert!(matches!(root, Op::Empty));
     }
 }

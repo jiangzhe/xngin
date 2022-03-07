@@ -10,5 +10,5 @@ repository = "https://github.com/jiangzhe/xngin/xngin-expr/"
 [dependencies]
 xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
-smallvec = "1.7"
+smallvec = {version = "1.8", features = ["union"]}
 thiserror = "1.0"
