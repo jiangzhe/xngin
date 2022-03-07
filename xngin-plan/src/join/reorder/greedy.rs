@@ -1,11 +1,10 @@
 use crate::error::{Error, Result};
 use crate::join::estimate::Estimate;
-use crate::join::graph::{vid_to_qid, Edge, EdgeRefs, Graph, VertexSet};
-use crate::join::reorder::Reorder;
+use crate::join::graph::{Edge, EdgeID, EdgeIDs, Graph, VertexSet};
+use crate::join::reorder::{JoinEdge, Reorder};
 use crate::join::{JoinKind, JoinOp};
 use crate::op::Op;
-use indexmap::IndexMap;
-use smallvec::{smallvec, SmallVec};
+use smallvec::smallvec;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::mem;
@@ -27,39 +26,25 @@ impl<E: Estimate> Reorder for Goo<E> {
     #[inline]
     fn reorder(mut self, graph: &Graph) -> Result<Op> {
         let mut joined = BTreeMap::new();
-        // let mut edges: IndexMap<VertexSet, Vec<&Edge>> = graph
-        //     .edges
-        //     .iter()
-        //     .map(|(vset, es)| (*vset, es.iter().collect()))
-        //     .collect();
-        let mut edge_refs: IndexMap<VertexSet, EdgeRefs> = graph
-            .vset_eids()
-            .map(|(vset, eids)| {
-                let refs = eids.iter().map(|eid| graph.edge(*eid)).collect();
-                (*vset, refs)
-            })
-            .collect();
+        let mut edges: Vec<(EdgeID, &Edge)> =
+            graph.eids().map(|eid| (eid, graph.edge(eid))).collect();
         // initialize single queries.
-        for vid in graph.vertexes {
+        for vid in graph.vids() {
             // trigger estimation on single table
-            let _ = self.0.estimated_qry_rows(VertexSet::from(vid))?;
-            let qid = vid_to_qid(&graph.vmap, vid)?;
+            let _ = self.0.estimate_qry_rows(VertexSet::from(vid))?;
+            let qid = graph.vid_to_qid(vid)?;
             let op = Op::Query(qid);
             joined.insert(VertexSet::from(vid), op);
         }
         // combine join sets until only one join left.
         while joined.len() > 1 {
-            if edge_refs.is_empty() {
+            if edges.is_empty() {
                 return Err(Error::CrossJoinNotSupport);
             }
-            let (e, pks) = min_res(graph, &edge_refs, &mut self.0, &joined)?;
-            for (k0, k1) in pks {
-                let es = edge_refs.get_mut(&k0).unwrap();
-                if es.len() == 1 {
-                    edge_refs.remove(&k0).unwrap();
-                } else {
-                    let pos = es.iter().position(|e| e.e_vset == k1).unwrap();
-                    es.remove(pos);
+            let (e, purges) = min_res(graph, &edges, &mut self.0, &joined)?;
+            for purge_eid in purges {
+                if let Some(idx) = edges.iter().position(|(eid, _)| *eid == purge_eid) {
+                    edges.remove(idx);
                 }
             }
             let vset = e.l_vset | e.r_vset;
@@ -84,77 +69,73 @@ impl<E: Estimate> Reorder for Goo<E> {
 
 fn min_res<'a, E: Estimate>(
     graph: &Graph,
-    edges: &IndexMap<VertexSet, EdgeRefs<'a>>,
+    edges: &[(EdgeID, &'a Edge)],
     est: &mut E,
     join_map: &BTreeMap<VertexSet, Op>,
-) -> Result<(MinEdge<'a>, PurgeKeys)> {
-    let mut min_edge: Option<MinEdge> = None;
-    let mut min_purge: PurgeKeys = smallvec![];
+) -> Result<(JoinEdge<'a>, EdgeIDs)> {
+    let mut min_edge: Option<JoinEdge> = None;
+    let mut min_purge: EdgeIDs = smallvec![];
     let mut purge = smallvec![];
     for vi in join_map.keys() {
         for vj in join_map.keys().filter(|k| *k > vi) {
-            for (vset, es) in edges {
-                for new_edge in es {
-                    if (*vi | *vj).includes(new_edge.e_vset) {
-                        // pass join eligibility check
-                        // Identify the exact left side and right side.
-                        let (l_vset, r_vset) = {
-                            let l = new_edge.e_vset & new_edge.l_vset;
-                            let r = new_edge.e_vset & new_edge.r_vset;
-                            if vi.includes(l) && vj.includes(r) {
-                                (*vi, *vj)
-                            } else if vi.includes(r) && vj.includes(l) {
-                                (*vj, *vi)
-                            } else {
-                                return Err(Error::InvalidJoinTransformation);
-                            }
-                        };
-                        let key = (*vset, new_edge.e_vset);
-                        purge.push(key);
-                        let mut join_edge = Cow::Borrowed(*new_edge);
-                        // For inner join, there might be multiple edges that can join two sides.
-                        // Traverse all edges again to find if any other edge can be merged into current one.
-                        // e.g. "A JOIN B ON a1 = b1 JOIN C ON b1 = c1 AND a1 = c1"
-                        // Such that we have three edges: [{A<=>B}, {B<=>C}, {A<=>C}]
-                        // If we join A, B together first, then there are two edges can be merged in next join
-                        // because all three table are present in second join.
-                        if join_edge.kind == JoinKind::Inner {
-                            for (merge_vset, mes) in &*edges {
-                                for merge_edge in mes {
-                                    if merge_edge.kind == JoinKind::Inner
-                                        && (*merge_vset, merge_edge.e_vset) != key
-                                        && (l_vset | r_vset).includes(merge_edge.e_vset)
-                                    {
-                                        // merge this edge into join edge, only update join condition and eligibility set.
-                                        let je = join_edge.to_mut();
-                                        je.cond.extend_from_slice(&merge_edge.cond);
-                                        je.e_vset |= merge_edge.e_vset;
-                                        purge.push((*merge_vset, merge_edge.e_vset));
-                                    }
-                                }
+            for (eid, new_edge) in edges {
+                if (*vi | *vj).includes(new_edge.e_vset) {
+                    // pass join eligibility check
+                    // Identify the exact left side and right side.
+                    let (l_vset, r_vset) = {
+                        let l = new_edge.e_vset & new_edge.l_vset;
+                        let r = new_edge.e_vset & new_edge.r_vset;
+                        if vi.includes(l) && vj.includes(r) {
+                            (*vi, *vj)
+                        } else if vi.includes(r) && vj.includes(l) {
+                            (*vj, *vi)
+                        } else {
+                            return Err(Error::InvalidJoinTransformation);
+                        }
+                    };
+                    purge.push(*eid);
+                    let mut join_edge = Cow::Borrowed(*new_edge);
+                    // For inner join, there might be multiple edges that can join two sides.
+                    // Traverse all edges again to find if any other edge can be merged into current one.
+                    // e.g. "A JOIN B ON a1 = b1 JOIN C ON b1 = c1 AND a1 = c1"
+                    // Such that we have three edges: [{A<=>B}, {B<=>C}, {A<=>C}]
+                    // If we join A, B together first, then there are two edges can be merged in next join
+                    // because all three table are present in second join.
+                    if join_edge.kind == JoinKind::Inner {
+                        for (merge_eid, merge_edge) in edges {
+                            if merge_edge.kind == JoinKind::Inner
+                                && merge_eid != eid
+                                && (l_vset | r_vset).includes(merge_edge.e_vset)
+                            {
+                                // merge this edge into join edge, only update join condition and eligibility set.
+                                let je = join_edge.to_mut();
+                                je.cond.extend_from_slice(&merge_edge.cond);
+                                je.e_vset |= merge_edge.e_vset;
+                                purge.push(*merge_eid);
                             }
                         }
-                        // now we can estimate join rows and choose the best plan
-                        let rows = est.estimated_join_rows(graph, l_vset, r_vset, &join_edge)?;
-                        if let Some(min_edge) = min_edge.as_mut() {
-                            if rows < min_edge.rows {
-                                min_edge.l_vset = l_vset;
-                                min_edge.r_vset = r_vset;
-                                min_edge.edge = join_edge;
-                                min_edge.rows = rows;
-                                mem::swap(&mut min_purge, &mut purge);
-                            }
-                        } else {
-                            min_edge = Some(MinEdge {
-                                l_vset,
-                                r_vset,
-                                edge: join_edge,
-                                rows,
-                            });
+                    }
+                    // now we can estimate join rows and choose the best plan
+                    let rows = est.estimate_join_rows(graph, l_vset, r_vset, &join_edge)?;
+                    if let Some(min_edge) = min_edge.as_mut() {
+                        if rows < min_edge.rows {
+                            min_edge.l_vset = l_vset;
+                            min_edge.r_vset = r_vset;
+                            min_edge.edge = join_edge;
+                            min_edge.rows = rows;
                             mem::swap(&mut min_purge, &mut purge);
                         }
-                        purge.clear();
+                    } else {
+                        min_edge = Some(JoinEdge {
+                            l_vset,
+                            r_vset,
+                            edge: join_edge,
+                            rows,
+                            cost: 0.0, // greedy algorithm does not care about accumulated cost
+                        });
+                        mem::swap(&mut min_purge, &mut purge);
                     }
+                    purge.clear();
                 }
             }
         }
@@ -162,14 +143,4 @@ fn min_res<'a, E: Estimate>(
     min_edge
         .map(|e| (e, min_purge))
         .ok_or(Error::InvalidJoinVertexSet)
-}
-
-type PurgeKey = (VertexSet, VertexSet);
-type PurgeKeys = SmallVec<[PurgeKey; 2]>;
-
-struct MinEdge<'a> {
-    l_vset: VertexSet,
-    r_vset: VertexSet,
-    edge: Cow<'a, Edge>,
-    rows: f64,
 }

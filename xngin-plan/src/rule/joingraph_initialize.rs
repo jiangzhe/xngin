@@ -194,18 +194,6 @@ impl BuildGraph<'_> {
         e_vset |= self.update_elig_set(kind.right_spec(), r_vset, e_vset & r_vset);
         self.graph
             .add_edge(kind, l_vset, r_vset, e_vset, cond, filt)
-        // let edge = Edge {
-        //     kind,
-        //     l_vset,
-        //     r_vset,
-        //     e_vset,
-        //     cond,
-        //     filt,
-        // };
-        // let edges = self.edges.entry(l_vset | r_vset).or_default();
-        // // only inner join could be separated to multiple edges upon same join tree.
-        // assert!(edges.iter().all(|e| e.kind == JoinKind::Inner));
-        // edges.push(edge);
     }
 
     fn update_elig_set(&self, spec: Spec, vset: VertexSet, mut join_vset: VertexSet) -> VertexSet {

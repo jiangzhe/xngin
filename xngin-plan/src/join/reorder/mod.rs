@@ -1,10 +1,12 @@
+pub(crate) mod dpsize;
 pub(crate) mod greedy;
 
 use crate::error::{Error, Result};
-use crate::join::graph::{vid_to_qid, Graph, VertexSet};
+use crate::join::graph::{Edge, Graph, VertexSet};
 use crate::join::{JoinKind, JoinOp};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::{QueryPlan, QuerySet};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
@@ -12,6 +14,8 @@ use xngin_expr::QueryID;
 
 // Export GOO algorithm
 pub use greedy::Goo;
+// Export DPsize algorithm
+pub use dpsize::DPsize;
 
 /// Entry to perform join reorder.
 #[inline]
@@ -64,6 +68,16 @@ where
     })?
 }
 
+/// Struct to store the intermediate join edge
+#[derive(Debug, Clone)]
+struct JoinEdge<'a> {
+    l_vset: VertexSet,
+    r_vset: VertexSet,
+    edge: Cow<'a, Edge>,
+    rows: f64,
+    cost: f64,
+}
+
 /// Reorder the join graph and reconstruct as operator tree.
 pub trait Reorder {
     fn reorder(self, graph: &Graph) -> Result<Op>;
@@ -78,8 +92,8 @@ impl Reorder for Sequential {
         // let mut vset = VertexSet::default();
         let mut joined = HashMap::new();
         // insert all vertexes back
-        for vid in graph.vertexes {
-            let qid = vid_to_qid(&graph.vmap, vid)?;
+        for vid in graph.vids() {
+            let qid = graph.vid_to_qid(vid)?;
             joined.insert(VertexSet::from(vid), Op::Query(qid));
         }
 
@@ -216,9 +230,25 @@ mod tests {
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1 and t1.c1 = t3.c1",
                 vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
                 vec![("t1", "t2", 0.2), ("t2", "t3", 0.1), ("t1", "t3", 0.01)],
-                // suppost final result 0.02
-                vec![(vec!["t1"], vec!["t2", "t3"], 0.2), (vec!["t1", "t2"], vec!["t3"], 1.0), (vec!["t1", "t3"], vec!["t2"], 2.0)],
+                // final result selectivity 0.002
+                vec![(vec!["t1"], vec!["t2", "t3"], 0.02), (vec!["t1", "t2"], vec!["t3"], 0.1), (vec!["t1", "t3"], vec!["t2"], 0.2)],
                 vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+            ),
+            (
+                "select 1 from t0 join t1 on t0.c0 = t1.c0 join t2 on t1.c1 = t2.c1 join t3 on t2.c2 = t3.c3",
+                vec![("t0", 100.0), ("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t0", "t1", 0.02), ("t1", "t2", 0.5), ("t2", "t3", 0.1)],
+                // final result selectivity 0.002
+                vec![
+                    (vec!["t0", "t1"], vec!["t2"], 0.5), // t0,t1,t2=0.01
+                    (vec!["t1", "t2"], vec!["t0"], 0.02), // t0,t1,t2=0.01
+                    (vec!["t1", "t2"], vec!["t3"], 0.1), // t1,t2,t3=0.05
+                    (vec!["t2", "t3"], vec!["t1"], 0.5), // t1,t2,t3=0.05
+                    (vec!["t0", "t1", "t2"], vec!["t3"], 0.2), // t0,t1,t2,t3=0.002
+                    (vec!["t1", "t2", "t3"], vec!["t0"], 0.04), // t0,t1,t2,t3=0.002
+                    (vec!["t0", "t1"], vec!["t2", "t3"], 1.0), // t0,t1,t2,t3=0.002
+                ],
+                vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table],
             ),
         ] {
             assert_j_plan1(&cat, s, |s, mut q| {
@@ -228,6 +258,65 @@ mod tests {
                 let qmap = build_qry_map(&mut q.qry_set, &graph, &tbl_map);
                 let est = preset_estimator(qmap, qrs, js,jss);
                 join_reorder(&mut q, || Goo::new(est.clone())).unwrap();
+                print_plan(s, &q);
+                assert_eq!(shape, q.shape());
+            })
+        }
+    }
+
+    #[test]
+    fn test_join_reorder_dpsize() {
+        use crate::op::OpKind::*;
+        let cat = j_catalog();
+        let tbl_map = table_map(&*cat, "j", vec!["t0", "t1", "t2", "t3"]);
+        for (s, qrs, js, jss, shape) in vec![
+            (
+                "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
+                vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t1", "t2", 0.1), ("t2", "t3", 0.2)],
+                vec![],
+                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+            ),
+            (
+                "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
+                vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t1", "t2", 0.2), ("t2", "t3", 0.1)],
+                vec![],
+                vec![Proj, Join, Proj, Table, Join, Proj, Table, Proj, Table],
+            ),
+            (
+                "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1 and t1.c1 = t3.c1",
+                vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t1", "t2", 0.2), ("t2", "t3", 0.1), ("t1", "t3", 0.01)],
+                // final result selectivity 0.002
+                vec![(vec!["t1"], vec!["t2", "t3"], 0.02), (vec!["t1", "t2"], vec!["t3"], 0.1), (vec!["t1", "t3"], vec!["t2"], 0.2)],
+                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+            ),
+            // test generating bushy tree
+            (
+                "select 1 from t0 join t1 on t0.c0 = t1.c0 join t2 on t1.c1 = t2.c1 join t3 on t2.c2 = t3.c3",
+                vec![("t0", 100.0), ("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t0", "t1", 0.02), ("t1", "t2", 0.5), ("t2", "t3", 0.1)],
+                // final result selectivity 0.002
+                vec![
+                    (vec!["t0", "t1"], vec!["t2"], 0.5), // t0,t1,t2=0.01
+                    (vec!["t1", "t2"], vec!["t0"], 0.02), // t0,t1,t2=0.01
+                    (vec!["t1", "t2"], vec!["t3"], 0.1), // t1,t2,t3=0.05
+                    (vec!["t2", "t3"], vec!["t1"], 0.5), // t1,t2,t3=0.05
+                    (vec!["t0", "t1", "t2"], vec!["t3"], 0.2), // t0,t1,t2,t3=0.002
+                    (vec!["t1", "t2", "t3"], vec!["t0"], 0.04), // t0,t1,t2,t3=0.002
+                    (vec!["t0", "t1"], vec!["t2", "t3"], 1.0), // t0,t1,t2,t3=0.002
+                ],
+                vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table],
+            ),
+        ] {
+            assert_j_plan1(&cat, s, |s, mut q| {
+                joingraph_initialize(&mut q.qry_set, q.root).unwrap();
+                let subq = q.root_query().unwrap();
+                let graph = get_join_graph(subq).unwrap();
+                let qmap = build_qry_map(&mut q.qry_set, &graph, &tbl_map);
+                let est = preset_estimator(qmap, qrs, js,jss);
+                join_reorder(&mut q, || DPsize::new(est.clone())).unwrap();
                 print_plan(s, &q);
                 assert_eq!(shape, q.shape());
             })
@@ -257,7 +346,7 @@ mod tests {
 
     impl Estimate for PresetEstimator {
         #[inline]
-        fn estimated_qry_rows(&mut self, vset: VertexSet) -> Result<f64> {
+        fn estimate_qry_rows(&mut self, vset: VertexSet) -> Result<f64> {
             self.qmap
                 .get(&vset)
                 .cloned()
@@ -265,7 +354,7 @@ mod tests {
         }
 
         #[inline]
-        fn estimated_join_rows(
+        fn estimate_join_rows(
             &mut self,
             _graph: &Graph,
             l_vset: VertexSet,
@@ -300,8 +389,8 @@ mod tests {
         tbl_map: &HashMap<&'static str, TableID>,
     ) -> HashMap<&'static str, VertexSet> {
         let mut t2v = HashMap::new();
-        for vid in graph.vertexes {
-            let qid = graph.vmap.get(&vid).cloned().unwrap();
+        for vid in graph.vids() {
+            let qid = graph.vid_to_qid(vid).unwrap();
             let tbl_id = get_tbl_id(qry_set, qid).unwrap();
             t2v.insert(tbl_id, VertexSet::from(vid));
         }
