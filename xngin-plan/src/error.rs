@@ -85,6 +85,8 @@ pub enum Error {
     InvalidJoinCondition,
     #[error("Join estimation not support")]
     JoinEstimationNotSupport,
+    #[error("Hyperedges not initialized")]
+    HyperedgesNotInitialized,
     #[error("Cross join not supported")]
     CrossJoinNotSupport,
     #[error("Break")]

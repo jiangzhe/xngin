@@ -1,3 +1,4 @@
+pub(crate) mod dphyp;
 pub(crate) mod dpsize;
 pub(crate) mod greedy;
 
@@ -16,6 +17,8 @@ use xngin_expr::QueryID;
 pub use greedy::Goo;
 // Export DPsize algorithm
 pub use dpsize::DPsize;
+// Export DPhyp algorithm
+pub use dphyp::DPhyp;
 
 /// Entry to perform join reorder.
 #[inline]
@@ -36,7 +39,7 @@ where
     F: FnMut() -> R,
 {
     struct S<'a, F>(&'a mut QuerySet, &'a mut F);
-    impl<'a, R, F> OpMutVisitor for S<'a, F>
+    impl<'a, 'r, R, F> OpMutVisitor for S<'a, F>
     where
         R: Reorder,
         F: FnMut() -> R,
@@ -49,8 +52,10 @@ where
                 Op::Query(qry_id) => reorder_join(self.0, *qry_id, self.1).branch(),
                 Op::JoinGraph(_) => {
                     let graph = mem::take(op);
-                    if let Op::JoinGraph(g) = graph {
-                        let r = (self.1)();
+                    if let Op::JoinGraph(mut g) = graph {
+                        let mut r = (self.1)();
+                        // hook before reordering
+                        r.before(g.as_mut()).branch()?;
                         let new = r.reorder(g.as_ref()).branch()?;
                         *op = new;
                         ControlFlow::Continue(())
@@ -78,8 +83,31 @@ struct JoinEdge<'a> {
     cost: f64,
 }
 
+#[derive(Debug, Clone)]
+enum Tree<'a> {
+    Single {
+        #[allow(dead_code)]
+        rows: f64,
+        cost: f64,
+    },
+    Join(JoinEdge<'a>),
+}
+
+impl Tree<'_> {
+    fn cost(&self) -> f64 {
+        match self {
+            Tree::Single { cost, .. } | Tree::Join(JoinEdge { cost, .. }) => *cost,
+        }
+    }
+}
+
 /// Reorder the join graph and reconstruct as operator tree.
 pub trait Reorder {
+    // Optional injection before reordering
+    fn before(&mut self, _graph: &mut Graph) -> Result<()> {
+        Ok(())
+    }
+
     fn reorder(self, graph: &Graph) -> Result<Op>;
 }
 
@@ -88,6 +116,7 @@ pub trait Reorder {
 pub struct Sequential;
 
 impl Reorder for Sequential {
+    #[inline]
     fn reorder(self, graph: &Graph) -> Result<Op> {
         // let mut vset = VertexSet::default();
         let mut joined = HashMap::new();
@@ -317,6 +346,65 @@ mod tests {
                 let qmap = build_qry_map(&mut q.qry_set, &graph, &tbl_map);
                 let est = preset_estimator(qmap, qrs, js,jss);
                 join_reorder(&mut q, || DPsize::new(est.clone())).unwrap();
+                print_plan(s, &q);
+                assert_eq!(shape, q.shape());
+            })
+        }
+    }
+
+    #[test]
+    fn test_join_reorder_dphyp() {
+        use crate::op::OpKind::*;
+        let cat = j_catalog();
+        let tbl_map = table_map(&*cat, "j", vec!["t0", "t1", "t2", "t3"]);
+        for (s, qrs, js, jss, shape) in vec![
+            (
+                "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
+                vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t1", "t2", 0.1), ("t2", "t3", 0.2)],
+                vec![],
+                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+            ),
+            (
+                "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
+                vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t1", "t2", 0.2), ("t2", "t3", 0.1)],
+                vec![],
+                vec![Proj, Join, Proj, Table, Join, Proj, Table, Proj, Table],
+            ),
+            (
+                "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1 and t1.c1 = t3.c1",
+                vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t1", "t2", 0.2), ("t2", "t3", 0.1), ("t1", "t3", 0.01)],
+                // final result selectivity 0.002
+                vec![(vec!["t1"], vec!["t2", "t3"], 0.02), (vec!["t1", "t2"], vec!["t3"], 0.1), (vec!["t1", "t3"], vec!["t2"], 0.2)],
+                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+            ),
+            // test generating bushy tree
+            (
+                "select 1 from t0 join t1 on t0.c0 = t1.c0 join t2 on t1.c1 = t2.c1 join t3 on t2.c2 = t3.c3",
+                vec![("t0", 100.0), ("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
+                vec![("t0", "t1", 0.02), ("t1", "t2", 0.5), ("t2", "t3", 0.1)],
+                // final result selectivity 0.002
+                vec![
+                    (vec!["t0", "t1"], vec!["t2"], 0.5), // t0,t1,t2=0.01
+                    (vec!["t1", "t2"], vec!["t0"], 0.02), // t0,t1,t2=0.01
+                    (vec!["t1", "t2"], vec!["t3"], 0.1), // t1,t2,t3=0.05
+                    (vec!["t2", "t3"], vec!["t1"], 0.5), // t1,t2,t3=0.05
+                    (vec!["t0", "t1", "t2"], vec!["t3"], 0.2), // t0,t1,t2,t3=0.002
+                    (vec!["t1", "t2", "t3"], vec!["t0"], 0.04), // t0,t1,t2,t3=0.002
+                    (vec!["t0", "t1"], vec!["t2", "t3"], 1.0), // t0,t1,t2,t3=0.002
+                ],
+                vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table],
+            ),
+        ] {
+            assert_j_plan1(&cat, s, |s, mut q| {
+                joingraph_initialize(&mut q.qry_set, q.root).unwrap();
+                let subq = q.root_query().unwrap();
+                let graph = get_join_graph(subq).unwrap();
+                let qmap = build_qry_map(&mut q.qry_set, &graph, &tbl_map);
+                let est = preset_estimator(qmap, qrs, js,jss);
+                join_reorder(&mut q, || DPhyp::new(est.clone())).unwrap();
                 print_plan(s, &q);
                 assert_eq!(shape, q.shape());
             })

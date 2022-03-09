@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::estimate::Estimate;
 use crate::join::graph::{Edge, EdgeID, Graph, VertexSet};
-use crate::join::reorder::{JoinEdge, Reorder};
+use crate::join::reorder::{JoinEdge, Reorder, Tree};
 use crate::join::{JoinKind, JoinOp};
 use crate::op::Op;
 use std::borrow::Cow;
@@ -15,10 +15,10 @@ use std::mem;
 /// Then iterate the size from 2 to N, to compute all best plans
 /// of given size, based on previous results.
 /// At the end of the iteration, we get the best plan of size N.
-/// 
+///
 /// Note: DP algorithm requires cost model to pick best plan on
 /// same join set. Here we use simplest cost function that just
-/// sums row counts of intermediate result sets, which can be 
+/// sums row counts of intermediate result sets, which can be
 /// considered as "logical" cost.
 pub struct DPsize<E>(E);
 
@@ -84,7 +84,7 @@ impl<E: Estimate> Reorder for DPsize<E> {
                                     }
                                 };
                                 let mut edge = Cow::Borrowed(*new_edge);
-                                // Addtional check must be performed on inner join, to ensure all 
+                                // Addtional check must be performed on inner join, to ensure all
                                 // available edges are merged together before the estimation.
                                 if edge.kind == JoinKind::Inner {
                                     for (merge_eid, merge_edge) in &edges {
@@ -177,24 +177,6 @@ fn build_join_tree(
                 filt,
             );
             Ok(op)
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-enum Tree<'a> {
-    Single {
-        #[allow(dead_code)]
-        rows: f64,
-        cost: f64,
-    },
-    Join(JoinEdge<'a>),
-}
-
-impl Tree<'_> {
-    fn cost(&self) -> f64 {
-        match self {
-            Tree::Single { cost, .. } | Tree::Join(JoinEdge { cost, .. }) => *cost,
         }
     }
 }

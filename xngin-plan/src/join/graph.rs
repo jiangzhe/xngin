@@ -26,6 +26,7 @@ pub struct Graph {
     qs: Vec<Op>,
     edge_arena: Arena<Edge>,
     pred_arena: Arena<Expr>,
+    hyp_edge_refs: Option<Vec<HyperEdgeRef>>,
 }
 
 impl Graph {
@@ -62,6 +63,16 @@ impl Graph {
     #[inline]
     pub fn vids(&self) -> impl Iterator<Item = VertexID> {
         self.vs.into_iter()
+    }
+
+    #[inline]
+    pub fn rev_vids(&self) -> impl Iterator<Item = VertexID> {
+        self.vs.rev_iter()
+    }
+
+    #[inline]
+    pub fn vset(&self) -> VertexSet {
+        self.vs
     }
 
     #[inline]
@@ -117,6 +128,36 @@ impl Graph {
     #[inline]
     pub fn eids_by_vset(&self, vset: VertexSet) -> Option<EdgeIDs> {
         self.edge_map.get(&vset).cloned()
+    }
+
+    #[inline]
+    pub fn reset_hyper_edge_refs(&mut self) {
+        let mut refs = Vec::with_capacity(self.n_edges());
+        for eid in self.eids() {
+            let edge = self.edge(eid);
+            // currently, we do not support freely transform hyper edge.
+            let l_vset = edge.e_vset & edge.l_vset;
+            let l_vid = l_vset.min_id().unwrap();
+            let r_vset = edge.e_vset & edge.r_vset;
+            let r_vid = r_vset.min_id().unwrap();
+            refs.push(HyperEdgeRef {
+                eid,
+                l_vset,
+                l_vid,
+                r_vset,
+                r_vid,
+            })
+        }
+        self.hyp_edge_refs = Some(refs)
+    }
+
+    #[inline]
+    pub fn hyper_edge_refs(&self) -> &[HyperEdgeRef] {
+        if let Some(refs) = self.hyp_edge_refs.as_ref() {
+            refs
+        } else {
+            &[]
+        }
     }
 
     /// Add one edge to join graph.
@@ -251,6 +292,17 @@ pub struct Edge {
     pub filt: SmallVec<[PredID; 8]>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct HyperEdgeRef {
+    pub eid: EdgeID,
+    pub l_vset: VertexSet,
+    // minimal vertex id of left side
+    pub l_vid: VertexID,
+    pub r_vset: VertexSet,
+    // minimal vertex id of right side
+    pub r_vid: VertexID,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VertexSet {
     // Use bitmap to encode query id as vertexes in the graph
@@ -266,6 +318,11 @@ impl VertexSet {
     #[inline]
     pub fn intersects(&self, other: Self) -> bool {
         self.bits & other.bits != 0
+    }
+
+    #[inline]
+    pub fn contains(&self, vid: VertexID) -> bool {
+        self.bits & vid.0 != 0
     }
 
     #[inline]
@@ -289,21 +346,48 @@ impl VertexSet {
     }
 
     #[inline]
-    pub fn min(&self) -> Option<VertexID> {
+    pub fn min_id(&self) -> Option<VertexID> {
         if self.is_empty() {
             None
         } else {
             Some(VertexID(1u32 << self.bits.trailing_zeros()))
         }
     }
+
+    /// returns set of vertexes less than given vid.
+    /// As vertex set is represented as bitset, we can
+    /// use bit mask to speed the operation.
+    #[inline]
+    pub fn lt_vset(&self, vid: VertexID) -> Self {
+        VertexSet {
+            bits: self.bits & (vid.0 - 1),
+        }
+    }
+
+    /// Returns an iterator of vertex ID in reverse order.
+    #[inline]
+    pub fn rev_iter(self) -> VertexRevIter {
+        let (value, count) = if self.is_empty() {
+            (0, 0)
+        } else {
+            let value = 1 << (31 - self.bits.leading_zeros());
+            let count = self.bits.count_ones();
+            (value, count)
+        };
+        VertexRevIter {
+            bits: self.bits,
+            value,
+            count,
+        }
+    }
 }
 
 impl IntoIterator for VertexSet {
     type Item = VertexID;
-    type IntoIter = Iter;
+    type IntoIter = VertexIter;
     #[inline]
-    fn into_iter(self) -> Iter {
-        Iter {
+    fn into_iter(self) -> VertexIter {
+        VertexIter {
             bits: self.bits,
             value: 1,
             count: self.bits.count_ones(),
@@ -329,13 +413,13 @@ impl From<VertexID> for VertexSet {
     }
 }
 
-pub struct Iter {
+pub struct VertexIter {
     bits: u32,
     value: u32,
     count: u32,
 }
 
-impl Iterator for Iter {
+impl Iterator for VertexIter {
     type Item = VertexID;
     #[inline]
     fn next(&mut self) -> Option<VertexID> {
@@ -350,6 +434,33 @@ impl Iterator for Iter {
                     return Some(vid);
                 } else {
                     self.value <<= 1;
+                }
+            }
+        }
+    }
+}
+
+pub struct VertexRevIter {
+    bits: u32,
+    value: u32,
+    count: u32,
+}
+
+impl Iterator for VertexRevIter {
+    type Item = VertexID;
+    #[inline]
+    fn next(&mut self) -> Option<VertexID> {
+        if self.count == 0 {
+            None
+        } else {
+            loop {
+                if self.bits & self.value != 0 {
+                    self.count -= 1;
+                    let vid = VertexID(self.value);
+                    self.value >>= 1;
+                    return Some(vid);
+                } else {
+                    self.value >>= 1;
                 }
             }
         }
@@ -376,6 +487,16 @@ impl BitOr for VertexSet {
     fn bitor(self, rhs: Self) -> Self {
         VertexSet {
             bits: self.bits | rhs.bits,
+        }
+    }
+}
+
+impl BitOr<VertexID> for VertexSet {
+    type Output = Self;
+    #[inline]
+    fn bitor(self, rhs: VertexID) -> Self {
+        VertexSet {
+            bits: self.bits | rhs.0,
         }
     }
 }
@@ -462,5 +583,16 @@ mod tests {
             "size of SmallVec<[PredID;8]> is {}",
             size_of::<SmallVec<[PredID; 8]>>()
         );
+    }
+
+    #[test]
+    fn test_vertex_set_rev_iter() {
+        let vset = VertexSet { bits: 6 };
+        assert_eq!(
+            vec![VertexID(4), VertexID(2)],
+            vset.rev_iter().collect::<Vec<_>>()
+        );
+        let vset = VertexSet { bits: 0 };
+        assert_eq!(Vec::<VertexID>::new(), vset.rev_iter().collect::<Vec<_>>());
     }
 }
