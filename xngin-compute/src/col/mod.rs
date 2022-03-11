@@ -2,9 +2,9 @@ mod nonsized;
 mod sized;
 mod typed;
 
-use crate::bitmap::ReadBitmap;
-use crate::error::Result;
 use std::ops::Range;
+use xngin_common::bitmap::ReadBitmap;
+use xngin_common::error::Result;
 use xngin_datatype::DataType;
 
 pub use self::typed::{TypedCol, VecF64Col, VecI64Col};

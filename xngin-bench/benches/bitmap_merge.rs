@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::iter::FromIterator;
-use xngin_compute::bitmap::{VecBitmap, WriteBitmap};
+use xngin_common::bitmap::{VecBitmap, WriteBitmap};
 
 fn bench_merge(c: &mut Criterion) {
     (10..=20).step_by(2).for_each(|log2_size| {

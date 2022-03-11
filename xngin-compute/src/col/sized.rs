@@ -1,7 +1,7 @@
-use crate::bitmap::{AppendBitmap, ReadBitmap, ReadBitmapExt, VecBitmap, WriteBitmap};
 use crate::col::{AppendCol, BaseCol, ReadCol, WriteCol};
-use crate::error::{Error, Result};
 use std::ops::Range;
+use xngin_common::bitmap::{AppendBitmap, ReadBitmap, ReadBitmapExt, VecBitmap, WriteBitmap};
+use xngin_common::error::{Error, Result};
 use xngin_datatype::{DataType, Typed};
 
 #[derive(Debug, Clone)]
