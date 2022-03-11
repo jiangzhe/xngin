@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::{thread_rng, Rng};
-use xngin_compute::bitmap::{AppendBitmap, ReadBitmap, VecBitmap};
+use xngin_common::bitmap::{AppendBitmap, ReadBitmap, VecBitmap};
 
 fn bench_count(c: &mut Criterion) {
     const N1: usize = 10240;

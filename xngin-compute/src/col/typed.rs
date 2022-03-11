@@ -1,5 +1,6 @@
 use crate::col::sized::VecSizedCol;
 use crate::col::BaseCol;
+use xngin_common::error::Result;
 use xngin_datatype::DataType;
 
 pub type VecI64Col = VecSizedCol<i64>;
@@ -99,7 +100,7 @@ impl BaseCol for TypedCol {
         }
     }
 
-    fn is_valid(&self, idx: usize) -> crate::error::Result<bool> {
+    fn is_valid(&self, idx: usize) -> Result<bool> {
         match self {
             TypedCol::VecI64(v) => v.is_valid(idx),
             TypedCol::VecF64(v) => v.is_valid(idx),

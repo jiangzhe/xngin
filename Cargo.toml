@@ -1,11 +1,13 @@
 [workspace]
 members = [
     "xngin-datatype",
+    "xngin-common",
     "xngin-catalog", 
     "xngin-frontend",
     "xngin-expr",
     "xngin-compute", 
     "xngin-plan",
+    "xngin-storage",
     "xngin-tpch-tests"
 ]
 exclude = ["xngin-bench"]

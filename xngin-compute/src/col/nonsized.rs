@@ -1,6 +1,7 @@
-use crate::bitmap::VecBitmap;
 use crate::col::BaseCol;
 use std::marker::PhantomData;
+use xngin_common::bitmap::VecBitmap;
+use xngin_common::error::Result;
 use xngin_datatype::{DataType, Typed};
 
 #[allow(dead_code)]
@@ -27,7 +28,7 @@ impl<T: Typed + ?Sized + 'static> BaseCol for VecNonsizedCol<T> {
         T::ty()
     }
 
-    fn is_valid(&self, _idx: usize) -> crate::error::Result<bool> {
+    fn is_valid(&self, _idx: usize) -> Result<bool> {
         todo!()
     }
 }
