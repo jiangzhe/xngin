@@ -1,37 +1,23 @@
-mod ffi_bitmap;
-mod vec_bitmap;
+mod vec;
+mod view;
 
 use crate::error::{Error, Result};
 use crate::slice_ext::{OffsetPairMut, OffsetTripleMut, PairSliceExt};
 use std::ops::Range;
 
-pub use ffi_bitmap::FFIBitmap;
-pub use vec_bitmap::VecBitmap;
+pub use vec::VecBitmap;
+pub use view::ViewBitmap;
 
 pub trait ReadBitmap {
-    /// Returns ref to a bitmap and the length.
-    fn as_bitmap(&self) -> (&[u8], usize);
-
     /// Returns aligned(64bit) bitmap and length.
     /// This method is marked as unsafe because hidden bits outside
     /// the map could be seen from the returned slice.
     /// In most cases, it is used for fast aligned operations, like
     /// merge, shift and extend.
-    ///
-    /// # Safety
-    ///
-    /// The implementor must ensure the returned bitmap is
-    /// aligned to 64bit and within the capacity of underlying storage.
-    unsafe fn as_aligned_bitmap(&self) -> Result<(&[u8], usize)>;
+    fn aligned(&self) -> (&[u8], usize);
 
     /// Returns the length of this map.
-    #[inline]
-    fn len(&self) -> usize {
-        self.as_bitmap().1
-    }
-
-    /// Returns the capacity of bitmap.
-    fn cap(&self) -> usize;
+    fn len(&self) -> usize;
 
     /// Returns whether this map is empty.
     #[inline]
@@ -42,47 +28,27 @@ pub trait ReadBitmap {
     /// Get single value at given position.
     #[inline]
     fn get(&self, idx: usize) -> Result<bool> {
-        let (bm, len) = self.as_bitmap();
+        let (bm, len) = self.aligned();
         if idx >= len {
             return Err(Error::IndexOutOfBound(format!(
                 "{} > bitmap length {}",
                 idx, len
             )));
         }
-        Ok(bm[idx >> 3] & (1 << (idx & 7)) != 0)
+        Ok(bitmap_get(bm, idx))
     }
 
     #[inline]
     fn bools(&self) -> BoolIter<'_> {
-        let (bm, len) = self.as_bitmap();
-        BoolIter { bm, len, idx: 0 }
+        let (bm, len) = self.aligned();
+        bitmap_bools(bm, len)
     }
 
     /// Returns value count of true.
     #[inline]
     fn true_count(&self) -> usize {
-        let (bm, len) = self.as_bitmap();
-        let mut bytes = len >> 3;
-        let u64bytes = (bytes >> 3) << 3;
-        bytes -= u64bytes;
-        let bits = len & 7;
-        // sum of u64s
-        let mut sum0: usize = bytemuck::cast_slice::<_, u64>(&bm[..u64bytes])
-            .iter()
-            .map(|v| v.count_ones() as usize)
-            .sum();
-        // sum of bytes
-        if bytes > 0 {
-            sum0 += bm[u64bytes..u64bytes + bytes]
-                .iter()
-                .map(|v| v.count_ones() as usize)
-                .sum::<usize>();
-        }
-        if bits > 0 {
-            // mask higher bits before counting
-            sum0 += (bm[u64bytes + bytes] & ((1 << bits) - 1)).count_ones() as usize;
-        }
-        sum0
+        let (bm, len) = self.aligned();
+        bitmap_true_count(bm, len)
     }
 
     /// Returns value count of false.
@@ -90,224 +56,270 @@ pub trait ReadBitmap {
     /// shows u64 is best.
     #[inline]
     fn false_count(&self) -> usize {
-        let (bm, len) = self.as_bitmap();
-        let mut bytes = len >> 3;
-        let u64bytes = (bytes >> 3) << 3;
-        bytes -= u64bytes;
-        let bits = len & 7;
-        // sum of u64s
-        let mut sum0: usize = bytemuck::cast_slice::<_, u64>(&bm[..u64bytes])
-            .iter()
-            .map(|v| v.count_zeros() as usize)
-            .sum();
-        // sum of bytes
-        if bytes > 0 {
-            sum0 += bm[u64bytes..u64bytes + bytes]
-                .iter()
-                .map(|v| v.count_zeros() as usize)
-                .sum::<usize>();
-        }
-        if bits > 0 {
-            // mask higher bits before counting
-            sum0 += (bm[u64bytes + bytes] | !((1 << bits) - 1)).count_zeros() as usize;
-        }
-        sum0
-    }
-}
-
-pub trait ReadBitmapExt: ReadBitmap {
-    /// Internal iterator method on single bool value.
-    #[inline]
-    fn for_each<F: FnMut(bool)>(&self, mut f: F) {
-        let (bm, len) = self.as_bitmap();
-        if len == 0 {
-            return;
-        }
-        bm[..len >> 3].iter().for_each(|b| {
-            f(b & 1 == 1);
-            f(b & 2 == 2);
-            f(b & 4 == 4);
-            f(b & 8 == 8);
-            f(b & 16 == 16);
-            f(b & 32 == 32);
-            f(b & 64 == 64);
-            f(b & 128 == 128);
-        });
-        if len & 7 == 0 {
-            return;
-        }
-        let b = *bm.last().unwrap();
-        let idx = len & 7;
-        f(b & 1 == 1);
-        if idx == 1 {
-            return;
-        }
-        f(b & 2 == 2);
-        if idx == 2 {
-            return;
-        }
-        f(b & 4 == 4);
-        if idx == 3 {
-            return;
-        }
-        f(b & 8 == 8);
-        if idx == 4 {
-            return;
-        }
-        f(b & 16 == 16);
-        if idx == 5 {
-            return;
-        }
-        f(b & 32 == 32);
-        if idx == 6 {
-            return;
-        }
-        f(b & 64 == 64);
+        let (bm, len) = self.aligned();
+        bitmap_false_count(bm, len)
     }
 
     #[inline]
     fn range_iter(&self) -> RangeIter<'_> {
-        let (bm, len) = unsafe { self.as_aligned_bitmap().unwrap() };
-        if len == 0 {
-            // empty iterator
-            return RangeIter {
-                u64s: &[],
-                last_word_len: 0,
-                word: 0,
-                word_bits: 0,
-                prev: false,
-                n: 0,
-            };
-        }
-        let prev = self.get(0).unwrap(); // pre-read first value
-        let u64s = bytemuck::cast_slice::<_, u64>(bm);
-        let last_word_len = if len & 63 == 0 { 64 } else { len & 63 };
-        RangeIter {
-            u64s,
-            last_word_len,
-            word: 0,
-            word_bits: 0,
-            prev,
-            n: 0,
-        }
-    }
-
-    #[inline]
-    fn for_each_range<F: FnMut(bool, usize)>(&self, mut f: F) {
-        let (bm, len) = unsafe { self.as_aligned_bitmap().unwrap() };
-        if len == 0 {
-            return;
-        }
-        let mut prev = bm[0] & 1 == 1; // pre-read first value
-        let mut n: usize = 0;
-        let traverse_u64s = |i: &u64| {
-            let mut i = *i;
-            match i {
-                0 => {
-                    // all falses
-                    if !prev {
-                        n += 64;
-                    } else {
-                        f(prev, n);
-                        prev = false;
-                        n = 64;
-                    }
-                }
-                0xffff_ffff_ffff_ffff => {
-                    // all trues
-                    if prev {
-                        n += 64;
-                    } else {
-                        f(prev, n);
-                        prev = true;
-                        n = 64;
-                    }
-                }
-                _ => {
-                    let mut word_bits: usize = 64;
-                    if prev {
-                        let true_bits = i.trailing_ones() as usize;
-                        if true_bits > 0 {
-                            n += true_bits;
-                            i >>= true_bits;
-                            word_bits -= true_bits;
-                        }
-                    } else {
-                        let false_bits = i.trailing_zeros() as usize;
-                        if false_bits > 0 {
-                            n += false_bits;
-                            i >>= false_bits;
-                            word_bits -= false_bits;
-                        }
-                    }
-                    while word_bits > 0 {
-                        f(prev, n);
-                        if prev {
-                            prev = false;
-                            n = word_bits.min(i.trailing_zeros() as usize);
-                        } else {
-                            prev = true;
-                            n = word_bits.min(i.trailing_ones() as usize);
-                        }
-                        i >>= n;
-                        word_bits -= n;
-                    }
-                }
-            }
-        };
-
-        if len & 63 == 0 {
-            let u64s = bytemuck::cast_slice::<_, u64>(bm);
-            u64s.iter().for_each(traverse_u64s);
-            f(prev, n);
-            return;
-        }
-        let mut last_word_len = len & 63;
-        let u64s = bytemuck::cast_slice::<_, u64>(bm);
-        let (last, head) = u64s.split_last().unwrap();
-        head.iter().for_each(traverse_u64s);
-        // handle last word
-        let mut last = *last;
-        if prev {
-            let true_bits = last.trailing_ones() as usize;
-            if true_bits >= last_word_len {
-                f(prev, n + last_word_len);
-                return;
-            } else if true_bits > 0 {
-                n += true_bits;
-                last >>= true_bits;
-                last_word_len -= true_bits;
-            }
-        } else {
-            let false_bits = last.trailing_zeros() as usize;
-            if false_bits >= last_word_len {
-                f(prev, n + last_word_len);
-                return;
-            } else if false_bits > 0 {
-                n += false_bits;
-                last >>= false_bits;
-                last_word_len -= false_bits;
-            }
-        }
-        loop {
-            if last_word_len == 0 {
-                f(prev, n);
-                return;
-            }
-            f(prev, n);
-            prev = !prev; // flip the flag
-            if prev {
-                n = last_word_len.min(last.trailing_ones() as usize);
-            } else {
-                n = last_word_len.min(last.trailing_zeros() as usize);
-            }
-            last >>= n;
-            last_word_len -= n;
-        }
+        let (bm, len) = self.aligned();
+        bitmap_range_iter(bm, len)
     }
 }
 
-impl<T> ReadBitmapExt for T where T: ReadBitmap + ?Sized {}
+#[inline]
+pub fn bitmap_get(bm: &[u8], idx: usize) -> bool {
+    bm[idx >> 3] & (1 << (idx & 7)) != 0
+}
+
+#[inline]
+pub fn bitmap_bools(bm: &[u8], len: usize) -> BoolIter<'_> {
+    BoolIter { bm, len, idx: 0 }
+}
+
+#[inline]
+pub fn bitmap_true_count(bm: &[u8], len: usize) -> usize {
+    let mut bytes = len >> 3;
+    let u64bytes = (bytes >> 3) << 3;
+    bytes -= u64bytes;
+    let bits = len & 7;
+    // sum of u64s
+    let mut sum0: usize = bytemuck::cast_slice::<_, u64>(&bm[..u64bytes])
+        .iter()
+        .map(|v| v.count_ones() as usize)
+        .sum();
+    // sum of bytes
+    if bytes > 0 {
+        sum0 += bm[u64bytes..u64bytes + bytes]
+            .iter()
+            .map(|v| v.count_ones() as usize)
+            .sum::<usize>();
+    }
+    if bits > 0 {
+        // mask higher bits before counting
+        sum0 += (bm[u64bytes + bytes] & ((1 << bits) - 1)).count_ones() as usize;
+    }
+    sum0
+}
+
+#[inline]
+pub fn bitmap_false_count(bm: &[u8], len: usize) -> usize {
+    let mut bytes = len >> 3;
+    let u64bytes = (bytes >> 3) << 3;
+    bytes -= u64bytes;
+    let bits = len & 7;
+    // sum of u64s
+    let mut sum0: usize = bytemuck::cast_slice::<_, u64>(&bm[..u64bytes])
+        .iter()
+        .map(|v| v.count_zeros() as usize)
+        .sum();
+    // sum of bytes
+    if bytes > 0 {
+        sum0 += bm[u64bytes..u64bytes + bytes]
+            .iter()
+            .map(|v| v.count_zeros() as usize)
+            .sum::<usize>();
+    }
+    if bits > 0 {
+        // mask higher bits before counting
+        sum0 += (bm[u64bytes + bytes] | !((1 << bits) - 1)).count_zeros() as usize;
+    }
+    sum0
+}
+
+#[inline]
+pub fn bitmap_range_iter(bm: &[u8], len: usize) -> RangeIter<'_> {
+    // validate given bitmap is aligned per 8 bytes.
+    assert!(bm.len() & 7 == 0);
+    if len == 0 {
+        // empty iterator
+        return RangeIter {
+            u64s: &[],
+            last_word_len: 0,
+            word: 0,
+            word_bits: 0,
+            prev: false,
+            n: 0,
+        };
+    }
+    let prev = bm[0] & 1 != 1; // pre-read first value
+    let u64s = bytemuck::cast_slice::<_, u64>(bm);
+    let last_word_len = if len & 63 == 0 { 64 } else { len & 63 };
+    RangeIter {
+        u64s,
+        last_word_len,
+        word: 0,
+        word_bits: 0,
+        prev,
+        n: 0,
+    }
+}
+
+#[inline]
+pub fn bitmap_merge(this: &mut [u8], this_len: usize, that: &[u8], that_len: usize) {
+    assert!(this_len == that_len);
+    this.iter_mut().zip(that.iter()).for_each(|(a, b)| *a &= b);
+}
+
+#[inline]
+pub fn bitmap_for_each<F: FnMut(bool)>(bm: &[u8], len: usize, mut f: F) {
+    if len == 0 {
+        return;
+    }
+    bm[..len >> 3].iter().for_each(|b| {
+        f(b & 1 == 1);
+        f(b & 2 == 2);
+        f(b & 4 == 4);
+        f(b & 8 == 8);
+        f(b & 16 == 16);
+        f(b & 32 == 32);
+        f(b & 64 == 64);
+        f(b & 128 == 128);
+    });
+    if len & 7 == 0 {
+        return;
+    }
+    let b = bm[len >> 3];
+    let idx = len & 7;
+    f(b & 1 == 1);
+    if idx == 1 {
+        return;
+    }
+    f(b & 2 == 2);
+    if idx == 2 {
+        return;
+    }
+    f(b & 4 == 4);
+    if idx == 3 {
+        return;
+    }
+    f(b & 8 == 8);
+    if idx == 4 {
+        return;
+    }
+    f(b & 16 == 16);
+    if idx == 5 {
+        return;
+    }
+    f(b & 32 == 32);
+    if idx == 6 {
+        return;
+    }
+    f(b & 64 == 64);
+}
+
+#[inline]
+pub fn bitmap_for_each_range<F: FnMut(bool, usize)>(bm: &[u8], len: usize, mut f: F) {
+    if len == 0 {
+        return;
+    }
+    let mut prev = bm[0] & 1 == 1; // pre-read first value
+    let mut n: usize = 0;
+    let traverse_u64s = |i: &u64| {
+        let mut i = *i;
+        match i {
+            0 => {
+                // all falses
+                if !prev {
+                    n += 64;
+                } else {
+                    f(prev, n);
+                    prev = false;
+                    n = 64;
+                }
+            }
+            0xffff_ffff_ffff_ffff => {
+                // all trues
+                if prev {
+                    n += 64;
+                } else {
+                    f(prev, n);
+                    prev = true;
+                    n = 64;
+                }
+            }
+            _ => {
+                let mut word_bits: usize = 64;
+                if prev {
+                    let true_bits = i.trailing_ones() as usize;
+                    if true_bits > 0 {
+                        n += true_bits;
+                        i >>= true_bits;
+                        word_bits -= true_bits;
+                    }
+                } else {
+                    let false_bits = i.trailing_zeros() as usize;
+                    if false_bits > 0 {
+                        n += false_bits;
+                        i >>= false_bits;
+                        word_bits -= false_bits;
+                    }
+                }
+                while word_bits > 0 {
+                    f(prev, n);
+                    if prev {
+                        prev = false;
+                        n = word_bits.min(i.trailing_zeros() as usize);
+                    } else {
+                        prev = true;
+                        n = word_bits.min(i.trailing_ones() as usize);
+                    }
+                    i >>= n;
+                    word_bits -= n;
+                }
+            }
+        }
+    };
+
+    if len & 63 == 0 {
+        let u64s = bytemuck::cast_slice::<_, u64>(bm);
+        u64s.iter().for_each(traverse_u64s);
+        f(prev, n);
+        return;
+    }
+    let mut last_word_len = len & 63;
+    let u64s = bytemuck::cast_slice::<_, u64>(bm);
+    let (last, head) = u64s.split_last().unwrap();
+    head.iter().for_each(traverse_u64s);
+    // handle last word
+    let mut last = *last;
+    if prev {
+        let true_bits = last.trailing_ones() as usize;
+        if true_bits >= last_word_len {
+            f(prev, n + last_word_len);
+            return;
+        } else if true_bits > 0 {
+            n += true_bits;
+            last >>= true_bits;
+            last_word_len -= true_bits;
+        }
+    } else {
+        let false_bits = last.trailing_zeros() as usize;
+        if false_bits >= last_word_len {
+            f(prev, n + last_word_len);
+            return;
+        } else if false_bits > 0 {
+            n += false_bits;
+            last >>= false_bits;
+            last_word_len -= false_bits;
+        }
+    }
+    loop {
+        if last_word_len == 0 {
+            f(prev, n);
+            return;
+        }
+        f(prev, n);
+        prev = !prev; // flip the flag
+        if prev {
+            n = last_word_len.min(last.trailing_ones() as usize);
+        } else {
+            n = last_word_len.min(last.trailing_zeros() as usize);
+        }
+        last >>= n;
+        last_word_len -= n;
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RangeIter<'a> {
@@ -469,9 +481,23 @@ impl<'a> Iterator for RangeIter<'a> {
     }
 }
 
+pub trait ReadBitmapExt: ReadBitmap {
+    fn for_each<F: FnMut(bool)>(&self, f: F) {
+        let (bm, len) = self.aligned();
+        bitmap_for_each(bm, len, f)
+    }
+
+    fn for_each_range<F: FnMut(bool, usize)>(&self, f: F) {
+        let (bm, len) = self.aligned();
+        bitmap_for_each_range(bm, len, f)
+    }
+}
+
+impl<T: ReadBitmap> ReadBitmapExt for T {}
+
 pub trait WriteBitmap: ReadBitmap {
     /// Returns mutable ref to a bitmap.
-    fn as_bitmap_mut(&mut self) -> (&mut [u8], usize);
+    fn aligned_mut(&mut self) -> (&mut [u8], usize);
 
     /// Clear this map.
     fn clear(&mut self);
@@ -485,52 +511,23 @@ pub trait WriteBitmap: ReadBitmap {
     /// Set single value to the bitmap at given position.
     #[inline]
     fn set(&mut self, idx: usize, val: bool) -> Result<()> {
-        let (bm, len) = self.as_bitmap_mut();
+        let (bm, len) = self.aligned_mut();
         if idx >= len {
             return Err(Error::IndexOutOfBound(format!(
                 "{} >= bitmap length {}",
                 idx, len
             )));
         }
-        let bidx = idx >> 3;
-        if val {
-            bm[bidx] |= 1 << (idx & 7);
-        } else {
-            bm[bidx] &= !(1 << (idx & 7));
-        }
+        bitmap_set(bm, idx, val);
         Ok(())
     }
 
     /// Shift bitmap to left with give length.
     #[inline]
     fn shift(&mut self, bits: usize) -> Result<()> {
-        let orig_len = self.len(); // save original length
-                                   // temporarily update length to multiple of 64(64 bits or 8 bytes)
-                                   // so that we can perform shift on u64 instead of byte, leading to
-                                   // about 3x performance gain.
-        self.set_len(((orig_len + 63) / 64) * 64)?;
-        let bs = self.as_bitmap_mut().0;
-        shift_bits(bs, bits, orig_len);
-        self.set_len(orig_len - bits)
-    }
-
-    /// Shift bitmap to left with given length, provided an additional
-    /// buffer to speed up the operation.
-    /// After tuing shift() method, currently their performances are
-    /// similar, but keep it as is because buffered implementation is
-    /// simple and strict.
-    #[inline]
-    fn buf_shift(&mut self, bits: usize, buf: &mut [u8]) -> Result<()> {
-        let orig_len = self.len(); // save original length
-        self.set_len(((orig_len + 63) / 64) * 64)?;
-        let bs = self.as_bitmap_mut().0;
-        if buf.len() < bs.len() {
-            return Err(Error::InternalError(
-                "Not sufficient length of buffer for buf_shift".into(),
-            ));
-        }
-        buf_shift_bits(bs, bits, orig_len, buf);
-        self.set_len(orig_len - bits)
+        let (bm, len) = self.aligned_mut();
+        bitmap_shift(bm, len, bits);
+        self.set_len(len - bits)
     }
 
     /// Merges given bitmap to current one.
@@ -541,23 +538,33 @@ pub trait WriteBitmap: ReadBitmap {
     where
         T: ReadBitmap,
     {
-        let (this, this_len) = self.as_bitmap_mut();
-        let (that, that_len) = that.as_bitmap();
+        let (this, this_len) = self.aligned_mut();
+        let (that, that_len) = that.aligned();
         if this_len != that_len {
             return Err(Error::InvalidArgument(format!(
                 "lengths of merging bitmaps mismatch {} != {}",
                 this_len, that_len
             )));
         }
-        this.iter_mut().zip(that.iter()).for_each(|(a, b)| *a &= b);
+        bitmap_merge(this, this_len, that, that_len);
         Ok(())
     }
 
     /// Inverse all values in this bitmap
     #[inline]
     fn inverse(&mut self) {
-        let (bm, _) = self.as_bitmap_mut();
+        let (bm, _) = self.aligned_mut();
         bm.iter_mut().for_each(|x| *x = !*x)
+    }
+}
+
+#[inline]
+pub fn bitmap_set(bm: &mut [u8], idx: usize, val: bool) {
+    let bidx = idx >> 3;
+    if val {
+        bm[bidx] |= 1 << (idx & 7);
+    } else {
+        bm[bidx] &= !(1 << (idx & 7));
     }
 }
 
@@ -600,7 +607,7 @@ pub trait AppendBitmap: WriteBitmap {
 
 // input bs must have length of multiple of 8.
 #[inline]
-fn shift_bits(bs: &mut [u8], mut bits: usize, len: usize) {
+fn bitmap_shift(bs: &mut [u8], len: usize, mut bits: usize) {
     if bits >= len || bits == 0 {
         return;
     }
@@ -827,40 +834,6 @@ fn copy_const_bits(dst: &mut [u8], dst_len: usize, src_val: bool, src_len: usize
     // update all other u64s
     let u64word = if src_val { 0xffff_ffff_ffff_ffff } else { 0 };
     u64dst[1..].iter_mut().for_each(|w| *w = u64word);
-}
-
-#[inline]
-fn buf_shift_bits(bs: &mut [u8], mut bits: usize, len: usize, buf: &mut [u8]) {
-    if bits >= len || bits == 0 {
-        // no action, let caller update len
-        return;
-    }
-    let bytes = bits >> 3;
-    if bits & 7 == 0 {
-        // move bytes
-        bs.copy_within(bytes.., 0);
-        return;
-    }
-    let orig_u64s = bs.len() >> 3;
-    let offset_u64s = bits >> 6;
-    let u64bs = bytemuck::cast_slice_mut::<_, u64>(&mut bs[..orig_u64s * 8]);
-    let u64buf = bytemuck::cast_slice_mut::<_, u64>(&mut buf[..orig_u64s * 8]);
-    bits &= 63;
-    let rbits = 64 - bits;
-    u64buf
-        .iter_mut()
-        .zip(u64bs[offset_u64s..].iter())
-        .for_each(|(a, b)| {
-            *a = *b >> bits;
-        });
-    u64buf
-        .iter_mut()
-        .zip(u64bs[offset_u64s + 1..].iter())
-        .for_each(|(a, b)| {
-            *a |= *b << rbits;
-        });
-    let newlen = u64bs.len() - offset_u64s;
-    u64bs[..newlen].copy_from_slice(&u64buf[..newlen]);
 }
 
 #[derive(Debug, Clone)]
