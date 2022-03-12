@@ -11,6 +11,8 @@ repository = "https://github.com/jiangzhe/xngin/xngin-bench/"
 
 [dependencies]
 xngin-common = {version = "0.1.0", path = "../xngin-common"}
+xngin-compute = {version = "0.1.0", path = "../xngin-compute"}
+xngin-storage = {version = "0.1.0", path = "../xngin-storage"}
 
 [dev-dependencies]
 criterion = {version = "0.3", features = ["html_reports"]}
@@ -39,4 +41,8 @@ harness = false
 
 [[bench]]
 name = "bitmap_range_iter"
+harness = false
+
+[[bench]]
+name = "codec_add"
 harness = false

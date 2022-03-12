@@ -1,4 +1,4 @@
-use crate::bitmap::ffi_bitmap::FFIBitmap;
+use crate::bitmap::view::ViewBitmap;
 use crate::bitmap::{AppendBitmap, ReadBitmap, WriteBitmap};
 use crate::error::{Error, Result};
 use std::iter::FromIterator;
@@ -22,6 +22,17 @@ impl Clone for VecBitmap {
             inner,
             bits: self.bits,
         }
+    }
+}
+
+impl From<(&[u8], usize)> for VecBitmap {
+    #[inline]
+    fn from((src_bm, n_bits): (&[u8], usize)) -> Self {
+        assert!(n_bits <= src_bm.len() * 8);
+        let mut res = VecBitmap::with_capacity(n_bits);
+        res.inner.extend_from_slice(src_bm);
+        res.bits = n_bits;
+        res
     }
 }
 
@@ -93,7 +104,7 @@ impl VecBitmap {
         }
     }
 
-    /// Convert a VecBitmap to FFIBitmap.
+    /// Convert a VecBitmap to ViewBitmap.
     ///
     /// # Safety
     ///
@@ -101,60 +112,44 @@ impl VecBitmap {
     /// is always valid. The caller should take care of the recycle of
     /// memory, e.g. pass the pointer back and call from_ffi().
     #[inline]
-    pub unsafe fn to_ffi(mut self) -> FFIBitmap {
+    pub unsafe fn to_view(mut self) -> ViewBitmap {
         // decompose Vec to prevent freeing the memory
         let ptr = self.inner.as_ptr();
         let cap = self.inner.capacity();
         let inner = mem::take(&mut self.inner);
         mem::forget(inner);
-        FFIBitmap::new(ptr as *const u8, self.bits, cap * 8).unwrap()
-    }
-
-    /// Constuct a VecBitmap from a FFIBitmap.
-    ///
-    /// # Safety
-    ///  
-    /// The memory occupied by FFIBitmap must be allocated by Rust allocator
-    /// to free it safely.
-    pub unsafe fn from_ffi(ffi_map: FFIBitmap) -> Self {
-        let inner = Vec::from_raw_parts(
-            ffi_map.ptr as *mut u8,
-            (ffi_map.bits + 7) / 8,
-            ffi_map.max_bits / 8,
-        );
-        let len = ffi_map.bits;
-        VecBitmap { inner, bits: len }
+        ViewBitmap::new(ptr as *const u8, self.bits, cap * 8).unwrap()
     }
 }
 
 impl ReadBitmap for VecBitmap {
     #[inline]
-    fn as_bitmap(&self) -> (&[u8], usize) {
-        (&self.inner, self.bits)
+    fn aligned(&self) -> (&[u8], usize) {
+        let aligned_len = ((self.bits + 63) >> 6) << 3;
+        assert!(aligned_len <= self.inner.capacity());
+        // # SAFETY
+        //
+        // aligned length is guaranteed to be no more than capacity.
+        let bm = unsafe { std::slice::from_raw_parts(self.inner.as_ptr(), aligned_len) };
+        (bm, self.bits)
     }
 
     #[inline]
-    unsafe fn as_aligned_bitmap(&self) -> Result<(&[u8], usize)> {
-        let aligned_bytes = ((self.bits + 63) >> 6) << 3;
-        if aligned_bytes > self.inner.capacity() {
-            return Err(Error::InternalError(
-                "Not sufficient space for aligned bitmap view".into(),
-            ));
-        }
-        let bm = std::slice::from_raw_parts(self.inner.as_ptr(), aligned_bytes);
-        Ok((bm, self.bits))
-    }
-
-    #[inline]
-    fn cap(&self) -> usize {
-        self.inner.capacity() * 8
+    fn len(&self) -> usize {
+        self.bits
     }
 }
 
 impl WriteBitmap for VecBitmap {
     #[inline]
-    fn as_bitmap_mut(&mut self) -> (&mut [u8], usize) {
-        (&mut self.inner, self.bits)
+    fn aligned_mut(&mut self) -> (&mut [u8], usize) {
+        let aligned_len = ((self.bits + 63) >> 6) << 3;
+        assert!(aligned_len <= self.inner.capacity());
+        // # SAFETY
+        //
+        // aligned length is guaranteed to be no more than capacity.
+        let bm = unsafe { std::slice::from_raw_parts_mut(self.inner.as_mut_ptr(), aligned_len) };
+        (bm, self.bits)
     }
 
     #[inline]
@@ -202,7 +197,7 @@ impl AppendBitmap for VecBitmap {
 
     #[inline]
     fn extend<T: ReadBitmap + ?Sized>(&mut self, that: &T) -> Result<()> {
-        let (tbm, tlen) = unsafe { that.as_aligned_bitmap()? };
+        let (tbm, tlen) = that.aligned();
         // reserve space to make sure capacity is still multiple of 8
         let orig_len = self.len();
         let tgt_len = orig_len + tlen;
@@ -219,7 +214,7 @@ impl AppendBitmap for VecBitmap {
         that: &T,
         range: Range<usize>,
     ) -> Result<()> {
-        let (tbm, tlen) = unsafe { that.as_aligned_bitmap()? };
+        let (tbm, tlen) = that.aligned();
         if range.end > tlen {
             return Err(Error::IndexOutOfBound(format!(
                 "extend range {:?} larger than column length {}",
@@ -305,14 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn test_bitmap_inverse() {
-        let bm = VecBitmap::from(vec![true; 10240]);
-        unsafe {
-            let mut ffi_bm = bm.to_ffi();
-            ffi_bm.inverse();
-            // free the memory
-            let _vbm = VecBitmap::from_ffi(ffi_bm);
-        }
+    fn test_bitmap_from_u8s_and_len() {
+        let bm = VecBitmap::from((&[5u8][..], 4usize));
+        assert_eq!(4, bm.len());
+        assert!(bm.get(0).unwrap());
+        assert!(!bm.get(1).unwrap());
+        assert!(bm.get(2).unwrap());
+        assert!(!bm.get(3).unwrap());
     }
 
     #[test]
@@ -460,15 +454,9 @@ mod tests {
         for v in &bools {
             bm.add(*v)?;
         }
-        let mut bm2 = bm.clone();
-        let mut buf = vec![0; bm2.cap() / 8];
         // shift
         bm.shift(SHIFT_N)?;
         let shifted: Vec<_> = bm.bools().collect();
-        assert_eq!(expected, shifted);
-        // buf shift
-        bm2.buf_shift(SHIFT_N, &mut buf)?;
-        let shifted: Vec<_> = bm2.bools().collect();
         assert_eq!(expected, shifted);
         Ok(())
     }
@@ -481,15 +469,9 @@ mod tests {
         for v in &bools {
             bm.add(*v)?;
         }
-        let mut bm2 = bm.clone();
-        let mut buf = vec![0; bm2.cap() / 8];
         // shift
         bm.shift(SHIFT_N)?;
         let shifted: Vec<_> = bm.bools().collect();
-        assert_eq!(expected, shifted);
-        // buf shift
-        bm2.buf_shift(SHIFT_N, &mut buf)?;
-        let shifted: Vec<_> = bm2.bools().collect();
         assert_eq!(expected, shifted);
         Ok(())
     }
@@ -502,15 +484,9 @@ mod tests {
         for v in &bools {
             bm.add(*v)?;
         }
-        let mut bm2 = bm.clone();
-        let mut buf = vec![0; bm2.cap() / 8];
         // shift
         bm.shift(SHIFT_N)?;
         let shifted: Vec<_> = bm.bools().collect();
-        assert_eq!(expected, shifted);
-        // buf shift
-        bm2.buf_shift(SHIFT_N, &mut buf)?;
-        let shifted: Vec<_> = bm2.bools().collect();
         assert_eq!(expected, shifted);
         Ok(())
     }
@@ -527,15 +503,9 @@ mod tests {
         for v in &expected {
             bm1.add(*v)?;
         }
-        let mut bm2 = bm.clone();
-        let mut buf = vec![0; bm2.cap() / 8];
         // shift
         bm.shift(SHIFT_N)?;
         let shifted: Vec<_> = bm.bools().collect();
-        assert_eq!(expected, shifted);
-        // buf shift
-        bm2.buf_shift(SHIFT_N, &mut buf)?;
-        let shifted: Vec<_> = bm2.bools().collect();
         assert_eq!(expected, shifted);
         Ok(())
     }
@@ -548,15 +518,9 @@ mod tests {
         for v in &bools {
             bm.add(*v)?;
         }
-        let mut bm2 = bm.clone();
-        let mut buf = vec![0; bm2.cap() / 8];
         // shift
         bm.shift(SHIFT_N)?;
         let shifted: Vec<_> = bm.bools().collect();
-        assert_eq!(expected, shifted);
-        // buf shift
-        bm2.buf_shift(SHIFT_N, &mut buf)?;
-        let shifted: Vec<_> = bm2.bools().collect();
         assert_eq!(expected, shifted);
         Ok(())
     }
@@ -569,15 +533,9 @@ mod tests {
         for v in &bools {
             bm.add(*v)?;
         }
-        let mut bm2 = bm.clone();
-        let mut buf = vec![0; bm2.cap() / 8];
         // shift
         bm.shift(SHIFT_N)?;
         let shifted: Vec<_> = bm.bools().collect();
-        assert_eq!(expected, shifted);
-        // buf shift
-        bm2.buf_shift(SHIFT_N, &mut buf)?;
-        let shifted: Vec<_> = bm2.bools().collect();
         assert_eq!(expected, shifted);
         Ok(())
     }
