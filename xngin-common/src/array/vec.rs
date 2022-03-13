@@ -1,5 +1,6 @@
 use crate::array::ArrayBuild;
 use crate::array::ArrayCast;
+use crate::byte_repr::ByteRepr;
 use std::mem::size_of;
 
 /// VecArray represents the owned version of an array of dynamic type.
@@ -21,19 +22,19 @@ impl ArrayCast for VecArray {
     }
 
     #[inline]
-    fn cast_i32s(&self) -> &[i32] {
-        assert!(self.len * size_of::<i32>() == self.inner.len());
+    fn cast<T: ByteRepr>(&self) -> &[T] {
+        assert!(self.len * size_of::<T>() == self.inner.len());
         // # SAFETY
         //
         // Length is guaranteed to be valid as above assertion succeeds.
-        unsafe { std::slice::from_raw_parts(self.inner.as_ptr() as *const i32, self.len()) }
+        unsafe { std::slice::from_raw_parts(self.inner.as_ptr() as *const T, self.len()) }
     }
 }
 
 impl ArrayBuild for VecArray {
     #[inline]
-    fn build_i32s(&mut self, len: usize) -> &mut [i32] {
-        let len_u8 = len * size_of::<i32>();
+    fn build<T: ByteRepr>(&mut self, len: usize) -> &mut [T] {
+        let len_u8 = len * size_of::<T>();
         if self.inner.capacity() < len_u8 {
             self.inner.reserve_exact(len_u8 - self.len());
         }
@@ -43,7 +44,7 @@ impl ArrayBuild for VecArray {
         unsafe {
             self.inner.set_len(len_u8);
             self.len = len;
-            std::slice::from_raw_parts_mut(self.inner.as_mut_ptr() as *mut i32, len)
+            std::slice::from_raw_parts_mut(self.inner.as_mut_ptr() as *mut T, len)
         }
     }
 }
@@ -87,7 +88,7 @@ mod tests {
     #[test]
     fn test_vec_array_build_i32s() {
         let mut arr = VecArray::default();
-        let i32s = arr.build_i32s(3);
+        let i32s = arr.build::<i32>(3);
         i32s.copy_from_slice(&[1, 2, 3]);
         let mut bytes = vec![0; 12];
         bytes[0..4].copy_from_slice(&1i32.to_ne_bytes());

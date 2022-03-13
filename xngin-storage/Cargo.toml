@@ -12,3 +12,4 @@ repository = "https://github.com/jiangzhe/xngin/xngin-storage/"
 [dependencies]
 xngin-common = { version = "0.1.0", path = "../xngin-common" }
 xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
+smallvec = {version = "1.8", features = ["union"]}

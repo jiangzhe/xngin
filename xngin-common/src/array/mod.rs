@@ -1,6 +1,7 @@
 mod vec;
 mod view;
 
+use crate::byte_repr::ByteRepr;
 pub use vec::VecArray;
 pub use view::ViewArray;
 
@@ -12,7 +13,7 @@ pub trait ArrayCast {
         self.len() == 0
     }
 
-    fn cast_i32s(&self) -> &[i32];
+    fn cast<T: ByteRepr>(&self) -> &[T];
 }
 
 pub trait ArrayBuild {
@@ -21,5 +22,5 @@ pub trait ArrayBuild {
     ///
     /// User can update values in returned slice and should not
     /// rely on its original contents.
-    fn build_i32s(&mut self, len: usize) -> &mut [i32];
+    fn build<T: ByteRepr>(&mut self, len: usize) -> &mut [T];
 }

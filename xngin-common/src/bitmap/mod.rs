@@ -156,6 +156,19 @@ pub fn bitmap_range_iter(bm: &[u8], len: usize) -> RangeIter<'_> {
 }
 
 #[inline]
+pub fn bitmap_first_true(bm: &[u8], len: usize) -> Option<usize> {
+    let mut idx = 0;
+    for (f, n) in bitmap_range_iter(bm, len) {
+        if f {
+            return Some(idx);
+        } else {
+            idx += n;
+        }
+    }
+    None
+}
+
+#[inline]
 pub fn bitmap_merge(this: &mut [u8], this_len: usize, that: &[u8], that_len: usize) {
     assert!(this_len == that_len);
     this.iter_mut().zip(that.iter()).for_each(|(a, b)| *a &= b);
