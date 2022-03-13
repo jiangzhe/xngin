@@ -24,6 +24,12 @@ pub enum Detail {
 }
 
 #[dynamic]
+pub static I32: PreciseType = PreciseType {
+    ty: DataType::I32,
+    detail: Detail::None,
+};
+
+#[dynamic]
 pub static I64: PreciseType = PreciseType {
     ty: DataType::I64,
     detail: Detail::None,

@@ -1,4 +1,5 @@
 use crate::array::ArrayCast;
+use crate::byte_repr::ByteRepr;
 
 /// ViewArray represents a immutable view on an array without type info.
 /// Use it separately is very unsafe.
@@ -27,9 +28,9 @@ impl ArrayCast for ViewArray {
     }
 
     #[inline]
-    fn cast_i32s(&self) -> &[i32] {
+    fn cast<T: ByteRepr>(&self) -> &[T] {
         // High-level operations should ensure the pointer and length are valid.
-        unsafe { std::slice::from_raw_parts(self.ptr as *const i32, self.len()) }
+        unsafe { std::slice::from_raw_parts(self.ptr as *const T, self.len()) }
     }
 }
 
@@ -48,7 +49,7 @@ mod tests {
             len,
         };
         unsafe {
-            let i32s = arr.cast_i32s();
+            let i32s = arr.cast::<i32>();
             assert_eq!(vec![1, 2, 3], i32s);
             // release leaked memory
             let _ = Vec::from_raw_parts(i32s.as_ptr() as *mut i32, i32s.len(), i32s.len());

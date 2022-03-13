@@ -12,6 +12,8 @@ repository = "https://github.com/jiangzhe/xngin/xngin-comon/"
 [dependencies]
 thiserror = "1.0"
 bytemuck = "1.7"
+smallvec = {version = "1.8", features = ["union"]}
+byteorder = "1.4"
 
 [dev-dependencies]
 rand = "0.8"

@@ -3,7 +3,7 @@ use std::iter::FromIterator;
 use xngin_common::bitmap::{VecBitmap, WriteBitmap};
 
 fn bench_shift(c: &mut Criterion) {
-    (10..=20).step_by(2).for_each(|log2_size| {
+    (10..=16).step_by(2).for_each(|log2_size| {
         let size = 2usize.pow(log2_size);
         let mut bm1 = VecBitmap::from_iter((0..size).into_iter().map(|x| x & 3 == 0));
         c.bench_function(&format!("bitmap_shift_{}_aligned_{}", 8, size), |b| {
