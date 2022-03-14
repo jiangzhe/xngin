@@ -14,10 +14,10 @@ mod tests {
     use super::*;
     #[test]
     fn test_size_of_expr() {
-        println!("size of Expr {}", std::mem::size_of::<Expr>());
+        println!("size of Expr {}", std::mem::size_of::<ExprKind>());
         println!("size of Const {}", std::mem::size_of::<Const>());
         println!("size of Col {}", std::mem::size_of::<Col>());
         println!("size of AggrFunc {}", std::mem::size_of::<Aggf>());
-        println!("size of Func {}", std::mem::size_of::<Func>());
+        // println!("size of Func {}", std::mem::size_of::<Func>());
     }
 }

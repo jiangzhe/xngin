@@ -381,7 +381,7 @@ pub trait ExprResolve {
                     }
                     expr::Expr::pred_func(
                         PredFuncKind::InValues,
-                        vec![lhs, expr::Expr::Tuple(list)],
+                        vec![lhs, expr::Expr::tuple(list)],
                     )
                 }
                 Predicate::NotInValues(lhs, vals) => {
@@ -393,7 +393,7 @@ pub trait ExprResolve {
                     }
                     expr::Expr::pred_func(
                         PredFuncKind::NotInValues,
-                        vec![lhs, expr::Expr::Tuple(list)],
+                        vec![lhs, expr::Expr::tuple(list)],
                     )
                 }
                 Predicate::InSubquery(lhs, subq) => {
@@ -428,7 +428,7 @@ pub trait ExprResolve {
                         let e = self.resolve_expr(c, location, phc, within_aggr)?;
                         list.push(e);
                     }
-                    expr::Expr::Pred(Pred::Conj(list))
+                    expr::Expr::pred(Pred::Conj(list))
                 }
                 Predicate::Disj(ds) => {
                     let mut list = Vec::with_capacity(ds.len());
@@ -436,7 +436,7 @@ pub trait ExprResolve {
                         let e = self.resolve_expr(d, location, phc, within_aggr)?;
                         list.push(e);
                     }
-                    expr::Expr::Pred(Pred::Disj(list))
+                    expr::Expr::pred(Pred::Disj(list))
                 }
                 Predicate::LogicalXor(xs) => {
                     let mut list = Vec::with_capacity(xs.len());
@@ -444,7 +444,7 @@ pub trait ExprResolve {
                         let e = self.resolve_expr(x, location, phc, within_aggr)?;
                         list.push(e);
                     }
-                    expr::Expr::Pred(Pred::Xor(list))
+                    expr::Expr::pred(Pred::Xor(list))
                 }
             },
             Expr::ScalarSubquery(subq) => {
@@ -456,7 +456,7 @@ pub trait ExprResolve {
                     let e = self.resolve_expr(arg, location, phc, within_aggr)?;
                     expr::Expr::func(
                         expr::FuncKind::Extract,
-                        vec![expr::Expr::Farg(Farg::TimeUnit(unit)), e],
+                        vec![expr::Expr::farg(Farg::TimeUnit(unit)), e],
                     )
                 }
                 Builtin::Substring(arg, start, end) => {
@@ -474,24 +474,23 @@ pub trait ExprResolve {
                 branches,
                 fallback,
             }) => {
-                let mut args = Vec::with_capacity(branches.len() * 2 + 2);
-                let node = match operand {
+                // let mut args = Vec::with_capacity(branches.len() * 2 + 2);
+                let op = match operand {
                     Some(e) => self.resolve_expr(e, location, phc, within_aggr)?,
                     None => expr::Expr::farg_none(),
                 };
-                args.push(node);
-                let fb = match fallback {
+                let fallback = match fallback {
                     Some(e) => self.resolve_expr(e, location, phc, within_aggr)?,
                     None => expr::Expr::farg_none(),
                 };
-                args.push(fb);
+                let mut acts = Vec::with_capacity(branches.len() * 2);
                 for (when, then) in branches {
                     let when = self.resolve_expr(when, location, phc, within_aggr)?;
-                    args.push(when);
+                    acts.push(when);
                     let then = self.resolve_expr(then, location, phc, within_aggr)?;
-                    args.push(then);
+                    acts.push(then);
                 }
-                expr::Expr::func(expr::FuncKind::Case, args)
+                expr::Expr::new_case(op, acts, fallback)
             }
             _ => todo!("exprs"),
         };
@@ -548,7 +547,7 @@ pub trait ExprResolve {
                 let value: i32 = value.parse()?;
                 expr::Expr::const_interval(unit, value)
             }
-            _ => todo!("hexstr, bitstr, time, datetime, interval"),
+            _ => todo!("other literal not supported"),
         };
         Ok(res)
     }

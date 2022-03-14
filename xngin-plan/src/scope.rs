@@ -81,11 +81,6 @@ impl Scope {
         }
     }
 
-    // #[inline]
-    // pub fn position_out_col(&self, alias: &str) -> Option<usize> {
-    //     self.out_cols.iter().position(|(_, a)| a == alias)
-    // }
-
     #[inline]
     pub fn restrict_from_aliases(&self, aliases: &[SmolStr]) -> QueryAliases {
         let m: IndexMap<SmolStr, QueryID> = aliases

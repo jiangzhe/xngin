@@ -1,7 +1,7 @@
 use crate::DataType;
 use static_init::dynamic;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PreciseType {
     pub ty: DataType,
     pub detail: Detail,
@@ -17,7 +17,7 @@ impl PreciseType {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Detail {
     None,
     Decimal { max_intg: u8, max_frac: u8 },

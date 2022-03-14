@@ -327,7 +327,7 @@ fn build_join_tree(
 /// between two sides. With skip check, we only need to merge these
 /// edges and estimate cost once.
 struct PlanEntry<'a> {
-    skips: SmallVec<[VertexSet; 5]>,
+    skips: SmallVec<[VertexSet; 4]>,
     tree: Tree<'a>,
 }
 

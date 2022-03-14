@@ -1,30 +1,3 @@
-use crate::expr::Expr;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Func {
-    pub kind: FuncKind,
-    pub args: Box<[Expr]>,
-}
-
-impl Default for Func {
-    fn default() -> Self {
-        Func {
-            kind: FuncKind::Uninit,
-            args: Box::default(),
-        }
-    }
-}
-
-impl Func {
-    #[inline]
-    pub fn new(kind: FuncKind, args: Vec<Expr>) -> Self {
-        Func {
-            kind,
-            args: args.into_boxed_slice(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FuncKind {
     // Uninitialized, should be used only for intermediate placeholder
@@ -46,9 +19,6 @@ pub enum FuncKind {
     BitXor,
     BitShl,
     BitShr,
-    /// Case when clause.
-    // arguments: [node, else, when, then, ..., when, then]
-    Case,
     /// SQL builtin functions: variable args
     // extract: [time_unit, arg]
     Extract,
@@ -73,9 +43,20 @@ impl FuncKind {
             FuncKind::BitXor => "bitxor",
             FuncKind::BitShl => "bitshl",
             FuncKind::BitShr => "bitshr",
-            FuncKind::Case => "case",
             FuncKind::Extract => "extract",
             FuncKind::Substring => "substring",
+        }
+    }
+
+    #[inline]
+    pub fn n_args(&self) -> usize {
+        use FuncKind::*;
+        match self {
+            Uninit => 0,
+            Neg | BitInv => 1,
+            Add | Sub | Mul | Div | IntDiv | BitAnd | BitOr | BitXor | BitShl | BitShr => 2,
+            Extract => 2,
+            Substring => 3,
         }
     }
 }

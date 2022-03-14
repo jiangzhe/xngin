@@ -1,12 +1,12 @@
 use crate::error::Result;
-use crate::{Const, Expr};
+use crate::{Const, ExprKind};
 use xngin_datatype::Decimal;
 
 #[inline]
-pub fn fold_neg(arg: &Expr) -> Result<Option<Const>> {
-    match arg {
-        Expr::Const(Const::Null) => Ok(Some(Const::Null)),
-        Expr::Const(c) => fold_neg_const(c),
+pub fn fold_neg(arg: &ExprKind) -> Result<Option<Const>> {
+    match &arg {
+        ExprKind::Const(Const::Null) => Ok(Some(Const::Null)),
+        ExprKind::Const(c) => fold_neg_const(c),
         _ => Ok(None),
     }
 }
@@ -98,7 +98,7 @@ mod tests {
     }
 
     fn assert_eq_fold_neg(c1: Const, c2: Const) {
-        let res = fold_neg(&Expr::Const(c1)).unwrap().unwrap();
+        let res = fold_neg(&ExprKind::Const(c1)).unwrap().unwrap();
         assert_eq!(res, c2)
     }
 }

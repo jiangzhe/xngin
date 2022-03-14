@@ -7,7 +7,7 @@ use smol_str::SmolStr;
 use std::collections::BTreeMap;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, Expr, ExprMutVisitor, ExprVisitor, QueryID};
+use xngin_expr::{Col, Expr, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Column pruning will remove unnecessary columns from the given plan.
 /// It is invoked top down. First collect all output columns from current
@@ -67,7 +67,7 @@ impl ExprVisitor for Collect<'_> {
     type Break = ();
     #[inline]
     fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
-        if let Expr::Col(Col::QueryCol(qry_id, idx)) = e {
+        if let ExprKind::Col(Col::QueryCol(qry_id, idx)) = &e.kind {
             self.0.entry(*qry_id).or_default().insert(*idx, 0);
         }
         ControlFlow::Continue(())
@@ -111,15 +111,16 @@ impl ExprMutVisitor for Modify<'_> {
     #[inline]
     fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
-        match e {
-            Expr::Col(Col::QueryCol(qry_id, idx)) | Expr::Col(Col::CorrelatedCol(qry_id, idx)) => {
+        match &mut e.kind {
+            ExprKind::Col(Col::QueryCol(qry_id, idx))
+            | ExprKind::Col(Col::CorrelatedCol(qry_id, idx)) => {
                 if let Some(new) = self.use_set.get(qry_id).and_then(|m| m.get(idx).cloned()) {
                     *idx = new;
                     // expression change
                     eff |= RuleEffect::EXPR;
                 }
             }
-            Expr::Subq(_, qry_id) => {
+            ExprKind::Subq(_, qry_id) => {
                 eff |= prune_col(self.qry_set, *qry_id, self.use_set).branch()?;
             }
             _ => (),
@@ -130,8 +131,8 @@ impl ExprMutVisitor for Modify<'_> {
 
 fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<u32, u32>>) {
     match &mut subq.root {
-        Op::Proj(proj) => {
-            proj.cols = retain(mem::take(&mut proj.cols), mapping);
+        Op::Proj { cols, .. } => {
+            *cols = retain(mem::take(cols), mapping);
         }
         Op::Aggr(aggr) => {
             aggr.proj = retain(mem::take(&mut aggr.proj), mapping);

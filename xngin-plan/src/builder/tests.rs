@@ -706,8 +706,8 @@ impl OpVisitor for CollectFiltExpr {
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {
         match op {
-            Op::Filt(filt) => {
-                self.0 = filt.pred.clone();
+            Op::Filt { pred, .. } => {
+                self.0 = pred.clone();
                 ControlFlow::Break(())
             }
             _ => ControlFlow::Continue(()),

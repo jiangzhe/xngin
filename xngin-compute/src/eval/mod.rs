@@ -1,5 +1,5 @@
 use crate::error::Result;
-use xngin_expr::{Const, Expr, Func};
+use xngin_expr::{Const, ExprKind};
 use xngin_storage::block::Block;
 use xngin_storage::codec::{Codec, SingleCodec};
 
@@ -8,12 +8,11 @@ pub trait BlockEval {
     fn block_eval(&self, input: &Block) -> Result<Codec>;
 }
 
-impl BlockEval for Expr {
+impl BlockEval for ExprKind {
     #[inline]
     fn block_eval(&self, input: &Block) -> Result<Codec> {
         match self {
-            Expr::Const(c) => c.block_eval(input),
-            Expr::Func(f) => f.block_eval(input),
+            ExprKind::Const(c) => c.block_eval(input),
             _ => todo!(),
         }
     }
@@ -28,12 +27,5 @@ impl BlockEval for Const {
             _ => todo!(),
         };
         Ok(res)
-    }
-}
-
-impl BlockEval for Func {
-    #[inline]
-    fn block_eval(&self, _input: &Block) -> Result<Codec> {
-        todo!()
     }
 }

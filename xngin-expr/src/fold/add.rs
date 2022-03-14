@@ -1,12 +1,14 @@
 use crate::error::{Error, Result};
-use crate::{Const, Expr};
+use crate::{Const, ExprKind};
 use xngin_datatype::Decimal;
 
 #[inline]
-pub fn fold_add(lhs: &Expr, rhs: &Expr) -> Result<Option<Const>> {
+pub fn fold_add(lhs: &ExprKind, rhs: &ExprKind) -> Result<Option<Const>> {
     match (lhs, rhs) {
-        (Expr::Const(Const::Null), _) | (_, Expr::Const(Const::Null)) => Ok(Some(Const::Null)),
-        (Expr::Const(lhs), Expr::Const(rhs)) => fold_add_const(lhs, rhs),
+        (ExprKind::Const(Const::Null), _) | (_, ExprKind::Const(Const::Null)) => {
+            Ok(Some(Const::Null))
+        }
+        (ExprKind::Const(lhs), ExprKind::Const(rhs)) => fold_add_const(lhs, rhs),
         _ => Ok(None),
     }
 }
@@ -208,7 +210,7 @@ mod tests {
     }
 
     fn assert_eq_fold_add(c1: Const, c2: Const, c3: Const) {
-        let res = fold_add(&Expr::Const(c1), &Expr::Const(c2))
+        let res = fold_add(&ExprKind::Const(c1), &ExprKind::Const(c2))
             .unwrap()
             .unwrap();
         assert_eq!(res, c3)
