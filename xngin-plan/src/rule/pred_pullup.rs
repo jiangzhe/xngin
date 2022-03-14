@@ -173,7 +173,7 @@ impl OpMutVisitor for PredPullup<'_> {
         match op {
             // top down, translate parent cols to current cols, for first proj or aggr
             Op::Proj { cols, .. } => {
-                self.translate_p_cols(&cols);
+                self.translate_p_cols(cols);
             }
             // top down , translate parent cols
             Op::Aggr(aggr) => {
@@ -291,7 +291,7 @@ impl OpMutVisitor for PredPullup<'_> {
             // bottom up and append all predicates to Filt
             Op::Filt { pred, .. } => {
                 if !pred.is_empty() && !self.c_preds.is_empty() {
-                    let new_preds = self.propagate_preds(&pred);
+                    let new_preds = self.propagate_preds(pred);
                     for ((qid, idx), pes) in self.c_preds.drain() {
                         for pe in pes {
                             let new_e = Expr::pred_func(
@@ -309,7 +309,7 @@ impl OpMutVisitor for PredPullup<'_> {
                         pred.push(new_e);
                     }
                 }
-                self.collect_p_preds(&pred).branch()?;
+                self.collect_p_preds(pred).branch()?;
             }
             Op::Join(join) => match join.as_mut() {
                 Join::Cross(_) => (), // bypass cross join

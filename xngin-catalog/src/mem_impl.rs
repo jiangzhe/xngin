@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use xngin_datatype::DataType;
+use xngin_datatype::PreciseType;
 
 #[derive(Debug, Clone)]
 pub struct MemCatalog {
@@ -172,7 +172,7 @@ impl MemCatalogBuilder {
                     id,
                     table_id,
                     name: c.name.clone(),
-                    ty: c.ty,
+                    pty: c.pty,
                     attr: c.attr,
                     idx: i as u32,
                 };
@@ -201,16 +201,16 @@ impl MemCatalogBuilder {
 
 pub struct ColumnSpec {
     pub name: SmolStr,
-    pub ty: DataType,
+    pub pty: PreciseType,
     pub attr: ColumnAttr,
 }
 
 impl ColumnSpec {
     #[inline]
-    pub fn new(name: &str, ty: DataType, attr: ColumnAttr) -> Self {
+    pub fn new(name: &str, pty: PreciseType, attr: ColumnAttr) -> Self {
         ColumnSpec {
             name: SmolStr::new(name),
-            ty,
+            pty,
             attr,
         }
     }

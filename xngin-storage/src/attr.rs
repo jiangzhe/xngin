@@ -1,6 +1,6 @@
 use crate::codec::Codec;
 use xngin_common::psma::PSMA;
-use xngin_datatype::{PreciseType, I32};
+use xngin_datatype::PreciseType;
 
 pub struct Attr {
     pub pty: PreciseType,
@@ -20,7 +20,7 @@ impl From<Vec<i32>> for Attr {
             }
         };
         Attr {
-            pty: *I32,
+            pty: PreciseType::i32(),
             codec,
             psma,
         }

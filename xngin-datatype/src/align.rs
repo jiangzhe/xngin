@@ -32,11 +32,11 @@ impl AlignType {
                     _ => AlignType::F64,
                 }
             }
-            String | Char | Bytes => match that {
+            String | Bytes => match that {
                 I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
                     AlignType::F64
                 }
-                String | Char | Bytes | Time => AlignType::Bytes,
+                String | Bytes | Time => AlignType::Bytes,
                 Date | Datetime => AlignType::Datetime,
                 Interval | Null => return None,
             },
@@ -44,7 +44,7 @@ impl AlignType {
                 I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
                     AlignType::F64
                 }
-                String | Char | Bytes => AlignType::Datetime,
+                String | Bytes => AlignType::Datetime,
                 Date | Datetime => AlignType::Datetime,
                 Time => AlignType::Bytes,
                 Interval | Null => return None,
@@ -53,14 +53,14 @@ impl AlignType {
                 I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
                     AlignType::F64
                 }
-                String | Char | Bytes | Date | Datetime | Time => AlignType::Bytes,
+                String | Bytes | Date | Datetime | Time => AlignType::Bytes,
                 Interval | Null => return None,
             },
             Datetime => match that {
                 I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
                     AlignType::F64
                 }
-                String | Char | Bytes | Date | Datetime => AlignType::Datetime,
+                String | Bytes | Date | Datetime => AlignType::Datetime,
                 Time => AlignType::Bytes,
                 Interval | Null => return None,
             },
