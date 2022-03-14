@@ -8,7 +8,10 @@ pub enum Pred {
     Xor(Vec<Expr>),
     // Wrapped expression must return bool.
     // It can be achieved by adding cast function.
-    Func(PredFunc),
+    Func {
+        kind: PredFuncKind,
+        args: Box<[Expr]>,
+    },
     Not(Box<Expr>),
     InSubquery(Box<Expr>, Box<Expr>),
     NotInSubquery(Box<Expr>, Box<Expr>),
@@ -19,11 +22,11 @@ pub enum Pred {
 impl Pred {
     #[inline]
     pub fn func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
-        assert_eq!(kind.n_args(), args.len());
-        Pred::Func(PredFunc {
+        debug_assert_eq!(kind.n_args(), args.len());
+        Pred::Func {
             kind,
             args: args.into_boxed_slice(),
-        })
+        }
     }
 }
 
@@ -31,11 +34,11 @@ impl Pred {
 /// It is separated from common function because in SQL context, predicates
 /// are very important for optimization and we'd like to specially handle
 /// them.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PredFunc {
-    pub kind: PredFuncKind,
-    pub args: Box<[Expr]>,
-}
+// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// pub struct PredFunc {
+//     pub kind: PredFuncKind,
+//     pub args: Box<[Expr]>,
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PredFuncKind {

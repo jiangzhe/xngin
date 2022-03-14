@@ -39,9 +39,12 @@ pub enum OpKind {
 #[derive(Debug, Clone)]
 pub enum Op {
     /// Projection node.
-    Proj(Proj),
+    Proj {
+        cols: Vec<(Expr, SmolStr)>,
+        input: Box<Op>,
+    },
     /// Filter node.
-    Filt(Filt),
+    Filt { pred: Vec<Expr>, input: Box<Op> },
     /// Aggregation node.
     Aggr(Box<Aggr>),
     /// Join node.
@@ -50,9 +53,17 @@ pub enum Op {
     /// After that, it will be converted back to multiple Join nodes.
     JoinGraph(Box<JoinGraph>),
     /// Sort node.
-    Sort(Sort),
+    Sort {
+        items: Vec<SortItem>,
+        limit: Option<u64>,
+        input: Box<Op>,
+    },
     /// Limit node.
-    Limit(Limit),
+    Limit {
+        start: u64,
+        end: u64,
+        input: Box<Op>,
+    },
     /// Attach node.
     /// Attach a deferred scalar value into result set.
     /// This node is converted from a non-correlated scalar subquery.
@@ -82,13 +93,13 @@ impl Op {
     #[inline]
     pub fn kind(&self) -> OpKind {
         match self {
-            Op::Proj(_) => OpKind::Proj,
-            Op::Filt(_) => OpKind::Filt,
+            Op::Proj { .. } => OpKind::Proj,
+            Op::Filt { .. } => OpKind::Filt,
             Op::Aggr(_) => OpKind::Aggr,
             Op::Join(_) => OpKind::Join,
             Op::JoinGraph(_) => OpKind::JoinGraph,
-            Op::Sort(_) => OpKind::Sort,
-            Op::Limit(_) => OpKind::Limit,
+            Op::Sort { .. } => OpKind::Sort,
+            Op::Limit { .. } => OpKind::Limit,
             Op::Attach(..) => OpKind::Attach,
             Op::Row(_) => OpKind::Row,
             Op::Query(_) => OpKind::Query,
@@ -99,28 +110,28 @@ impl Op {
     }
 
     #[inline]
-    pub fn proj(cols: Vec<(Expr, SmolStr)>, source: Op) -> Self {
-        Op::Proj(Proj {
+    pub fn proj(cols: Vec<(Expr, SmolStr)>, input: Op) -> Self {
+        Op::Proj {
             cols,
-            source: Box::new(source),
-        })
+            input: Box::new(input),
+        }
     }
 
     #[inline]
-    pub fn filt(pred: Vec<Expr>, source: Op) -> Self {
-        Op::Filt(Filt {
+    pub fn filt(pred: Vec<Expr>, input: Op) -> Self {
+        Op::Filt {
             pred,
-            source: Box::new(source),
-        })
+            input: Box::new(input),
+        }
     }
 
     #[inline]
-    pub fn sort(items: Vec<SortItem>, source: Op) -> Self {
-        Op::Sort(Sort {
+    pub fn sort(items: Vec<SortItem>, input: Op) -> Self {
+        Op::Sort {
             items,
             limit: None,
-            source: Box::new(source),
-        })
+            input: Box::new(input),
+        }
     }
 
     #[inline]
@@ -129,22 +140,22 @@ impl Op {
     }
 
     #[inline]
-    pub fn aggr(groups: Vec<Expr>, source: Op) -> Self {
+    pub fn aggr(groups: Vec<Expr>, input: Op) -> Self {
         Op::Aggr(Box::new(Aggr {
             groups,
             proj: vec![],
-            source,
+            input,
             filt: vec![],
         }))
     }
 
     #[inline]
-    pub fn limit(start: u64, end: u64, source: Op) -> Self {
-        Op::Limit(Limit {
+    pub fn limit(start: u64, end: u64, input: Op) -> Self {
+        Op::Limit {
             start,
             end,
-            source: Box::new(source),
-        })
+            input: Box::new(input),
+        }
     }
 
     #[inline]
@@ -190,11 +201,11 @@ impl Op {
         loop {
             match op {
                 Op::Aggr(aggr) => return Some(&aggr.proj),
-                Op::Proj(proj) => return Some(&proj.cols),
+                Op::Proj { cols, .. } => return Some(cols),
                 Op::Row(row) => return Some(row),
-                Op::Sort(sort) => op = sort.source.as_ref(),
-                Op::Limit(limit) => op = limit.source.as_ref(),
-                Op::Filt(filt) => op = filt.source.as_ref(),
+                Op::Sort { input, .. } => op = input.as_ref(),
+                Op::Limit { input, .. } => op = input.as_ref(),
+                Op::Filt { input, .. } => op = input.as_ref(),
                 Op::Table(..)
                 | Op::Query(_)
                 | Op::Setop(_)
@@ -212,11 +223,11 @@ impl Op {
         loop {
             match op {
                 Op::Aggr(aggr) => return Some(&mut aggr.proj),
-                Op::Proj(proj) => return Some(&mut proj.cols),
+                Op::Proj { cols, .. } => return Some(cols),
                 Op::Row(row) => return Some(row.as_mut()),
-                Op::Sort(sort) => op = sort.source.as_mut(),
-                Op::Limit(limit) => op = limit.source.as_mut(),
-                Op::Filt(filt) => op = filt.source.as_mut(),
+                Op::Sort { input, .. } => op = input.as_mut(),
+                Op::Limit { input, .. } => op = input.as_mut(),
+                Op::Filt { input, .. } => op = input.as_mut(),
                 Op::Table(..)
                 | Op::Query(_)
                 | Op::Setop(_)
@@ -230,13 +241,13 @@ impl Op {
 
     /// Returns single source of the operator
     #[inline]
-    pub fn source_mut(&mut self) -> Option<&mut Op> {
+    pub fn input_mut(&mut self) -> Option<&mut Op> {
         match self {
-            Op::Proj(proj) => Some(&mut proj.source),
-            Op::Filt(filt) => Some(&mut filt.source),
-            Op::Sort(sort) => Some(&mut sort.source),
-            Op::Limit(limit) => Some(&mut limit.source),
-            Op::Aggr(aggr) => Some(&mut aggr.source),
+            Op::Proj { input, .. } => Some(input),
+            Op::Filt { input, .. } => Some(input),
+            Op::Sort { input, .. } => Some(input),
+            Op::Limit { input, .. } => Some(input),
+            Op::Aggr(aggr) => Some(&mut aggr.input),
             Op::Join(_)
             | Op::JoinGraph(_)
             | Op::Setop(_)
@@ -250,13 +261,13 @@ impl Op {
 
     /// Returns children under current operator until row/table/join/subquery
     #[inline]
-    pub fn children(&self) -> SmallVec<[&Op; 2]> {
+    pub fn inputs(&self) -> SmallVec<[&Op; 2]> {
         match self {
-            Op::Proj(proj) => smallvec![proj.source.as_ref()],
-            Op::Filt(filt) => smallvec![filt.source.as_ref()],
-            Op::Aggr(aggr) => smallvec![&aggr.source],
-            Op::Sort(sort) => smallvec![sort.source.as_ref()],
-            Op::Limit(limit) => smallvec![limit.source.as_ref()],
+            Op::Proj { input, .. } => smallvec![input.as_ref()],
+            Op::Filt { input, .. } => smallvec![input.as_ref()],
+            Op::Aggr(aggr) => smallvec![&aggr.input],
+            Op::Sort { input, .. } => smallvec![input.as_ref()],
+            Op::Limit { input, .. } => smallvec![input.as_ref()],
             Op::Attach(c, _) => smallvec![c.as_ref()],
             Op::Join(join) => match join.as_ref() {
                 Join::Cross(jos) => jos.iter().map(AsRef::as_ref).collect(),
@@ -274,13 +285,13 @@ impl Op {
     }
 
     #[inline]
-    pub fn children_mut(&mut self) -> SmallVec<[&mut Op; 2]> {
+    pub fn inputs_mut(&mut self) -> SmallVec<[&mut Op; 2]> {
         match self {
-            Op::Proj(proj) => smallvec![proj.source.as_mut()],
-            Op::Filt(filt) => smallvec![filt.source.as_mut()],
-            Op::Aggr(aggr) => smallvec![&mut aggr.source],
-            Op::Sort(sort) => smallvec![sort.source.as_mut()],
-            Op::Limit(limit) => smallvec![limit.source.as_mut()],
+            Op::Proj { input, .. } => smallvec![input.as_mut()],
+            Op::Filt { input, .. } => smallvec![input.as_mut()],
+            Op::Aggr(aggr) => smallvec![&mut aggr.input],
+            Op::Sort { input, .. } => smallvec![input.as_mut()],
+            Op::Limit { input, .. } => smallvec![input.as_mut()],
             Op::Attach(c, _) => smallvec![c.as_mut()],
             Op::Join(join) => match join.as_mut() {
                 Join::Cross(jos) => jos.iter_mut().map(AsMut::as_mut).collect(),
@@ -300,15 +311,15 @@ impl Op {
     #[inline]
     pub fn exprs(&self) -> SmallVec<[&Expr; 2]> {
         match self {
-            Op::Proj(proj) => proj.cols.iter().map(|(e, _)| e).collect(),
-            Op::Filt(filt) => filt.pred.iter().collect(),
+            Op::Proj { cols, .. } => cols.iter().map(|(e, _)| e).collect(),
+            Op::Filt { pred, .. } => pred.iter().collect(),
             Op::Aggr(aggr) => aggr
                 .groups
                 .iter()
                 .chain(aggr.proj.iter().map(|(e, _)| e))
                 .collect(),
-            Op::Sort(sort) => sort.items.iter().map(|si| &si.expr).collect(),
-            Op::Limit(_)
+            Op::Sort { items, .. } => items.iter().map(|si| &si.expr).collect(),
+            Op::Limit { .. }
             | Op::Query(_)
             | Op::Table(..)
             | Op::Setop(_)
@@ -330,15 +341,15 @@ impl Op {
     #[inline]
     pub fn exprs_mut(&mut self) -> SmallVec<[&mut Expr; 2]> {
         match self {
-            Op::Proj(proj) => proj.cols.iter_mut().map(|(e, _)| e).collect(),
-            Op::Filt(filt) => filt.pred.iter_mut().collect(),
+            Op::Proj { cols, .. } => cols.iter_mut().map(|(e, _)| e).collect(),
+            Op::Filt { pred, .. } => pred.iter_mut().collect(),
             Op::Aggr(aggr) => aggr
                 .groups
                 .iter_mut()
                 .chain(aggr.proj.iter_mut().map(|(e, _)| e))
                 .collect(),
-            Op::Sort(sort) => sort.items.iter_mut().map(|si| &mut si.expr).collect(),
-            Op::Limit(_)
+            Op::Sort { items, .. } => items.iter_mut().map(|si| &mut si.expr).collect(),
+            Op::Limit { .. }
             | Op::Query(_)
             | Op::Table(..)
             | Op::Setop(_)
@@ -377,7 +388,7 @@ impl Op {
 
     pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
         let mut eff = visitor.enter(self)?;
-        for c in self.children() {
+        for c in self.inputs() {
             eff.merge(c.walk(visitor)?)
         }
         eff.merge(visitor.leave(self)?);
@@ -386,30 +397,12 @@ impl Op {
 
     pub fn walk_mut<V: OpMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
         let mut eff = visitor.enter(self)?;
-        for c in self.children_mut() {
+        for c in self.inputs_mut() {
             eff.merge(c.walk_mut(visitor)?)
         }
         eff.merge(visitor.leave(self)?);
         ControlFlow::Continue(eff)
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct Proj {
-    pub cols: Vec<(Expr, SmolStr)>,
-    pub source: Box<Op>,
-}
-
-/// Filter node.
-///
-/// Filter result with given predicates.
-/// The normal filter won't include projection, but here we
-/// add proj to allow combine them into one node.
-/// Actually all Scan node will be converted to Filter
-#[derive(Debug, Clone)]
-pub struct Filt {
-    pub pred: Vec<Expr>,
-    pub source: Box<Op>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,7 +418,7 @@ pub enum AggrKind {
 pub struct Aggr {
     pub groups: Vec<Expr>,
     pub proj: Vec<(Expr, SmolStr)>,
-    pub source: Op,
+    pub input: Op,
     // The filter applied after aggregation
     pub filt: Vec<Expr>,
 }
@@ -457,30 +450,10 @@ pub enum ApplyKind {
     Value,
 }
 
-#[derive(Debug, Clone)]
-pub struct Sort {
-    pub items: Vec<SortItem>,
-    pub limit: Option<u64>,
-    pub source: Box<Op>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SortItem {
     pub expr: Expr,
     pub desc: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct Limit {
-    pub start: u64,
-    pub end: u64,
-    pub source: Box<Op>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Col {
-    pub expr: Expr,
-    pub alias: Option<SmolStr>,
 }
 
 pub trait OpVisitor {
@@ -538,12 +511,10 @@ mod tests {
     fn test_size_of_logical_nodes() {
         use std::mem::size_of;
         println!("size of Op {}", size_of::<Op>());
-        println!("size of Proj {}", size_of::<Proj>());
-        println!("size of Filt {}", size_of::<Filt>());
         println!("size of Join {}", size_of::<Join>());
         println!("size of JoinKind {}", size_of::<JoinKind>());
         println!("size of Aggr {}", size_of::<Aggr>());
-        println!("size of Aggr {}", size_of::<JoinGraph>());
+        println!("size of JoinGraph {}", size_of::<JoinGraph>());
         println!(
             "size of SmallVec<[QueryID;4]> is {}",
             size_of::<SmallVec<[QueryID; 4]>>()

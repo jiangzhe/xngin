@@ -14,7 +14,7 @@ use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
-use xngin_expr::{self as expr, Col, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind};
+use xngin_expr::{self as expr, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind};
 use xngin_frontend::ast::*;
 
 pub struct PlanBuilder {
@@ -847,10 +847,7 @@ impl PlanBuilder {
         let all_cols = self.catalog.all_columns_in_table(&table_id);
         let mut proj_cols = Vec::with_capacity(all_cols.len());
         for c in all_cols {
-            proj_cols.push((
-                expr::Expr::Col(Col::TableCol(table_id, c.idx as u32)),
-                c.name,
-            ))
+            proj_cols.push((expr::Expr::table_col(table_id, c.idx as u32), c.name))
         }
         let proj = Op::proj(proj_cols, Op::Table(schema_id, table_id));
         // todo: currently we assume all tables are located on disk.
@@ -930,7 +927,7 @@ fn validate_proj_aggr(
     }
     // all proj_cols_outside_aggr must exist in aggr_groups
     for pc in proj_cols_outside_aggr {
-        if !aggr_groups.contains(&expr::Expr::Col(pc)) {
+        if aggr_groups.iter().all(|e| !e.is_col(&pc)) {
             return Err(Error::FieldsSelectedNotInGroupBy);
         }
     }
@@ -959,8 +956,7 @@ fn validate_having(
         // all non-aggr columns must exist in aggr groups
         let (non_aggr_cols, _) = having.collect_non_aggr_cols();
         for c in non_aggr_cols {
-            let ce = expr::Expr::Col(c);
-            if aggr_groups.iter().all(|e| e != &ce) {
+            if aggr_groups.iter().all(|e| !e.is_col(&c)) {
                 return Err(Error::FieldsSelectedNotInGroupBy);
             }
         }
@@ -972,9 +968,8 @@ fn validate_having(
         return Err(Error::FieldsSelectedNotInGroupBy);
     }
     // columns must match projected expressions
-    for nac in non_aggr_cols {
-        let ce = &expr::Expr::Col(nac);
-        if !proj_cols.iter().any(|(e, _)| e == ce) {
+    for c in non_aggr_cols {
+        if proj_cols.iter().all(|(e, _)| !e.is_col(&c)) {
             // todo: notify column name
             return Err(Error::UnknownColumn("Unknown column".to_string()));
         }
@@ -1002,8 +997,7 @@ fn validate_order(aggr_groups: &[expr::Expr], scalar_aggr: bool, order: &[SortIt
             si.expr.collect_non_aggr_cols_into(&mut non_aggr_cols);
         }
         for c in non_aggr_cols {
-            let ce = expr::Expr::Col(c);
-            if aggr_groups.iter().all(|e| e != &ce) {
+            if aggr_groups.iter().all(|e| !e.is_col(&c)) {
                 return Err(Error::FieldsSelectedNotInGroupBy);
             }
         }
@@ -1191,7 +1185,7 @@ impl OpMutVisitor for ReplaceCorrelatedCol {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
         for e in op.exprs_mut() {
-            if let expr::Expr::Plhd(Plhd::Ident(uid)) = e {
+            if let expr::ExprKind::Plhd(Plhd::Ident(uid)) = &e.kind {
                 if *uid == self.0 {
                     *e = self.1.clone();
                 }
@@ -1226,12 +1220,12 @@ impl ExprMutVisitor for ReplaceSubq {
     type Break = ();
     #[inline]
     fn enter(&mut self, e: &mut expr::Expr) -> ControlFlow<()> {
-        match e {
-            expr::Expr::Plhd(Plhd::Subquery(_, uid)) if *uid == self.uid => {
+        match &e.kind {
+            expr::ExprKind::Plhd(Plhd::Subquery(_, uid)) if *uid == self.uid => {
                 if !self.correlated && self.kind == SubqKind::Scalar {
-                    *e = expr::Expr::Attval(self.qry_id);
+                    *e = expr::Expr::attval(self.qry_id);
                 } else {
-                    *e = expr::Expr::Subq(self.kind, self.qry_id);
+                    *e = expr::Expr::subq(self.kind, self.qry_id);
                 }
                 return ControlFlow::Break(());
             }

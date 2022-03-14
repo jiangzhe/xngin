@@ -1,11 +1,11 @@
 use crate::join::graph::Edge;
 use crate::join::{Join, JoinGraph, QualifiedJoin};
-use crate::op::{Aggr, Apply, Filt, Limit, Op, OpVisitor, Proj, Sort, SortItem};
+use crate::op::{Aggr, Apply, Op, OpVisitor, SortItem};
 use crate::query::{QueryPlan, QuerySet};
 use crate::setop::Setop;
 use std::fmt::{self, Write};
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{AggKind, Aggf, Col, Const, Expr, Func, Pred, PredFunc, QueryID, Setq};
+use xngin_expr::{AggKind, Aggf, Col, Const, Expr, ExprKind, Farg, Pred, QueryID, Setq};
 
 const INDENT: usize = 4;
 const BRANCH_1: char = '└';
@@ -55,14 +55,30 @@ impl Explain for QueryPlan {
 impl Explain for Op {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         match self {
-            Op::Proj(proj) => proj.explain(f),
-            Op::Filt(filt) => filt.explain(f),
+            Op::Proj { cols, .. } => {
+                f.write_str("Proj{")?;
+                write_refs(f, cols.iter().map(|(e, _)| e), ", ")?;
+                f.write_str("}")
+            }
+            Op::Filt { pred, .. } => {
+                f.write_str("Filt{")?;
+                if !pred.is_empty() {
+                    write_refs(f, pred, " and ")?;
+                }
+                f.write_char('}')
+            }
             Op::Aggr(aggr) => aggr.explain(f),
-            Op::Sort(sort) => sort.explain(f),
+            Op::Sort { items, .. } => {
+                f.write_str("Sort{")?;
+                write_refs(f, items, ", ")?;
+                f.write_char('}')
+            }
             Op::Join(join) => join.explain(f),
             Op::JoinGraph(graph) => graph.explain(f),
             Op::Setop(setop) => setop.explain(f),
-            Op::Limit(limit) => limit.explain(f),
+            Op::Limit { start, end, .. } => {
+                write!(f, "Limit{{{}, {}}}", start, end)
+            }
             Op::Attach(_, qry_id) => {
                 f.write_str("Attach{")?;
                 qry_id.explain(f)?;
@@ -79,33 +95,6 @@ impl Explain for Op {
             Op::Query(_) => f.write_str("(subquery todo)"),
             Op::Empty => f.write_str("Empty"),
         }
-    }
-}
-
-impl Explain for Proj {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        f.write_str("Proj{")?;
-        write_refs(f, self.cols.iter().map(|(e, _)| e), ", ")?;
-        f.write_str("}")
-    }
-}
-
-impl Explain for Filt {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        f.write_str("Filt{")?;
-        if !self.pred.is_empty() {
-            write_refs(f, &self.pred, " and ")?;
-        }
-
-        f.write_char('}')
-    }
-}
-
-impl Explain for Sort {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        f.write_str("Sort{")?;
-        write_refs(f, &*self.items, ", ")?;
-        f.write_char('}')
     }
 }
 
@@ -223,35 +212,57 @@ impl Explain for Setop {
     }
 }
 
-impl Explain for Limit {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        write!(f, "Limit{{{}, {}}}", self.start, self.end)
-    }
-}
-
 /* Implements Explain for all expressions */
 
 impl Explain for Expr {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        match self {
-            Expr::Const(c) => c.explain(f),
-            Expr::Col(c) => c.explain(f),
-            Expr::Aggf(a) => a.explain(f),
-            Expr::Func(v) => v.explain(f),
-            Expr::Pred(p) => p.explain(f),
-            Expr::Tuple(es) => {
+        match &self.kind {
+            ExprKind::Const(c) => c.explain(f),
+            ExprKind::Col(c) => c.explain(f),
+            ExprKind::Aggf(a) => a.explain(f),
+            ExprKind::Func { kind, args, .. } => {
+                f.write_str(kind.to_lower())?;
+                f.write_char('(')?;
+                if args.is_empty() {
+                    return f.write_char(')');
+                }
+                write_refs(f, args.as_ref(), ", ")?;
+                f.write_char(')')
+            }
+            ExprKind::Case { op, acts, fallback } => {
+                f.write_str("case ")?;
+                if op.kind != ExprKind::Farg(Farg::None) {
+                    op.explain(f)?;
+                    f.write_char(' ')?
+                }
+                for branch in acts.as_ref().chunks_exact(2) {
+                    f.write_str("when ")?;
+                    branch[0].explain(f)?;
+                    f.write_str(" then ")?;
+                    branch[1].explain(f)?;
+                    f.write_char(' ')?
+                }
+                if fallback.kind != ExprKind::Farg(Farg::None) {
+                    f.write_str("else ")?;
+                    fallback.explain(f)?;
+                    f.write_char(' ')?
+                }
+                f.write_str("end")
+            }
+            ExprKind::Pred(p) => p.explain(f),
+            ExprKind::Tuple(es) => {
                 f.write_char('(')?;
                 write_refs(f, es, ", ")?;
                 f.write_char(')')
             }
-            Expr::Subq(_, qry_id) => {
+            ExprKind::Subq(_, qry_id) => {
                 write!(f, "subq({})", **qry_id)
             }
-            Expr::Attval(qry_id) => {
+            ExprKind::Attval(qry_id) => {
                 write!(f, "attval({})", **qry_id)
             }
-            Expr::Plhd(_) => write!(f, "(placeholder todo)"),
-            Expr::Farg(_) => write!(f, "(funcarg todo)"),
+            ExprKind::Plhd(_) => write!(f, "(placeholder todo)"),
+            ExprKind::Farg(_) => write!(f, "(funcarg todo)"),
         }
     }
 }
@@ -302,25 +313,18 @@ impl Explain for Aggf {
     }
 }
 
-impl Explain for Func {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        f.write_str(self.kind.to_lower())?;
-        f.write_char('(')?;
-        if self.args.is_empty() {
-            return f.write_char(')');
-        }
-        write_refs(f, &*self.args, ", ")?;
-        f.write_char(')')
-    }
-}
-
 impl Explain for Pred {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         match self {
             Pred::Conj(es) => write_refs(f, es, " and "),
             Pred::Disj(es) => write_refs(f, es, " or "),
             Pred::Xor(es) => write_refs(f, es, " xor "),
-            Pred::Func(pf) => pf.explain(f),
+            Pred::Func { kind, args } => {
+                f.write_str(kind.to_lower())?;
+                f.write_char('(')?;
+                write_refs(f, args.as_ref(), ", ")?;
+                f.write_char(')')
+            }
             Pred::Not(e) => {
                 f.write_str("not ")?;
                 e.explain(f)
@@ -344,15 +348,6 @@ impl Explain for Pred {
                 subq.explain(f)
             }
         }
-    }
-}
-
-impl Explain for PredFunc {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        f.write_str(self.kind.to_lower())?;
-        f.write_char('(')?;
-        write_refs(f, &*self.args, ", ")?;
-        f.write_char(')')
     }
 }
 
@@ -439,7 +434,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
                 ControlFlow::Break(fmt::Error)
             };
         }
-        let child_cnt = op.children().len();
+        let child_cnt = op.inputs().len();
         self.write_prefix().branch()?;
         // process at parent level
         if let Some(span) = self.spans.pop() {

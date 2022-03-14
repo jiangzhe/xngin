@@ -8,7 +8,7 @@ use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, Expr, ExprMutVisitor, QueryID};
+use xngin_expr::{Col, Expr, ExprKind, ExprMutVisitor, QueryID};
 
 /// Unfold derived table.
 ///
@@ -134,11 +134,11 @@ impl OpMutVisitor for Unfold<'_> {
                 ControlFlow::Continue(eff)
             }
             Op::JoinGraph(_) => todo!(),
-            Op::Proj(_)
-            | Op::Filt(_)
+            Op::Proj { .. }
+            | Op::Filt { .. }
             | Op::Aggr(_)
-            | Op::Sort(_)
-            | Op::Limit(_)
+            | Op::Sort { .. }
+            | Op::Limit { .. }
             | Op::Attach(..) => ControlFlow::Continue(RuleEffect::NONE), // fine to bypass
             Op::Empty => ControlFlow::Continue(RuleEffect::NONE), // as join op is set to empty, it's safe to bypass
             Op::Table(..) | Op::Row(_) => unreachable!(),
@@ -233,7 +233,7 @@ fn try_unfold_subq(subq: &mut Subquery, mode: Mode) -> Option<(Op, Vec<(Expr, Sm
             if subq
                 .out_cols()
                 .iter()
-                .any(|(e, _)| !matches!(e, Expr::Col(Col::QueryCol(..))))
+                .any(|(e, _)| !matches!(e.kind, ExprKind::Col(Col::QueryCol(..))))
             {
                 return None;
             }
@@ -270,15 +270,15 @@ impl OpVisitor for Detect {
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {
         match op {
             Op::Aggr(_)
-            | Op::Filt(_)
-            | Op::Sort(_)
-            | Op::Limit(_)
+            | Op::Filt { .. }
+            | Op::Sort { .. }
+            | Op::Limit { .. }
             | Op::Setop(_)
             | Op::Attach(..) => {
                 self.res = false;
                 ControlFlow::Break(())
             }
-            Op::Proj(_) => {
+            Op::Proj { .. } => {
                 if !self.top_proj {
                     self.top_proj = true;
                     ControlFlow::Continue(())
@@ -302,7 +302,7 @@ impl OpVisitor for Detect {
 
 fn extract(op: &mut Op) -> (Op, Vec<(Expr, SmolStr)>) {
     match mem::take(op) {
-        Op::Proj(proj) => (*proj.source, proj.cols),
+        Op::Proj { cols, input } => (*input, cols),
         _ => unreachable!(),
     }
 }
@@ -314,7 +314,7 @@ fn rewrite_exprs(op: &mut Op, mapping: &HashMap<Col, Expr>) -> RuleEffect {
         type Break = ();
         #[inline]
         fn leave(&mut self, e: &mut Expr) -> ControlFlow<(), RuleEffect> {
-            if let Expr::Col(c) = e {
+            if let ExprKind::Col(c) = &e.kind {
                 if let Some(new) = self.0.get(c) {
                     *e = new.clone();
                     return ControlFlow::Continue(RuleEffect::EXPR);

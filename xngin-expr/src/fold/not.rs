@@ -1,11 +1,11 @@
 use crate::error::Result;
-use crate::{Const, Expr};
+use crate::{Const, ExprKind};
 
 #[inline]
-pub fn fold_not(arg: &Expr) -> Result<Option<Const>> {
+pub fn fold_not(arg: &ExprKind) -> Result<Option<Const>> {
     match arg {
-        Expr::Const(Const::Null) => Ok(Some(Const::Null)),
-        Expr::Const(c) => fold_not_const(c),
+        ExprKind::Const(Const::Null) => Ok(Some(Const::Null)),
+        ExprKind::Const(c) => fold_not_const(c),
         _ => Ok(None),
     }
 }
@@ -37,7 +37,7 @@ mod tests {
     }
 
     fn assert_eq_fold_not(c1: Const, c2: Const) {
-        let res = fold_not(&Expr::Const(c1)).unwrap().unwrap();
+        let res = fold_not(&ExprKind::Const(c1)).unwrap().unwrap();
         assert_eq!(res, c2)
     }
 }

@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::op::{Filt, Limit, Op, OpMutVisitor, Proj, Sort};
+use crate::op::{Op, OpMutVisitor};
 use crate::query::QuerySet;
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
@@ -8,7 +8,7 @@ use crate::setop::{Setop, SetopKind};
 use std::collections::HashSet;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, Const, Expr, QueryID, Setq};
+use xngin_expr::{Col, Const, Expr, ExprKind, QueryID, Setq};
 
 /// Eliminate redundant operators.
 /// 1. Filter with true predicate can be removed.
@@ -139,33 +139,33 @@ impl<'a> EliminateOp<'a> {
                     _ => (),
                 }
             }
-            Op::Limit(Limit { source, .. }) => {
-                if source.is_empty() {
+            Op::Limit { input, .. } => {
+                if input.is_empty() {
                     *op = Op::Empty;
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Sort(Sort { source, .. }) => {
-                if source.is_empty() {
+            Op::Sort { input, .. } => {
+                if input.is_empty() {
                     *op = Op::Empty;
                     eff |= RuleEffect::OP;
                 }
             }
             Op::Aggr(_) => (), // todo: leave aggr as is, and optimize later
-            Op::Proj(Proj { source, .. }) => {
-                if source.is_empty() {
+            Op::Proj { input, .. } => {
+                if input.is_empty() {
                     *op = Op::Empty;
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Filt(Filt { source, .. }) => {
-                if source.is_empty() {
+            Op::Filt { input, .. } => {
+                if input.is_empty() {
                     *op = Op::Empty;
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Attach(source, _) => {
-                if source.is_empty() {
+            Op::Attach(input, _) => {
+                if input.is_empty() {
                     *op = Op::Empty;
                     eff |= RuleEffect::OP;
                 }
@@ -179,7 +179,7 @@ impl<'a> EliminateOp<'a> {
             let qs = &self.empty_qs;
             for e in op.exprs_mut() {
                 eff |= update_simplify_nested(e, NullCoalesce::Null, |e| {
-                    if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
+                    if let ExprKind::Col(Col::QueryCol(qry_id, _)) = &e.kind {
                         if qs.contains(qry_id) {
                             *e = Expr::const_null();
                         }
@@ -200,7 +200,7 @@ impl OpMutVisitor for EliminateOp<'_> {
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
         match op {
-            Op::Filt(Filt { pred, source }) => {
+            Op::Filt { pred, input } => {
                 if pred.is_empty() {
                     // no predicates, remove current filter
                     *op = Op::Empty;
@@ -213,8 +213,8 @@ impl OpMutVisitor for EliminateOp<'_> {
                             eff |= RuleEffect::OP;
                         }
                         (true, false) => {
-                            let source = mem::take(source.as_mut());
-                            *op = source;
+                            let input = mem::take(input.as_mut());
+                            *op = input;
                             eff |= RuleEffect::OP;
                             eff |= self.enter(op)?;
                             return ControlFlow::Continue(eff);
@@ -254,7 +254,7 @@ impl OpMutVisitor for EliminateOp<'_> {
                 },
                 _ => todo!(),
             },
-            Op::Limit(Limit { start, end, .. }) => {
+            Op::Limit { start, end, .. } => {
                 if *start == *end {
                     *op = Op::Empty;
                     eff |= RuleEffect::OP;
@@ -262,12 +262,12 @@ impl OpMutVisitor for EliminateOp<'_> {
                     self.has_limit = true;
                 }
             }
-            Op::Sort(Sort { source, .. }) => {
+            Op::Sort { input, .. } => {
                 if self.is_subq && !self.has_limit {
                     // in case subquery that does not have limit upon sort,
                     // sort can be eliminated.
-                    let source = mem::take(source.as_mut());
-                    *op = source;
+                    let input = mem::take(input.as_mut());
+                    *op = input;
                     eff |= RuleEffect::OP;
                     eff |= self.enter(op)?;
                     return ControlFlow::Continue(eff);
@@ -306,10 +306,17 @@ impl OpMutVisitor for EliminateOp<'_> {
 }
 
 // treat null as false
+#[inline]
 fn pair_const_false(es: &[Expr]) -> (bool, bool) {
     match es {
-        [Expr::Const(Const::Null)] => (true, true),
-        [Expr::Const(c)] => (true, c.is_zero().unwrap_or_default()),
+        [Expr {
+            kind: ExprKind::Const(Const::Null),
+            ..
+        }] => (true, true),
+        [Expr {
+            kind: ExprKind::Const(c),
+            ..
+        }] => (true, c.is_zero().unwrap_or_default()),
         _ => (false, false),
     }
 }
@@ -335,8 +342,8 @@ mod tests {
             op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
-            if let Op::Proj(proj) = &subq.root {
-                assert!(matches!(proj.source.as_ref(), Op::Query(..)))
+            if let Op::Proj { input, .. } = &subq.root {
+                assert!(matches!(input.as_ref(), Op::Query(..)))
             } else {
                 panic!("fail")
             }
@@ -375,7 +382,7 @@ mod tests {
                 print_plan(s, &q);
                 let subqs = get_lvl_queries(&q, 1);
                 assert_eq!(subqs.len(), 1);
-                assert!(matches!(subqs[0].root, Op::Proj(_)))
+                assert!(matches!(subqs[0].root, Op::Proj { .. }))
             },
         );
         // do NOT remove ORDER BY because of LIMIT exists
@@ -387,8 +394,8 @@ mod tests {
                 print_plan(s, &q);
                 let subqs = get_lvl_queries(&q, 1);
                 assert_eq!(subqs.len(), 1);
-                if let Op::Limit(Limit { source, .. }) = &subqs[0].root {
-                    assert!(matches!(source.as_ref(), Op::Sort(_)));
+                if let Op::Limit { input, .. } = &subqs[0].root {
+                    assert!(matches!(input.as_ref(), Op::Sort { .. }));
                 } else {
                     panic!("fail")
                 }
@@ -427,7 +434,7 @@ mod tests {
             op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
-            assert!(matches!(subq.root, Op::Limit(_)));
+            assert!(matches!(subq.root, Op::Limit { .. }));
         });
     }
 
@@ -565,8 +572,8 @@ mod tests {
                     Op::Join(_) => panic!("fail to eliminate op"),
                     _ => (),
                 }));
-                if let Op::Proj(proj) = &subq.root {
-                    assert_eq!(&proj.cols[0].0, &Expr::const_null());
+                if let Op::Proj { cols, .. } = &subq.root {
+                    assert_eq!(&cols[0].0, &Expr::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -589,8 +596,8 @@ mod tests {
                     Op::Join(_) => panic!("fail to eliminate op"),
                     _ => (),
                 }));
-                if let Op::Proj(proj) = &subq.root {
-                    assert_ne!(&proj.cols[0].0, &Expr::const_null());
+                if let Op::Proj { cols, .. } = &subq.root {
+                    assert_ne!(&cols[0].0, &Expr::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -618,9 +625,9 @@ mod tests {
                     Op::Join(_) => panic!("fail to eliminate op"),
                     _ => (),
                 }));
-                if let Op::Proj(proj) = &subq.root {
-                    assert_eq!(&proj.cols[0].0, &Expr::const_null());
-                    assert_ne!(&proj.cols[1].0, &Expr::const_null());
+                if let Op::Proj{cols, ..} = &subq.root {
+                    assert_eq!(&cols[0].0, &Expr::const_null());
+                    assert_ne!(&cols[1].0, &Expr::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -637,9 +644,9 @@ mod tests {
                     Op::Join(_) => panic!("fail to eliminate op"),
                     _ => (),
                 }));
-                if let Op::Proj(proj) = &subq.root {
-                    assert_ne!(&proj.cols[0].0, &Expr::const_null());
-                    assert_eq!(&proj.cols[1].0, &Expr::const_null());
+                if let Op::Proj{cols, ..} = &subq.root {
+                    assert_ne!(&cols[0].0, &Expr::const_null());
+                    assert_eq!(&cols[1].0, &Expr::const_null());
                 } else {
                     panic!("fail")
                 }

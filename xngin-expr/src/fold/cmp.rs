@@ -1,15 +1,15 @@
 use crate::error::Result;
-use crate::{Const, Expr};
+use crate::{Const, ExprKind};
 use std::cmp::Ordering;
 use xngin_datatype::AlignPartialOrd;
 
 macro_rules! impl_fold_cmp {
     ( $fn:ident, $fnc:ident, $($e:pat),* ) => {
         #[inline]
-        pub fn $fn(lhs: &Expr, rhs: &Expr) -> Result<Option<Const>> {
+        pub fn $fn(lhs: &ExprKind, rhs: &ExprKind) -> Result<Option<Const>> {
             match (lhs, rhs) {
-                (Expr::Const(Const::Null), _) | (_, Expr::Const(Const::Null)) => Ok(Some(Const::Null)),
-                (Expr::Const(c1), Expr::Const(c2)) => $fnc(c1, c2),
+                (ExprKind::Const(Const::Null), _) | (_, ExprKind::Const(Const::Null)) => Ok(Some(Const::Null)),
+                (ExprKind::Const(c1), ExprKind::Const(c2)) => $fnc(c1, c2),
                 _ => Ok(None),
             }
         }
@@ -36,9 +36,9 @@ impl_fold_cmp!(fold_le, fold_le_const, Ordering::Less, Ordering::Equal);
 impl_fold_cmp!(fold_ne, fold_ne_const, Ordering::Less, Ordering::Greater);
 
 #[inline]
-pub fn fold_safeeq(lhs: &Expr, rhs: &Expr) -> Result<Option<Const>> {
+pub fn fold_safeeq(lhs: &ExprKind, rhs: &ExprKind) -> Result<Option<Const>> {
     match (lhs, rhs) {
-        (Expr::Const(c1), Expr::Const(c2)) => fold_safeeq_const(c1, c2),
+        (ExprKind::Const(c1), ExprKind::Const(c2)) => fold_safeeq_const(c1, c2),
         _ => Ok(None),
     }
 }
@@ -59,9 +59,9 @@ pub fn fold_safeeq_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
 }
 
 #[inline]
-pub fn fold_isnull(arg: &Expr) -> Result<Option<Const>> {
+pub fn fold_isnull(arg: &ExprKind) -> Result<Option<Const>> {
     match arg {
-        Expr::Const(c) => fold_isnull_const(c),
+        ExprKind::Const(c) => fold_isnull_const(c),
         _ => Ok(None),
     }
 }
@@ -76,9 +76,9 @@ pub fn fold_isnull_const(arg: &Const) -> Result<Option<Const>> {
 }
 
 #[inline]
-pub fn fold_isnotnull(arg: &Expr) -> Result<Option<Const>> {
+pub fn fold_isnotnull(arg: &ExprKind) -> Result<Option<Const>> {
     match arg {
-        Expr::Const(c) => fold_isnotnull_const(c),
+        ExprKind::Const(c) => fold_isnotnull_const(c),
         _ => Ok(None),
     }
 }
@@ -93,9 +93,9 @@ pub fn fold_isnotnull_const(arg: &Const) -> Result<Option<Const>> {
 }
 
 #[inline]
-pub fn fold_istrue(arg: &Expr) -> Result<Option<Const>> {
+pub fn fold_istrue(arg: &ExprKind) -> Result<Option<Const>> {
     match arg {
-        Expr::Const(c) => fold_istrue_const(c),
+        ExprKind::Const(c) => fold_istrue_const(c),
         _ => Ok(None),
     }
 }
@@ -106,9 +106,9 @@ pub fn fold_istrue_const(arg: &Const) -> Result<Option<Const>> {
 }
 
 #[inline]
-pub fn fold_isnottrue(arg: &Expr) -> Result<Option<Const>> {
+pub fn fold_isnottrue(arg: &ExprKind) -> Result<Option<Const>> {
     match arg {
-        Expr::Const(c) => fold_isnottrue_const(c),
+        ExprKind::Const(c) => fold_isnottrue_const(c),
         _ => Ok(None),
     }
 }
@@ -119,9 +119,9 @@ pub fn fold_isnottrue_const(arg: &Const) -> Result<Option<Const>> {
 }
 
 #[inline]
-pub fn fold_isfalse(arg: &Expr) -> Result<Option<Const>> {
+pub fn fold_isfalse(arg: &ExprKind) -> Result<Option<Const>> {
     match arg {
-        Expr::Const(c) => fold_isfalse_const(c),
+        ExprKind::Const(c) => fold_isfalse_const(c),
         _ => Ok(None),
     }
 }
@@ -132,9 +132,9 @@ pub fn fold_isfalse_const(arg: &Const) -> Result<Option<Const>> {
 }
 
 #[inline]
-pub fn fold_isnotfalse(arg: &Expr) -> Result<Option<Const>> {
+pub fn fold_isnotfalse(arg: &ExprKind) -> Result<Option<Const>> {
     match arg {
-        Expr::Const(c) => fold_isnotfalse_const(c),
+        ExprKind::Const(c) => fold_isnotfalse_const(c),
         _ => Ok(None),
     }
 }
@@ -366,49 +366,49 @@ mod tests {
     }
 
     fn assert_eq_fold_eq(c1: Const, c2: Const, c3: Const) {
-        let res = fold_eq(&Expr::Const(c1), &Expr::Const(c2))
+        let res = fold_eq(&ExprKind::Const(c1), &ExprKind::Const(c2))
             .unwrap()
             .unwrap();
         assert_eq!(res, c3)
     }
 
     fn assert_eq_fold_gt(c1: Const, c2: Const, c3: Const) {
-        let res = fold_gt(&Expr::Const(c1), &Expr::Const(c2))
+        let res = fold_gt(&ExprKind::Const(c1), &ExprKind::Const(c2))
             .unwrap()
             .unwrap();
         assert_eq!(res, c3)
     }
 
     fn assert_eq_fold_ge(c1: Const, c2: Const, c3: Const) {
-        let res = fold_ge(&Expr::Const(c1), &Expr::Const(c2))
+        let res = fold_ge(&ExprKind::Const(c1), &ExprKind::Const(c2))
             .unwrap()
             .unwrap();
         assert_eq!(res, c3)
     }
 
     fn assert_eq_fold_lt(c1: Const, c2: Const, c3: Const) {
-        let res = fold_lt(&Expr::Const(c1), &Expr::Const(c2))
+        let res = fold_lt(&ExprKind::Const(c1), &ExprKind::Const(c2))
             .unwrap()
             .unwrap();
         assert_eq!(res, c3)
     }
 
     fn assert_eq_fold_le(c1: Const, c2: Const, c3: Const) {
-        let res = fold_le(&Expr::Const(c1), &Expr::Const(c2))
+        let res = fold_le(&ExprKind::Const(c1), &ExprKind::Const(c2))
             .unwrap()
             .unwrap();
         assert_eq!(res, c3)
     }
 
     fn assert_eq_fold_ne(c1: Const, c2: Const, c3: Const) {
-        let res = fold_ne(&Expr::Const(c1), &Expr::Const(c2))
+        let res = fold_ne(&ExprKind::Const(c1), &ExprKind::Const(c2))
             .unwrap()
             .unwrap();
         assert_eq!(res, c3)
     }
 
     fn assert_eq_fold_se(c1: Const, c2: Const, c3: Const) {
-        let res = fold_safeeq(&Expr::Const(c1), &Expr::Const(c2))
+        let res = fold_safeeq(&ExprKind::Const(c1), &ExprKind::Const(c2))
             .unwrap()
             .unwrap();
         assert_eq!(res, c3)

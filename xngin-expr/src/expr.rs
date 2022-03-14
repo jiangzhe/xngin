@@ -1,5 +1,5 @@
 use crate::controlflow::ControlFlow;
-use crate::func::{Func, FuncKind};
+use crate::func::FuncKind;
 use crate::pred::{Pred, PredFuncKind};
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashSet;
@@ -7,177 +7,99 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use xngin_catalog::TableID;
-use xngin_datatype::{Date, Datetime, Decimal, Interval, Time, TimeUnit};
-
 pub use xngin_datatype::{Const, ValidF64};
+use xngin_datatype::{Date, Datetime, Decimal, Interval, PreciseType, Time, TimeUnit};
+pub type ExprType = Box<PreciseType>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Expr {
-    Const(Const),
-    Col(Col),
-    Aggf(Aggf),
-    Func(Func),
-    Pred(Pred),
-    Tuple(Vec<Expr>),
-    /// Subquery that returns single value.
-    Subq(SubqKind, QueryID),
-    /// Attval represents single value returned by
-    /// an attached plan.
-    /// If multiple values returned, it throws runtime error.
-    /// If no values returned, it use NULL by default.
-    Attval(QueryID),
-    /// Placeholder can represent any intermediate value
-    /// generated in building phase. It should be
-    /// resolved as a normal expression later.
-    /// Placeholder is also used in optimization, such as
-    /// predicate pushdown.
-    Plhd(Plhd),
-    /// Predefined function argument.
-    Farg(Farg),
-}
-
-impl Default for Expr {
-    fn default() -> Self {
-        Expr::Const(Const::Null)
-    }
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub ty: Option<ExprType>,
 }
 
 impl Expr {
     #[inline]
-    pub fn table_col(table_id: TableID, idx: u32) -> Self {
-        Expr::Col(Col::TableCol(table_id, idx))
+    pub fn new(e: ExprKind) -> Self {
+        Expr { kind: e, ty: None }
     }
 
     #[inline]
-    pub fn query_col(query_id: QueryID, idx: u32) -> Self {
-        Expr::Col(Col::QueryCol(query_id, idx))
-    }
-
-    #[inline]
-    pub fn correlated_col(query_id: QueryID, idx: u32) -> Self {
-        Expr::Col(Col::CorrelatedCol(query_id, idx))
-    }
-
-    #[inline]
-    pub fn func(kind: FuncKind, args: Vec<Expr>) -> Self {
-        Expr::Func(Func::new(kind, args))
-    }
-
-    #[inline]
-    pub fn pred_not(e: Expr) -> Self {
-        Expr::Pred(Pred::Not(Box::new(e)))
-    }
-
-    #[inline]
-    pub fn pred_in_subq(lhs: Expr, subq: Expr) -> Self {
-        Expr::Pred(Pred::InSubquery(Box::new(lhs), Box::new(subq)))
-    }
-
-    #[inline]
-    pub fn pred_not_in_subq(lhs: Expr, subq: Expr) -> Self {
-        Expr::Pred(Pred::NotInSubquery(Box::new(lhs), Box::new(subq)))
-    }
-
-    #[inline]
-    pub fn pred_exists(subq: Expr) -> Self {
-        Expr::Pred(Pred::Exists(Box::new(subq)))
-    }
-
-    #[inline]
-    pub fn pred_func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
-        Expr::Pred(Pred::func(kind, args))
-    }
-
-    #[inline]
-    pub fn pred_conj(mut exprs: Vec<Expr>) -> Self {
-        assert!(!exprs.is_empty());
-        if exprs.len() == 1 {
-            exprs.pop().unwrap()
-        } else {
-            Expr::Pred(Pred::Conj(exprs))
-        }
-    }
-
-    #[inline]
-    pub fn pred_and(lhs: Expr, rhs: Expr) -> Self {
-        match (lhs, rhs) {
-            (Expr::Pred(Pred::Conj(mut lhs)), Expr::Pred(Pred::Conj(rhs))) => {
-                lhs.extend(rhs);
-                Expr::pred_conj(lhs)
-            }
-            (Expr::Pred(Pred::Conj(mut lhs)), rhs) => {
-                lhs.push(rhs);
-                Expr::pred_conj(lhs)
-            }
-            (lhs, Expr::Pred(Pred::Conj(rhs))) => {
-                let mut vs = Vec::with_capacity(rhs.len() + 1);
-                vs.push(lhs);
-                vs.extend(rhs);
-                Expr::pred_conj(vs)
-            }
-            (lhs, rhs) => Expr::pred_conj(vec![lhs, rhs]),
-        }
+    pub fn new_const(c: Const) -> Self {
+        Expr::new(ExprKind::Const(c))
     }
 
     #[inline]
     pub fn const_null() -> Self {
-        Expr::Const(Const::Null)
+        Expr::new(ExprKind::Const(Const::Null))
     }
 
     #[inline]
     pub fn const_bool(v: bool) -> Self {
-        Expr::Const(Const::Bool(v))
+        Expr::new(ExprKind::Const(Const::Bool(v)))
     }
 
     #[inline]
     pub fn const_i64(i: i64) -> Self {
-        Expr::Const(Const::I64(i))
+        Expr::new(ExprKind::Const(Const::I64(i)))
     }
 
     #[inline]
     pub fn const_u64(u: u64) -> Self {
-        Expr::Const(Const::U64(u))
+        Expr::new(ExprKind::Const(Const::U64(u)))
     }
 
     /// Caller should ensure input is finite and is a number
     #[inline]
     pub fn const_f64(f: f64) -> Self {
-        Expr::Const(Const::F64(ValidF64::new(f).unwrap()))
+        Expr::new(ExprKind::Const(Const::F64(ValidF64::new(f).unwrap())))
     }
 
     #[inline]
     pub fn const_decimal(d: Decimal) -> Self {
-        Expr::Const(Const::Decimal(d))
+        Expr::new(ExprKind::Const(Const::Decimal(d)))
     }
 
     #[inline]
     pub fn const_date(dt: Date) -> Self {
-        Expr::Const(Const::Date(dt))
+        Expr::new(ExprKind::Const(Const::Date(dt)))
     }
 
     #[inline]
     pub fn const_time(tm: Time) -> Self {
-        Expr::Const(Const::Time(tm))
+        Expr::new(ExprKind::Const(Const::Time(tm)))
     }
 
     #[inline]
     pub fn const_datetime(ts: Datetime) -> Self {
-        Expr::Const(Const::Datetime(ts))
+        Expr::new(ExprKind::Const(Const::Datetime(ts)))
     }
 
     #[inline]
     pub fn const_interval(unit: TimeUnit, value: i32) -> Self {
-        Expr::Const(Const::Interval(Interval { unit, value }))
+        Expr::new(ExprKind::Const(Const::Interval(Interval { unit, value })))
     }
 
     #[inline]
     pub fn const_str(s: Arc<str>) -> Self {
-        Expr::Const(Const::String(s))
+        Expr::new(ExprKind::Const(Const::String(s)))
     }
 
     #[inline]
     pub fn const_bytes(bs: Arc<[u8]>) -> Self {
-        Expr::Const(Const::Bytes(bs))
+        Expr::new(ExprKind::Const(Const::Bytes(bs)))
+    }
+
+    #[inline]
+    pub fn is_const(&self) -> bool {
+        matches!(self.kind, ExprKind::Const(_))
+    }
+
+    #[inline]
+    pub fn is_col(&self, col: &Col) -> bool {
+        match &self.kind {
+            ExprKind::Col(c) => c == col,
+            _ => false,
+        }
     }
 
     #[inline]
@@ -186,8 +108,9 @@ impl Expr {
             kind: AggKind::Count,
             q: Setq::All,
             arg: Box::new(Expr::const_i64(1)),
+            ty: None,
         };
-        Expr::Aggf(af)
+        Expr::new(ExprKind::Aggf(af))
     }
 
     #[inline]
@@ -196,8 +119,9 @@ impl Expr {
             kind: AggKind::Count,
             q,
             arg: Box::new(expr),
+            ty: None,
         };
-        Expr::Aggf(af)
+        Expr::new(ExprKind::Aggf(af))
     }
 
     #[inline]
@@ -206,8 +130,9 @@ impl Expr {
             kind: AggKind::Sum,
             q,
             arg: Box::new(expr),
+            ty: None,
         };
-        Expr::Aggf(af)
+        Expr::new(ExprKind::Aggf(af))
     }
 
     #[inline]
@@ -216,8 +141,9 @@ impl Expr {
             kind: AggKind::Avg,
             q,
             arg: Box::new(expr),
+            ty: None,
         };
-        Expr::Aggf(af)
+        Expr::new(ExprKind::Aggf(af))
     }
 
     #[inline]
@@ -226,8 +152,9 @@ impl Expr {
             kind: AggKind::Min,
             q,
             arg: Box::new(expr),
+            ty: None,
         };
-        Expr::Aggf(af)
+        Expr::new(ExprKind::Aggf(af))
     }
 
     #[inline]
@@ -236,117 +163,220 @@ impl Expr {
             kind: AggKind::Max,
             q,
             arg: Box::new(expr),
+            ty: None,
         };
-        Expr::Aggf(af)
+        Expr::new(ExprKind::Aggf(af))
     }
 
     #[inline]
-    pub fn ph_ident(uid: u32) -> Self {
-        Expr::Plhd(Plhd::Ident(uid))
+    pub fn pred(pred: Pred) -> Self {
+        Expr::new(ExprKind::Pred(pred))
     }
 
     #[inline]
-    pub fn ph_subquery(kind: SubqKind, uid: u32) -> Self {
-        Expr::Plhd(Plhd::Subquery(kind, uid))
+    pub fn pred_not(e: Expr) -> Self {
+        Expr::new(ExprKind::Pred(Pred::Not(Box::new(e))))
     }
 
     #[inline]
-    pub fn farg_none() -> Self {
-        Expr::Farg(Farg::None)
+    pub fn pred_in_subq(lhs: Expr, subq: Expr) -> Self {
+        Expr::new(ExprKind::Pred(Pred::InSubquery(
+            Box::new(lhs),
+            Box::new(subq),
+        )))
     }
 
     #[inline]
-    pub fn is_const(&self) -> bool {
-        matches!(self, Expr::Const(_))
+    pub fn pred_not_in_subq(lhs: Expr, subq: Expr) -> Self {
+        Expr::new(ExprKind::Pred(Pred::NotInSubquery(
+            Box::new(lhs),
+            Box::new(subq),
+        )))
+    }
+
+    #[inline]
+    pub fn pred_exists(subq: Expr) -> Self {
+        Expr::new(ExprKind::Pred(Pred::Exists(Box::new(subq))))
+    }
+
+    #[inline]
+    pub fn pred_func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
+        Expr::new(ExprKind::Pred(Pred::func(kind, args)))
+    }
+
+    #[inline]
+    pub fn pred_conj(mut exprs: Vec<Expr>) -> Self {
+        assert!(!exprs.is_empty());
+        if exprs.len() == 1 {
+            exprs.pop().unwrap()
+        } else {
+            Expr::new(ExprKind::Pred(Pred::Conj(exprs)))
+        }
     }
 
     #[inline]
     pub fn into_conj(self) -> Vec<Expr> {
-        match self {
-            Expr::Pred(Pred::Conj(es)) => es,
+        match self.kind {
+            ExprKind::Pred(Pred::Conj(es)) => es,
             _ => vec![self],
         }
     }
 
     #[inline]
+    pub fn table_col(table_id: TableID, idx: u32) -> Self {
+        Expr::new(ExprKind::Col(Col::TableCol(table_id, idx)))
+    }
+
+    #[inline]
+    pub fn query_col(query_id: QueryID, idx: u32) -> Self {
+        Expr::new(ExprKind::Col(Col::QueryCol(query_id, idx)))
+    }
+
+    #[inline]
+    pub fn correlated_col(query_id: QueryID, idx: u32) -> Self {
+        Expr::new(ExprKind::Col(Col::CorrelatedCol(query_id, idx)))
+    }
+
+    #[inline]
+    pub fn func(kind: FuncKind, args: Vec<Expr>) -> Self {
+        debug_assert_eq!(kind.n_args(), args.len());
+        Expr::new(ExprKind::Func {
+            kind,
+            args: args.into_boxed_slice(),
+            ty: None,
+        })
+    }
+
+    #[inline]
+    pub fn new_case(op: Expr, acts: Vec<Expr>, fallback: Expr) -> Self {
+        Expr::new(ExprKind::Case {
+            op: Box::new(op),
+            acts: acts.into_boxed_slice(),
+            fallback: Box::new(fallback),
+        })
+    }
+
+    #[inline]
+    pub fn ph_ident(uid: u32) -> Self {
+        Expr::new(ExprKind::Plhd(Plhd::Ident(uid)))
+    }
+
+    #[inline]
+    pub fn ph_subquery(kind: SubqKind, uid: u32) -> Self {
+        Expr::new(ExprKind::Plhd(Plhd::Subquery(kind, uid)))
+    }
+
+    #[inline]
+    pub fn farg_none() -> Self {
+        Expr::new(ExprKind::Farg(Farg::None))
+    }
+
+    #[inline]
+    pub fn farg(arg: Farg) -> Self {
+        Expr::new(ExprKind::Farg(arg))
+    }
+
+    #[inline]
+    pub fn tuple(exprs: Vec<Expr>) -> Self {
+        Expr::new(ExprKind::Tuple(exprs))
+    }
+
+    #[inline]
+    pub fn attval(qry_id: QueryID) -> Self {
+        Expr::new(ExprKind::Attval(qry_id))
+    }
+
+    #[inline]
+    pub fn subq(kind: SubqKind, qry_id: QueryID) -> Self {
+        Expr::new(ExprKind::Subq(kind, qry_id))
+    }
+
+    #[inline]
     pub fn n_args(&self) -> usize {
-        match self {
-            Expr::Const(_)
-            | Expr::Col(..)
-            | Expr::Plhd(_)
-            | Expr::Subq(..)
-            | Expr::Farg(_)
-            | Expr::Attval(_) => 0,
-            Expr::Aggf(_) => 1,
-            Expr::Func(f) => f.args.len(),
-            Expr::Pred(p) => match p {
+        match &self.kind {
+            ExprKind::Const(_)
+            | ExprKind::Col(..)
+            | ExprKind::Plhd(_)
+            | ExprKind::Subq(..)
+            | ExprKind::Farg(_)
+            | ExprKind::Attval(_) => 0,
+            ExprKind::Aggf(_) => 1,
+            ExprKind::Func { args, .. } => args.len(),
+            ExprKind::Case { acts, .. } => acts.len() + 2,
+            ExprKind::Pred(p) => match p {
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => es.len(),
                 Pred::Not(_) => 1,
-                Pred::Func(f) => f.args.len(),
+                Pred::Func { args, .. } => args.len(),
                 Pred::InSubquery(..) | Pred::NotInSubquery(..) => 2,
                 Pred::Exists(_) | Pred::NotExists(_) => 1,
             },
-            Expr::Tuple(es) => es.len(),
+            ExprKind::Tuple(es) => es.len(),
         }
     }
 
     /// Return arguments of current expression.
     /// Many expressions has two arguments so we use SmallVec<[&Expr; 2]>.
     #[inline]
-    pub fn args(&self) -> smallvec::IntoIter<[&Expr; 2]> {
-        match self {
-            Expr::Const(_)
-            | Expr::Col(..)
-            | Expr::Plhd(_)
-            | Expr::Subq(..)
-            | Expr::Farg(_)
-            | Expr::Attval(_) => {
+    pub fn args(&self) -> SmallVec<[&Expr; 2]> {
+        match &self.kind {
+            ExprKind::Const(_)
+            | ExprKind::Col(..)
+            | ExprKind::Plhd(_)
+            | ExprKind::Subq(..)
+            | ExprKind::Farg(_)
+            | ExprKind::Attval(_) => {
                 smallvec![]
             }
-            Expr::Aggf(af) => smallvec![af.arg.as_ref()],
-            Expr::Func(f) => SmallVec::from_iter(f.args.iter()),
-            Expr::Pred(p) => match p {
+            ExprKind::Aggf(af) => smallvec![af.arg.as_ref()],
+            ExprKind::Func { args, .. } => args.iter().collect(),
+            ExprKind::Case { op, acts, fallback } => std::iter::once(op.as_ref())
+                .chain(acts.iter())
+                .chain(std::iter::once(fallback.as_ref()))
+                .collect(),
+            ExprKind::Pred(p) => match p {
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => SmallVec::from_iter(es.iter()),
                 Pred::Not(e) => smallvec![e.as_ref()],
-                Pred::Func(f) => SmallVec::from_iter(f.args.iter()),
+                Pred::Func { args, .. } => args.iter().collect(),
                 Pred::InSubquery(lhs, subq) | Pred::NotInSubquery(lhs, subq) => {
                     smallvec![lhs.as_ref(), subq.as_ref()]
                 }
                 Pred::Exists(subq) | Pred::NotExists(subq) => smallvec![subq.as_ref()],
             },
-            Expr::Tuple(es) => SmallVec::from_iter(es.iter()),
+            ExprKind::Tuple(es) => SmallVec::from_iter(es.iter()),
         }
-        .into_iter()
     }
 
     /// Returns mutable arguments of current expression.
     #[inline]
-    pub fn args_mut(&mut self) -> smallvec::IntoIter<[&mut Expr; 2]> {
-        match self {
-            Expr::Const(_)
-            | Expr::Col(..)
-            | Expr::Plhd(_)
-            | Expr::Subq(..)
-            | Expr::Farg(_)
-            | Expr::Attval(_) => {
+    pub fn args_mut(&mut self) -> SmallVec<[&mut Expr; 2]> {
+        match &mut self.kind {
+            ExprKind::Const(_)
+            | ExprKind::Col(..)
+            | ExprKind::Plhd(_)
+            | ExprKind::Subq(..)
+            | ExprKind::Farg(_)
+            | ExprKind::Attval(_) => {
                 smallvec![]
             }
-            Expr::Aggf(af) => smallvec![af.arg.as_mut()],
-            Expr::Func(f) => SmallVec::from_iter(f.args.iter_mut()),
-            Expr::Pred(p) => match p {
+            ExprKind::Aggf(af) => smallvec![af.arg.as_mut()],
+            ExprKind::Func { args, .. } => args.iter_mut().collect(),
+            ExprKind::Case { op, acts, fallback } => std::iter::once(op.as_mut())
+                .chain(acts.iter_mut())
+                .chain(std::iter::once(fallback.as_mut()))
+                .collect(),
+            ExprKind::Pred(p) => match p {
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => {
                     SmallVec::from_iter(es.iter_mut())
                 }
                 Pred::Not(e) => smallvec![e.as_mut()],
-                Pred::Func(f) => SmallVec::from_iter(f.args.iter_mut()),
+                Pred::Func { args, .. } => args.iter_mut().collect(),
                 Pred::InSubquery(lhs, subq) | Pred::NotInSubquery(lhs, subq) => {
                     smallvec![lhs.as_mut(), subq.as_mut()]
                 }
                 Pred::Exists(subq) | Pred::NotExists(subq) => smallvec![subq.as_mut()],
             },
-            Expr::Tuple(es) => SmallVec::from_iter(es.iter_mut()),
+            ExprKind::Tuple(es) => SmallVec::from_iter(es.iter_mut()),
         }
-        .into_iter()
     }
 
     pub fn walk<V: ExprVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
@@ -390,12 +420,12 @@ impl Expr {
             type Break = ();
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
-                match e {
-                    Expr::Aggf(_) => {
+                match &e.kind {
+                    ExprKind::Aggf(_) => {
                         self.aggr_lvl += 1;
                         self.has_aggr = true
                     }
-                    Expr::Col(col) => {
+                    ExprKind::Col(col) => {
                         if self.aggr_lvl == 0 {
                             self.cols.push(*col)
                         }
@@ -407,7 +437,7 @@ impl Expr {
 
             #[inline]
             fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
-                if let Expr::Aggf(_) = e {
+                if let ExprKind::Aggf(_) = &e.kind {
                     self.aggr_lvl -= 1
                 }
                 ControlFlow::Continue(())
@@ -430,7 +460,7 @@ impl Expr {
             type Break = ();
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
-                if let Expr::Aggf(_) = e {
+                if let ExprKind::Aggf(_) = &e.kind {
                     self.0 = true;
                     return ControlFlow::Break(());
                 }
@@ -454,9 +484,9 @@ impl Expr {
             type Break = ();
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
-                match e {
-                    Expr::Aggf(_) => self.aggr_lvl += 1,
-                    Expr::Col(_) => {
+                match &e.kind {
+                    ExprKind::Aggf(_) => self.aggr_lvl += 1,
+                    ExprKind::Col(_) => {
                         if self.aggr_lvl == 0 {
                             self.has_non_aggr_cols = true;
                             return ControlFlow::Break(());
@@ -469,7 +499,7 @@ impl Expr {
 
             #[inline]
             fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
-                if let Expr::Aggf(_) = e {
+                if let ExprKind::Aggf(_) = e.kind {
                     self.aggr_lvl -= 1
                 }
                 ControlFlow::Continue(())
@@ -489,6 +519,51 @@ impl Expr {
         let mut c = CollectQryIDs(hs);
         let _ = self.walk(&mut c);
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ExprKind {
+    Const(Const),
+    Col(Col),
+    Aggf(Aggf),
+    Func {
+        kind: FuncKind,
+        args: Box<[Expr]>,
+        ty: Option<ExprType>,
+    },
+    Case {
+        op: Box<Expr>,
+        acts: Box<[Expr]>,
+        fallback: Box<Expr>,
+    },
+    Pred(Pred),
+    Tuple(Vec<Expr>),
+    /// Subquery that returns single value.
+    Subq(SubqKind, QueryID),
+    /// Attval represents single value returned by
+    /// an attached plan.
+    /// If multiple values returned, it throws runtime error.
+    /// If no values returned, it use NULL by default.
+    Attval(QueryID),
+    /// Placeholder can represent any intermediate value
+    /// generated in building phase. It should be
+    /// resolved as a normal expression later.
+    /// Placeholder is also used in optimization, such as
+    /// predicate pushdown.
+    Plhd(Plhd),
+    /// Predefined function argument.
+    Farg(Farg),
+}
+
+impl Default for ExprKind {
+    fn default() -> Self {
+        ExprKind::Const(Const::Null)
+    }
+}
+
+pub struct TypedCol {
+    pub e: Col,
+    pub ty: Option<ExprType>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -519,6 +594,7 @@ pub struct Aggf {
     pub kind: AggKind,
     pub q: Setq,
     pub arg: Box<Expr>,
+    pub ty: Option<ExprType>,
 }
 
 impl Aggf {
@@ -638,7 +714,7 @@ impl ExprVisitor for CollectQryIDs<'_> {
     type Break = ();
     #[inline]
     fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
-        if let Expr::Col(Col::QueryCol(qry_id, _)) = e {
+        if let ExprKind::Col(Col::QueryCol(qry_id, _)) = &e.kind {
             self.0.insert(*qry_id);
         }
         ControlFlow::Continue(())
@@ -654,11 +730,11 @@ mod tests {
         use std::mem::size_of;
         println!(
             "size of SmallVec<[&Expr; 2]> is {}",
-            size_of::<SmallVec<[&Expr; 2]>>()
+            size_of::<SmallVec<[&ExprKind; 2]>>()
         );
         println!(
             "size of SmallVec<[&Expr; 3]> is {}",
-            size_of::<SmallVec<[&Expr; 3]>>()
+            size_of::<SmallVec<[&ExprKind; 3]>>()
         );
     }
 }
