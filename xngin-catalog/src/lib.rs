@@ -5,7 +5,7 @@ use bitflags::bitflags;
 use smol_str::SmolStr;
 use std::hash::Hash;
 use std::marker::PhantomData;
-use xngin_datatype::DataType;
+use xngin_datatype::PreciseType;
 
 pub trait QueryCatalog {
     fn all_schemas(&self) -> Vec<Schema>;
@@ -86,7 +86,7 @@ pub struct Column {
     pub id: ColumnID,
     pub table_id: TableID,
     pub name: SmolStr,
-    pub ty: DataType,
+    pub pty: PreciseType,
     pub idx: u32,
     pub attr: ColumnAttr,
 }

@@ -13,7 +13,6 @@ pub enum RuntimeType {
     Decimal,
     Bool,
     String,
-    Char,
     Bytes,
     Date,
     Time,

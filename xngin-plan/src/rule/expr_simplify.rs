@@ -1031,7 +1031,7 @@ fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
             }
             _ => None,
         },
-        FuncKind::Sub => match fargs.as_mut() {
+        FuncKind::Sub => match fargs {
             // rule 3: 1-1 => 0
             [Expr {
                 kind: ExprKind::Const(c1),

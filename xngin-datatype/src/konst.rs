@@ -1,5 +1,5 @@
 use crate::align::{AlignPartialOrd, AlignType};
-use crate::{Date, Datetime, Decimal, Interval, RuntimeType, Time};
+use crate::{Date, Datetime, Decimal, Interval, PreciseType, RuntimeType, Time, Typed};
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -23,6 +23,46 @@ pub enum Const {
 impl Default for Const {
     fn default() -> Self {
         Const::Null
+    }
+}
+
+impl Typed for Const {
+    #[inline]
+    fn rty(&self) -> RuntimeType {
+        use Const::*;
+        match self {
+            I64(_) => RuntimeType::I64,
+            U64(_) => RuntimeType::U64,
+            F64(_) => RuntimeType::F64,
+            Decimal(_) => RuntimeType::Decimal,
+            Date(_) => RuntimeType::Date,
+            Time(_) => RuntimeType::Time,
+            Datetime(_) => RuntimeType::Datetime,
+            Interval(_) => RuntimeType::Interval,
+            String(_) => RuntimeType::String,
+            Bytes(_) => RuntimeType::Bytes,
+            Bool(_) => RuntimeType::Bool,
+            Null => RuntimeType::Null,
+        }
+    }
+
+    #[inline]
+    fn pty(&self) -> PreciseType {
+        use Const::*;
+        match self {
+            I64(_) => PreciseType::i64(),
+            U64(_) => PreciseType::u64(),
+            F64(_) => PreciseType::f64(),
+            Decimal(_) => PreciseType::decimal_unknown(),
+            Date(_) => PreciseType::date(),
+            Time(_) => PreciseType::time_unknown(),
+            Datetime(_) => PreciseType::datetime_unknown(),
+            Interval(_) => PreciseType::interval(),
+            String(_) => PreciseType::varchar_unknown(),
+            Bytes(_) => PreciseType::bytes_unknown(),
+            Bool(_) => PreciseType::bool(),
+            Null => PreciseType::null(),
+        }
     }
 }
 

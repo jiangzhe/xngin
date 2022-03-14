@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
 use xngin_catalog::ColumnAttr;
-use xngin_datatype::DataType;
+use xngin_datatype::PreciseType;
 use xngin_frontend::parser::dialect::MySQL;
 use xngin_frontend::parser::parse_query;
 
@@ -456,7 +456,11 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
         .add_table(
             "j",
             "t0",
-            &vec![ColumnSpec::new("c0", DataType::I32, ColumnAttr::empty())],
+            &vec![ColumnSpec::new(
+                "c0",
+                PreciseType::i32(),
+                ColumnAttr::empty(),
+            )],
         )
         .unwrap();
     builder
@@ -464,8 +468,8 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
             "j",
             "t1",
             &vec![
-                ColumnSpec::new("c0", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c1", DataType::I32, ColumnAttr::empty()),
+                ColumnSpec::new("c0", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c1", PreciseType::i32(), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -474,9 +478,9 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
             "j",
             "t2",
             &vec![
-                ColumnSpec::new("c0", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c1", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c2", DataType::I32, ColumnAttr::empty()),
+                ColumnSpec::new("c0", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c1", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c2", PreciseType::i32(), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -485,10 +489,10 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
             "j",
             "t3",
             &vec![
-                ColumnSpec::new("c0", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c1", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c2", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c3", DataType::I32, ColumnAttr::empty()),
+                ColumnSpec::new("c0", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c1", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c2", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c3", PreciseType::i32(), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -497,11 +501,11 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
             "j",
             "t4",
             &vec![
-                ColumnSpec::new("c0", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c1", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c2", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c3", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("c4", DataType::I32, ColumnAttr::empty()),
+                ColumnSpec::new("c0", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c1", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c2", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c3", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c4", PreciseType::i32(), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -758,22 +762,38 @@ pub(crate) fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             "tpch",
             "lineitem",
             &vec![
-                ColumnSpec::new("l_orderkey", DataType::I32, ColumnAttr::PK),
-                ColumnSpec::new("l_partkey", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("l_suppkey", DataType::I32, ColumnAttr::empty()),
-                ColumnSpec::new("l_linenumber", DataType::I32, ColumnAttr::PK),
-                ColumnSpec::new("l_quantity", DataType::Decimal, ColumnAttr::empty()),
-                ColumnSpec::new("l_extendedprice", DataType::Decimal, ColumnAttr::empty()),
-                ColumnSpec::new("l_discount", DataType::Decimal, ColumnAttr::empty()),
-                ColumnSpec::new("l_tax", DataType::Decimal, ColumnAttr::empty()),
-                ColumnSpec::new("l_returnflag", DataType::Char, ColumnAttr::empty()),
-                ColumnSpec::new("l_linestatus", DataType::Char, ColumnAttr::empty()),
-                ColumnSpec::new("l_shipdate", DataType::Date, ColumnAttr::empty()),
-                ColumnSpec::new("l_commitdate", DataType::Date, ColumnAttr::empty()),
-                ColumnSpec::new("l_receiptdate", DataType::Date, ColumnAttr::empty()),
-                ColumnSpec::new("l_shipinstruct", DataType::String, ColumnAttr::empty()),
-                ColumnSpec::new("l_shipmode", DataType::String, ColumnAttr::empty()),
-                ColumnSpec::new("l_comment", DataType::String, ColumnAttr::empty()),
+                ColumnSpec::new("l_orderkey", PreciseType::i32(), ColumnAttr::PK),
+                ColumnSpec::new("l_partkey", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("l_suppkey", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("l_linenumber", PreciseType::i32(), ColumnAttr::PK),
+                ColumnSpec::new(
+                    "l_quantity",
+                    PreciseType::decimal(18, 2),
+                    ColumnAttr::empty(),
+                ),
+                ColumnSpec::new(
+                    "l_extendedprice",
+                    PreciseType::decimal(18, 2),
+                    ColumnAttr::empty(),
+                ),
+                ColumnSpec::new(
+                    "l_discount",
+                    PreciseType::decimal(18, 2),
+                    ColumnAttr::empty(),
+                ),
+                ColumnSpec::new("l_tax", PreciseType::decimal(18, 2), ColumnAttr::empty()),
+                ColumnSpec::new("l_returnflag", PreciseType::char(1), ColumnAttr::empty()),
+                ColumnSpec::new("l_linestatus", PreciseType::char(1), ColumnAttr::empty()),
+                ColumnSpec::new("l_shipdate", PreciseType::date(), ColumnAttr::empty()),
+                ColumnSpec::new("l_commitdate", PreciseType::date(), ColumnAttr::empty()),
+                ColumnSpec::new("l_receiptdate", PreciseType::date(), ColumnAttr::empty()),
+                ColumnSpec::new(
+                    "l_shipinstruct",
+                    PreciseType::varchar(25),
+                    ColumnAttr::empty(),
+                ),
+                ColumnSpec::new("l_shipmode", PreciseType::varchar(10), ColumnAttr::empty()),
+                ColumnSpec::new("l_comment", PreciseType::varchar(44), ColumnAttr::empty()),
             ],
         )
         .unwrap();
