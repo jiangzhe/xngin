@@ -9,18 +9,22 @@ use std::sync::Arc;
 use xngin_catalog::TableID;
 pub use xngin_datatype::{Const, ValidF64};
 use xngin_datatype::{Date, Datetime, Decimal, Interval, PreciseType, Time, TimeUnit};
-pub type ExprType = Box<PreciseType>;
+// pub type ExprType = Box<PreciseType>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Expr {
     pub kind: ExprKind,
-    pub ty: Option<ExprType>,
+    // pub ty: Option<ExprType>,
+    pub ty: PreciseType,
 }
 
 impl Expr {
     #[inline]
     pub fn new(e: ExprKind) -> Self {
-        Expr { kind: e, ty: None }
+        Expr {
+            kind: e,
+            ty: PreciseType::Unknown,
+        }
     }
 
     #[inline]
@@ -104,68 +108,56 @@ impl Expr {
 
     #[inline]
     pub fn count_asterisk() -> Self {
-        let af = Aggf {
+        Expr::new(ExprKind::Aggf {
             kind: AggKind::Count,
             q: Setq::All,
             arg: Box::new(Expr::const_i64(1)),
-            ty: None,
-        };
-        Expr::new(ExprKind::Aggf(af))
+        })
     }
 
     #[inline]
     pub fn count(q: Setq, expr: Expr) -> Self {
-        let af = Aggf {
+        Expr::new(ExprKind::Aggf {
             kind: AggKind::Count,
             q,
             arg: Box::new(expr),
-            ty: None,
-        };
-        Expr::new(ExprKind::Aggf(af))
+        })
     }
 
     #[inline]
     pub fn sum(q: Setq, expr: Expr) -> Self {
-        let af = Aggf {
+        Expr::new(ExprKind::Aggf {
             kind: AggKind::Sum,
             q,
             arg: Box::new(expr),
-            ty: None,
-        };
-        Expr::new(ExprKind::Aggf(af))
+        })
     }
 
     #[inline]
     pub fn avg(q: Setq, expr: Expr) -> Self {
-        let af = Aggf {
+        Expr::new(ExprKind::Aggf {
             kind: AggKind::Avg,
             q,
             arg: Box::new(expr),
-            ty: None,
-        };
-        Expr::new(ExprKind::Aggf(af))
+        })
     }
 
     #[inline]
     pub fn min(q: Setq, expr: Expr) -> Self {
-        let af = Aggf {
+        Expr::new(ExprKind::Aggf {
             kind: AggKind::Min,
             q,
             arg: Box::new(expr),
-            ty: None,
-        };
-        Expr::new(ExprKind::Aggf(af))
+        })
     }
 
     #[inline]
     pub fn max(q: Setq, expr: Expr) -> Self {
-        let af = Aggf {
+        Expr::new(ExprKind::Aggf {
             kind: AggKind::Max,
             q,
             arg: Box::new(expr),
-            ty: None,
-        };
-        Expr::new(ExprKind::Aggf(af))
+        })
     }
 
     #[inline]
@@ -222,9 +214,15 @@ impl Expr {
         }
     }
 
+    /// Construct a table column with table id, column index and precise type.
+    /// This differs from other expressions, as the precise type is passed
+    /// as input argument.
     #[inline]
-    pub fn table_col(table_id: TableID, idx: u32) -> Self {
-        Expr::new(ExprKind::Col(Col::TableCol(table_id, idx)))
+    pub fn table_col(table_id: TableID, idx: u32, ty: PreciseType) -> Self {
+        Expr {
+            kind: ExprKind::Col(Col::TableCol(table_id, idx)),
+            ty,
+        }
     }
 
     #[inline]
@@ -243,7 +241,6 @@ impl Expr {
         Expr::new(ExprKind::Func {
             kind,
             args: args.into_boxed_slice(),
-            ty: None,
         })
     }
 
@@ -254,6 +251,19 @@ impl Expr {
             acts: acts.into_boxed_slice(),
             fallback: Box::new(fallback),
         })
+    }
+
+    /// Cast a given expression to specific data type.
+    #[inline]
+    pub fn implicit_cast(arg: Expr, ty: PreciseType) -> Self {
+        Expr {
+            kind: ExprKind::Cast {
+                arg: Box::new(arg),
+                implicit: true,
+                ty,
+            },
+            ty,
+        }
     }
 
     #[inline]
@@ -300,7 +310,7 @@ impl Expr {
             | ExprKind::Subq(..)
             | ExprKind::Farg(_)
             | ExprKind::Attval(_) => 0,
-            ExprKind::Aggf(_) => 1,
+            ExprKind::Aggf { .. } | ExprKind::Cast { .. } => 1,
             ExprKind::Func { args, .. } => args.len(),
             ExprKind::Case { acts, .. } => acts.len() + 2,
             ExprKind::Pred(p) => match p {
@@ -327,7 +337,7 @@ impl Expr {
             | ExprKind::Attval(_) => {
                 smallvec![]
             }
-            ExprKind::Aggf(af) => smallvec![af.arg.as_ref()],
+            ExprKind::Aggf { arg, .. } | ExprKind::Cast { arg, .. } => smallvec![arg.as_ref()],
             ExprKind::Func { args, .. } => args.iter().collect(),
             ExprKind::Case { op, acts, fallback } => std::iter::once(op.as_ref())
                 .chain(acts.iter())
@@ -358,7 +368,7 @@ impl Expr {
             | ExprKind::Attval(_) => {
                 smallvec![]
             }
-            ExprKind::Aggf(af) => smallvec![af.arg.as_mut()],
+            ExprKind::Aggf { arg, .. } | ExprKind::Cast { arg, .. } => smallvec![arg.as_mut()],
             ExprKind::Func { args, .. } => args.iter_mut().collect(),
             ExprKind::Case { op, acts, fallback } => std::iter::once(op.as_mut())
                 .chain(acts.iter_mut())
@@ -421,7 +431,7 @@ impl Expr {
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
                 match &e.kind {
-                    ExprKind::Aggf(_) => {
+                    ExprKind::Aggf { .. } => {
                         self.aggr_lvl += 1;
                         self.has_aggr = true
                     }
@@ -437,7 +447,7 @@ impl Expr {
 
             #[inline]
             fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
-                if let ExprKind::Aggf(_) = &e.kind {
+                if let ExprKind::Aggf { .. } = &e.kind {
                     self.aggr_lvl -= 1
                 }
                 ControlFlow::Continue(())
@@ -460,7 +470,7 @@ impl Expr {
             type Break = ();
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
-                if let ExprKind::Aggf(_) = &e.kind {
+                if let ExprKind::Aggf { .. } = &e.kind {
                     self.0 = true;
                     return ControlFlow::Break(());
                 }
@@ -485,7 +495,7 @@ impl Expr {
             #[inline]
             fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
                 match &e.kind {
-                    ExprKind::Aggf(_) => self.aggr_lvl += 1,
+                    ExprKind::Aggf { .. } => self.aggr_lvl += 1,
                     ExprKind::Col(_) => {
                         if self.aggr_lvl == 0 {
                             self.has_non_aggr_cols = true;
@@ -499,7 +509,7 @@ impl Expr {
 
             #[inline]
             fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
-                if let ExprKind::Aggf(_) = e.kind {
+                if let ExprKind::Aggf { .. } = e.kind {
                     self.aggr_lvl -= 1
                 }
                 ControlFlow::Continue(())
@@ -525,16 +535,24 @@ impl Expr {
 pub enum ExprKind {
     Const(Const),
     Col(Col),
-    Aggf(Aggf),
+    Aggf {
+        kind: AggKind,
+        q: Setq,
+        arg: Box<Expr>,
+    },
     Func {
         kind: FuncKind,
         args: Box<[Expr]>,
-        ty: Option<ExprType>,
     },
     Case {
         op: Box<Expr>,
         acts: Box<[Expr]>,
         fallback: Box<Expr>,
+    },
+    Cast {
+        arg: Box<Expr>,
+        ty: PreciseType,
+        implicit: bool,
     },
     Pred(Pred),
     Tuple(Vec<Expr>),
@@ -561,11 +579,6 @@ impl Default for ExprKind {
     }
 }
 
-pub struct TypedCol {
-    pub e: Col,
-    pub ty: Option<ExprType>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Col {
     TableCol(TableID, u32),
@@ -586,21 +599,6 @@ impl Setq {
             Setq::All => "all",
             Setq::Distinct => "distinct",
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Aggf {
-    pub kind: AggKind,
-    pub q: Setq,
-    pub arg: Box<Expr>,
-    pub ty: Option<ExprType>,
-}
-
-impl Aggf {
-    #[inline]
-    pub fn n_args(&self) -> usize {
-        1
     }
 }
 

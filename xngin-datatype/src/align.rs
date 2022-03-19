@@ -26,45 +26,35 @@ impl AlignType {
             return Some(AlignType::Identical);
         }
         let res = match this {
-            I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
-                match that {
-                    Interval | Null => return None,
-                    _ => AlignType::F64,
-                }
-            }
+            I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => match that {
+                Interval | Null | Unknown => return None,
+                _ => AlignType::F64,
+            },
             String | Bytes => match that {
-                I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
-                    AlignType::F64
-                }
+                I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => AlignType::F64,
                 String | Bytes | Time => AlignType::Bytes,
                 Date | Datetime => AlignType::Datetime,
-                Interval | Null => return None,
+                Interval | Null | Unknown => return None,
             },
             Date => match that {
-                I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
-                    AlignType::F64
-                }
+                I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => AlignType::F64,
                 String | Bytes => AlignType::Datetime,
                 Date | Datetime => AlignType::Datetime,
                 Time => AlignType::Bytes,
-                Interval | Null => return None,
+                Interval | Null | Unknown => return None,
             },
             Time => match that {
-                I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
-                    AlignType::F64
-                }
+                I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => AlignType::F64,
                 String | Bytes | Date | Datetime | Time => AlignType::Bytes,
-                Interval | Null => return None,
+                Interval | Null | Unknown => return None,
             },
             Datetime => match that {
-                I8 | U8 | I16 | U16 | I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => {
-                    AlignType::F64
-                }
+                I32 | U32 | I64 | U64 | F32 | F64 | Decimal | Bool => AlignType::F64,
                 String | Bytes | Date | Datetime => AlignType::Datetime,
                 Time => AlignType::Bytes,
-                Interval | Null => return None,
+                Interval | Null | Unknown => return None,
             },
-            Interval | Null => return None,
+            Interval | Null | Unknown => return None,
         };
         Some(res)
     }

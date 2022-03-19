@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
 use xngin_catalog::ColumnAttr;
-use xngin_datatype::PreciseType;
+use xngin_datatype::{Collation, PreciseType};
 use xngin_frontend::parser::dialect::MySQL;
 use xngin_frontend::parser::parse_query;
 
@@ -322,6 +322,7 @@ fn test_plan_build_subquery() {
 #[test]
 fn test_plan_build_location() {
     use Location::*;
+    let cat = j_catalog();
     for (sql, expected) in vec![
         ("select 1", vec![Virtual]),
         ("select 1 from t1", vec![Intermediate, Disk]),
@@ -334,7 +335,7 @@ fn test_plan_build_location() {
             vec![Intermediate, Intermediate, Disk],
         ),
     ] {
-        assert_j_plan(sql, |s, p| {
+        assert_j_plan1(&cat, sql, |s, p| {
             print_plan(s, &p);
             let mut queries = vec![];
             collect_queries(&p.qry_set, p.root, &mut queries);
@@ -530,7 +531,7 @@ pub(crate) fn table_map(
 
 pub(crate) fn assert_j_plan<F: FnOnce(&str, QueryPlan)>(sql: &str, f: F) {
     let cat = j_catalog();
-    let plan = build_plan(&cat, sql);
+    let plan = build_plan(&cat, "j", sql);
     f(sql, plan)
 }
 
@@ -539,7 +540,7 @@ pub(crate) fn assert_j_plan1<F: FnOnce(&str, QueryPlan)>(
     sql: &str,
     f: F,
 ) {
-    let plan = build_plan(&cat, sql);
+    let plan = build_plan(&cat, "j", sql);
     f(sql, plan)
 }
 
@@ -549,13 +550,13 @@ pub(crate) fn assert_j_plan2<F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
     sql2: &str,
     f: F,
 ) {
-    let p1 = build_plan(&cat, sql1);
-    let p2 = build_plan(&cat, sql2);
+    let p1 = build_plan(&cat, "j", sql1);
+    let p2 = build_plan(&cat, "j", sql2);
     f(sql1, p1, sql2, p2)
 }
 
-pub(crate) fn build_plan(cat: &Arc<dyn QueryCatalog>, sql: &str) -> QueryPlan {
-    let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
+pub(crate) fn build_plan(cat: &Arc<dyn QueryCatalog>, schema_name: &str, sql: &str) -> QueryPlan {
+    let builder = PlanBuilder::new(Arc::clone(&cat), schema_name).unwrap();
     let (_, qr) = parse_query(MySQL(sql)).unwrap();
     builder.build_plan(&qr).unwrap()
 }
@@ -782,18 +783,34 @@ pub(crate) fn tpch_catalog() -> Arc<dyn QueryCatalog> {
                     ColumnAttr::empty(),
                 ),
                 ColumnSpec::new("l_tax", PreciseType::decimal(18, 2), ColumnAttr::empty()),
-                ColumnSpec::new("l_returnflag", PreciseType::char(1), ColumnAttr::empty()),
-                ColumnSpec::new("l_linestatus", PreciseType::char(1), ColumnAttr::empty()),
+                ColumnSpec::new(
+                    "l_returnflag",
+                    PreciseType::char(1, Collation::Ascii),
+                    ColumnAttr::empty(),
+                ),
+                ColumnSpec::new(
+                    "l_linestatus",
+                    PreciseType::char(1, Collation::Ascii),
+                    ColumnAttr::empty(),
+                ),
                 ColumnSpec::new("l_shipdate", PreciseType::date(), ColumnAttr::empty()),
                 ColumnSpec::new("l_commitdate", PreciseType::date(), ColumnAttr::empty()),
                 ColumnSpec::new("l_receiptdate", PreciseType::date(), ColumnAttr::empty()),
                 ColumnSpec::new(
                     "l_shipinstruct",
-                    PreciseType::varchar(25),
+                    PreciseType::varchar(25, Collation::Ascii),
                     ColumnAttr::empty(),
                 ),
-                ColumnSpec::new("l_shipmode", PreciseType::varchar(10), ColumnAttr::empty()),
-                ColumnSpec::new("l_comment", PreciseType::varchar(44), ColumnAttr::empty()),
+                ColumnSpec::new(
+                    "l_shipmode",
+                    PreciseType::varchar(10, Collation::Ascii),
+                    ColumnAttr::empty(),
+                ),
+                ColumnSpec::new(
+                    "l_comment",
+                    PreciseType::varchar(44, Collation::Ascii),
+                    ColumnAttr::empty(),
+                ),
             ],
         )
         .unwrap();

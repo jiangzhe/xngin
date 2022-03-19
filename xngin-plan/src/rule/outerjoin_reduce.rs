@@ -21,6 +21,7 @@ pub fn outerjoin_reduce(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleE
     reduce_outerjoin(qry_set, qry_id, None)
 }
 
+#[inline]
 fn reduce_outerjoin(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
@@ -177,6 +178,7 @@ impl OpMutVisitor for Reduce<'_> {
     }
 }
 
+#[inline]
 fn analyze_conj_preds(exprs: &[Expr], rn_map: &mut HashMap<QueryID, Vec<Expr>>) -> Result<()> {
     if exprs.is_empty() {
         return Ok(());
@@ -196,6 +198,7 @@ fn analyze_conj_preds(exprs: &[Expr], rn_map: &mut HashMap<QueryID, Vec<Expr>>) 
 
 // translate reject null expressions,
 // returns the expression set that still rejects null
+#[inline]
 fn translate_rn_exprs(
     qry_id: QueryID,
     exprs: &[Expr],

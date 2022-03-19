@@ -847,7 +847,7 @@ impl PlanBuilder {
         let all_cols = self.catalog.all_columns_in_table(&table_id);
         let mut proj_cols = Vec::with_capacity(all_cols.len());
         for c in all_cols {
-            proj_cols.push((expr::Expr::table_col(table_id, c.idx as u32), c.name))
+            proj_cols.push((expr::Expr::table_col(table_id, c.idx as u32, c.pty), c.name))
         }
         let proj = Op::proj(proj_cols, Op::Table(schema_id, table_id));
         // todo: currently we assume all tables are located on disk.

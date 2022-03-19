@@ -5,7 +5,7 @@ use crate::query::{QueryPlan, QuerySet};
 use crate::setop::Setop;
 use std::fmt::{self, Write};
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{AggKind, Aggf, Col, Const, Expr, ExprKind, Farg, Pred, QueryID, Setq};
+use xngin_expr::{AggKind, Col, Const, Expr, ExprKind, Farg, Pred, QueryID, Setq};
 
 const INDENT: usize = 4;
 const BRANCH_1: char = '└';
@@ -219,7 +219,20 @@ impl Explain for Expr {
         match &self.kind {
             ExprKind::Const(c) => c.explain(f),
             ExprKind::Col(c) => c.explain(f),
-            ExprKind::Aggf(a) => a.explain(f),
+            ExprKind::Aggf { kind, q, arg } => {
+                match kind {
+                    AggKind::Count => f.write_str("count(")?,
+                    AggKind::Sum => f.write_str("sum(")?,
+                    AggKind::Max => f.write_str("max(")?,
+                    AggKind::Min => f.write_str("min(")?,
+                    AggKind::Avg => f.write_str("avg(")?,
+                }
+                if *q == Setq::Distinct {
+                    f.write_str("distinct ")?
+                }
+                arg.explain(f)?;
+                f.write_char(')')
+            }
             ExprKind::Func { kind, args, .. } => {
                 f.write_str(kind.to_lower())?;
                 f.write_char('(')?;
@@ -248,6 +261,13 @@ impl Explain for Expr {
                     f.write_char(' ')?
                 }
                 f.write_str("end")
+            }
+            ExprKind::Cast { arg, ty, .. } => {
+                f.write_str("cast(")?;
+                arg.explain(f)?;
+                f.write_str(" as ")?;
+                f.write_str(ty.to_lower().as_ref())?;
+                f.write_char(')')
             }
             ExprKind::Pred(p) => p.explain(f),
             ExprKind::Tuple(es) => {
@@ -293,23 +313,6 @@ impl Explain for Col {
             Col::QueryCol(query_id, idx) => write!(f, "q{}.{}", **query_id, idx),
             Col::CorrelatedCol(query_id, idx) => write!(f, "cq{}.{}", **query_id, idx),
         }
-    }
-}
-
-impl Explain for Aggf {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        match self.kind {
-            AggKind::Count => f.write_str("count(")?,
-            AggKind::Sum => f.write_str("sum(")?,
-            AggKind::Max => f.write_str("max(")?,
-            AggKind::Min => f.write_str("min(")?,
-            AggKind::Avg => f.write_str("avg(")?,
-        }
-        if self.q == Setq::Distinct {
-            f.write_str("distinct ")?
-        }
-        self.arg.explain(f)?;
-        f.write_char(')')
     }
 }
 

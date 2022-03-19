@@ -30,16 +30,6 @@ impl Pred {
     }
 }
 
-/// Predicate function is special function that returns only bool value.
-/// It is separated from common function because in SQL context, predicates
-/// are very important for optimization and we'd like to specially handle
-/// them.
-// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-// pub struct PredFunc {
-//     pub kind: PredFuncKind,
-//     pub args: Box<[Expr]>,
-// }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PredFuncKind {
     // comparison

@@ -46,6 +46,7 @@ pub fn expr_simplify(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffe
     simplify_expr(qry_set, qry_id)
 }
 
+#[inline]
 fn simplify_expr(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut es = ExprSimplify { qry_set };
@@ -104,6 +105,7 @@ impl OpMutVisitor for ExprSimplify<'_> {
     }
 }
 
+#[inline]
 pub(crate) fn simplify_nested(e: &mut Expr, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
     update_simplify_nested(e, null_coalesce, |_| Ok(()))
 }
@@ -635,6 +637,7 @@ fn simplify_conj_short_circuit(
     None
 }
 
+#[inline]
 fn check_ord_left_eq(ord: Ordering, r_kind: PredFuncKind) -> bool {
     match (ord, r_kind) {
         // a=2 and a>1, a=2 and a>=1, a=2 and a!=1
@@ -1333,6 +1336,7 @@ fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
     Ok(res)
 }
 
+#[inline]
 fn expr_add_const(e: Expr, c: Const) -> Expr {
     if c.is_zero().unwrap_or_default() {
         coerce_numeric(e)
@@ -1341,11 +1345,13 @@ fn expr_add_const(e: Expr, c: Const) -> Expr {
     }
 }
 
+#[inline]
 fn coerce_numeric(e: Expr) -> Expr {
     // todo: add casting
     e
 }
 
+#[inline]
 fn expr_sub_const(e: Expr, c: Const) -> Expr {
     if c.is_zero().unwrap_or_default() {
         coerce_numeric(e)
@@ -1354,10 +1360,12 @@ fn expr_sub_const(e: Expr, c: Const) -> Expr {
     }
 }
 
+#[inline]
 fn negate(e: Expr) -> Expr {
     Expr::func(FuncKind::Neg, vec![e])
 }
 
+#[inline]
 fn const_sub_expr(c: Const, e: Expr) -> Expr {
     if c.is_zero().unwrap_or_default() {
         negate(e)
@@ -1766,6 +1774,7 @@ fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Exp
     Ok(res)
 }
 
+#[inline]
 fn coerce_cmp_func(kind: PredFuncKind, e1: Expr, e2: Expr) -> Expr {
     // todo: coerce casting
     Expr::pred_func(kind, vec![e1, e2])

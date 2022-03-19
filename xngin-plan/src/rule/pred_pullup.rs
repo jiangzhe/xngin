@@ -31,6 +31,7 @@ pub fn pred_pullup(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     Ok(())
 }
 
+#[inline]
 fn pullup_pred(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
@@ -64,6 +65,7 @@ struct PredPullup<'a> {
 }
 
 impl<'a> PredPullup<'a> {
+    #[inline]
     fn new(
         qry_set: &'a mut QuerySet,
         p_cols: HashSet<QueryCol>,
@@ -90,6 +92,7 @@ impl<'a> PredPullup<'a> {
     // "c0 > 1" later, then we can replace "c0" based on the mapping and get
     // new predicate "c1 - 1 > 1" or simplified version "c1 > 2" which could be
     // propagated in parent scope.
+    #[inline]
     fn translate_p_cols(&mut self, out_cols: &[(Expr, SmolStr)]) {
         if self.translated {
             // translate at most once for each query block
@@ -104,6 +107,7 @@ impl<'a> PredPullup<'a> {
         self.translated = true;
     }
 
+    #[inline]
     fn collect_p_preds(&mut self, c_preds: &[Expr]) -> Result<()> {
         if self.mapping.is_empty() || c_preds.is_empty() {
             return Ok(());
@@ -116,6 +120,7 @@ impl<'a> PredPullup<'a> {
         Ok(())
     }
 
+    #[inline]
     fn collect_c_cols(&mut self, c_preds: &[Expr]) {
         if c_preds.is_empty() {
             return;
@@ -125,6 +130,7 @@ impl<'a> PredPullup<'a> {
         }
     }
 
+    #[inline]
     fn pull_inner_side(&mut self, jo: &mut JoinOp) -> ControlFlow<Error> {
         let p_cols = HashSet::new();
         let mut p_preds = HashMap::new();
@@ -133,6 +139,7 @@ impl<'a> PredPullup<'a> {
     }
 
     // currently we only support propagate based on equation join condition.
+    #[inline]
     fn propagate_preds(&mut self, conds: &[Expr]) -> Vec<(QueryCol, PartialExpr)> {
         let mut res = vec![];
         for c in conds {
@@ -376,6 +383,7 @@ impl OpMutVisitor for PredPullup<'_> {
 }
 
 /// collect query columns in expression.
+#[inline]
 fn collect_non_aggr_qry_cols(e: &Expr, hs: &mut HashSet<QueryCol>) {
     let mut c = CollectQryCols(hs);
     let _ = e.walk(&mut c);
@@ -392,7 +400,7 @@ impl ExprVisitor for CollectQryCols<'_> {
                 self.0.insert((*qry_id, *idx));
                 ControlFlow::Continue(())
             }
-            ExprKind::Aggf(_) => ControlFlow::Break(()),
+            ExprKind::Aggf { .. } => ControlFlow::Break(()),
             _ => ControlFlow::Continue(()),
         }
     }

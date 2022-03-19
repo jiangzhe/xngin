@@ -25,6 +25,7 @@ pub fn derived_unfold(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEff
     unfold_derived(qry_set, qry_id, &mut mapping, Mode::Full)
 }
 
+#[inline]
 fn unfold_derived(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
@@ -57,6 +58,7 @@ struct Unfold<'a> {
 }
 
 impl<'a> Unfold<'a> {
+    #[inline]
     fn new(qry_set: &'a mut QuerySet, mapping: &'a mut HashMap<Col, Expr>, mode: Mode) -> Self {
         Unfold {
             qry_set,
@@ -214,6 +216,7 @@ enum Mode {
     Partial,
 }
 
+#[inline]
 fn try_unfold_subq(subq: &mut Subquery, mode: Mode) -> Option<(Op, Vec<(Expr, SmolStr)>)> {
     if subq.location != Location::Intermediate {
         return None;
@@ -255,6 +258,7 @@ struct Detect {
 }
 
 impl Detect {
+    #[inline]
     fn new() -> Self {
         Detect {
             top_proj: false,
@@ -300,6 +304,7 @@ impl OpVisitor for Detect {
     }
 }
 
+#[inline]
 fn extract(op: &mut Op) -> (Op, Vec<(Expr, SmolStr)>) {
     match mem::take(op) {
         Op::Proj { cols, input } => (*input, cols),
@@ -307,6 +312,7 @@ fn extract(op: &mut Op) -> (Op, Vec<(Expr, SmolStr)>) {
     }
 }
 
+#[inline]
 fn rewrite_exprs(op: &mut Op, mapping: &HashMap<Col, Expr>) -> RuleEffect {
     struct Rewrite<'a>(&'a HashMap<Col, Expr>);
     impl ExprMutVisitor for Rewrite<'_> {
@@ -340,7 +346,7 @@ fn rewrite_exprs(op: &mut Op, mapping: &HashMap<Col, Expr>) -> RuleEffect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{build_plan, j_catalog, print_plan};
+    use crate::builder::tests::{assert_j_plan1, j_catalog, print_plan};
     use crate::op::OpKind::*;
     use crate::rule::{col_prune, pred_pushdown};
 
@@ -370,11 +376,12 @@ mod tests {
                 vec![Proj, Proj, Filt, Proj, Table],
             ),
         ] {
-            let mut p = build_plan(&cat, sql);
-            col_prune(&mut p.qry_set, p.root).unwrap();
-            derived_unfold(&mut p.qry_set, p.root).unwrap();
-            print_plan(sql, &p);
-            assert_eq!(shape, p.shape());
+            assert_j_plan1(&cat, sql, |sql, mut p| {
+                col_prune(&mut p.qry_set, p.root).unwrap();
+                derived_unfold(&mut p.qry_set, p.root).unwrap();
+                print_plan(sql, &p);
+                assert_eq!(shape, p.shape());
+            });
         }
     }
 
@@ -395,12 +402,13 @@ mod tests {
                 vec![Proj, Proj, Filt, Table],
             ),
         ] {
-            let mut p = build_plan(&cat, sql);
-            col_prune(&mut p.qry_set, p.root).unwrap();
-            pred_pushdown(&mut p.qry_set, p.root).unwrap();
-            derived_unfold(&mut p.qry_set, p.root).unwrap();
-            print_plan(sql, &p);
-            assert_eq!(shape, p.shape());
+            assert_j_plan1(&cat, sql, |sql, mut p| {
+                col_prune(&mut p.qry_set, p.root).unwrap();
+                pred_pushdown(&mut p.qry_set, p.root).unwrap();
+                derived_unfold(&mut p.qry_set, p.root).unwrap();
+                print_plan(sql, &p);
+                assert_eq!(shape, p.shape());
+            });
         }
     }
 
@@ -421,12 +429,13 @@ mod tests {
                 vec![Proj, Join, Proj, Table, Proj, Table],
             ),
         ] {
-            let mut p = build_plan(&cat, sql);
-            col_prune(&mut p.qry_set, p.root).unwrap();
-            pred_pushdown(&mut p.qry_set, p.root).unwrap();
-            derived_unfold(&mut p.qry_set, p.root).unwrap();
-            print_plan(sql, &p);
-            assert_eq!(shape, p.shape());
+            assert_j_plan1(&cat, sql, |sql, mut p| {
+                col_prune(&mut p.qry_set, p.root).unwrap();
+                pred_pushdown(&mut p.qry_set, p.root).unwrap();
+                derived_unfold(&mut p.qry_set, p.root).unwrap();
+                print_plan(sql, &p);
+                assert_eq!(shape, p.shape());
+            });
         }
     }
 
@@ -452,12 +461,13 @@ mod tests {
                 vec![Proj, Join, Proj, Table, Proj, Proj, Filt, Table],
             ),
         ] {
-            let mut p = build_plan(&cat, sql);
-            col_prune(&mut p.qry_set, p.root).unwrap();
-            pred_pushdown(&mut p.qry_set, p.root).unwrap();
-            derived_unfold(&mut p.qry_set, p.root).unwrap();
-            print_plan(sql, &p);
-            assert_eq!(shape, p.shape());
+            assert_j_plan1(&cat, sql, |sql, mut p| {
+                col_prune(&mut p.qry_set, p.root).unwrap();
+                pred_pushdown(&mut p.qry_set, p.root).unwrap();
+                derived_unfold(&mut p.qry_set, p.root).unwrap();
+                print_plan(sql, &p);
+                assert_eq!(shape, p.shape());
+            });
         }
     }
 
@@ -475,12 +485,17 @@ mod tests {
             // computations on both tables
             ("select * from (select c1+1 from t1 where c1 > 0) t1 full join (select c2+1 from t2 where c2 > 0) t2", vec![Proj, Join, Proj, Proj, Filt, Table, Proj, Proj, Filt, Table]),
         ] {
-            let mut p = build_plan(&cat, sql);
-            col_prune(&mut p.qry_set, p.root).unwrap();
+            assert_j_plan1(
+                &cat,
+                sql,
+                |sql, mut p| {
+                    col_prune(&mut p.qry_set, p.root).unwrap();
             pred_pushdown(&mut p.qry_set, p.root).unwrap();
             derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
+                }
+            );
         }
     }
 
@@ -492,11 +507,16 @@ mod tests {
             ("select t1.c1 from t1 join (select * from t2 join t3) tt", vec![Proj, Join, Proj, Table, Join, Proj, Table, Proj, Table]),
             ("select t1.c1 from (select t1.c1 from t1 join t2) t1 join (select t2.c2 from t2 join t3) t2", vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table]),
         ] {
-            let mut p = build_plan(&cat, sql);
-            col_prune(&mut p.qry_set, p.root).unwrap();
+            assert_j_plan1(
+                &cat,
+                sql,
+                |sql, mut p| {
+                    col_prune(&mut p.qry_set, p.root).unwrap();
             derived_unfold(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             assert_eq!(shape, p.shape());
+                }
+            );
         }
     }
 
@@ -517,11 +537,12 @@ mod tests {
                 vec![Setop, Proj, Proj, Table, Proj, Proj, Table],
             ),
         ] {
-            let mut p = build_plan(&cat, sql);
-            col_prune(&mut p.qry_set, p.root).unwrap();
-            derived_unfold(&mut p.qry_set, p.root).unwrap();
-            print_plan(sql, &p);
-            assert_eq!(shape, p.shape());
+            assert_j_plan1(&cat, sql, |sql, mut p| {
+                col_prune(&mut p.qry_set, p.root).unwrap();
+                derived_unfold(&mut p.qry_set, p.root).unwrap();
+                print_plan(sql, &p);
+                assert_eq!(shape, p.shape());
+            });
         }
     }
 }

@@ -89,6 +89,8 @@ pub enum Error {
     HyperedgesNotInitialized,
     #[error("Cross join not supported")]
     CrossJoinNotSupport,
+    #[error("Type infer failed")]
+    TypeInferFailed,
     #[error("Break")]
     Break,
 }
