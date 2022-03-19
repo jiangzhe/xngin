@@ -18,6 +18,7 @@ pub fn col_prune(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> 
     prune_col(qry_set, qry_id, &mut use_set)
 }
 
+#[inline]
 fn prune_col(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
@@ -129,6 +130,7 @@ impl ExprMutVisitor for Modify<'_> {
     }
 }
 
+#[inline]
 fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<u32, u32>>) {
     match &mut subq.root {
         Op::Proj { cols, .. } => {
@@ -183,6 +185,7 @@ where
     }
 }
 
+#[inline]
 fn update_use_set(use_set: &mut FnvHashMap<QueryID, BTreeMap<u32, u32>>) {
     for mapping in use_set.values_mut() {
         for (i, old) in mapping.values_mut().enumerate() {

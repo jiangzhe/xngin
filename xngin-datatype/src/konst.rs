@@ -1,4 +1,5 @@
 use crate::align::{AlignPartialOrd, AlignType};
+use crate::Collation;
 use crate::{Date, Datetime, Decimal, Interval, PreciseType, RuntimeType, Time, Typed};
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
@@ -28,38 +29,49 @@ impl Default for Const {
 
 impl Typed for Const {
     #[inline]
-    fn rty(&self) -> RuntimeType {
-        use Const::*;
-        match self {
-            I64(_) => RuntimeType::I64,
-            U64(_) => RuntimeType::U64,
-            F64(_) => RuntimeType::F64,
-            Decimal(_) => RuntimeType::Decimal,
-            Date(_) => RuntimeType::Date,
-            Time(_) => RuntimeType::Time,
-            Datetime(_) => RuntimeType::Datetime,
-            Interval(_) => RuntimeType::Interval,
-            String(_) => RuntimeType::String,
-            Bytes(_) => RuntimeType::Bytes,
-            Bool(_) => RuntimeType::Bool,
-            Null => RuntimeType::Null,
-        }
-    }
-
-    #[inline]
     fn pty(&self) -> PreciseType {
         use Const::*;
         match self {
             I64(_) => PreciseType::i64(),
             U64(_) => PreciseType::u64(),
             F64(_) => PreciseType::f64(),
-            Decimal(_) => PreciseType::decimal_unknown(),
+            Decimal(dec) => PreciseType::Decimal((dec.intg() + dec.frac()) as u8, dec.frac() as u8),
             Date(_) => PreciseType::date(),
-            Time(_) => PreciseType::time_unknown(),
-            Datetime(_) => PreciseType::datetime_unknown(),
+            Time(tm) => {
+                let micros = tm.microsecond();
+                if micros == 0 {
+                    PreciseType::Time(0)
+                } else {
+                    let millis = tm.millisecond();
+                    if millis as u32 * 1000 == micros {
+                        PreciseType::Time(3)
+                    } else {
+                        PreciseType::Time(6)
+                    }
+                }
+            }
+            Datetime(dm) => {
+                let micros = dm.microsecond();
+                if micros == 0 {
+                    PreciseType::Datetime(0)
+                } else {
+                    let millis = dm.millisecond();
+                    if millis as u32 * 1000 == micros {
+                        PreciseType::Datetime(3)
+                    } else {
+                        PreciseType::Datetime(6)
+                    }
+                }
+            }
             Interval(_) => PreciseType::interval(),
-            String(_) => PreciseType::varchar_unknown(),
-            Bytes(_) => PreciseType::bytes_unknown(),
+            String(s) => {
+                if s.is_ascii() {
+                    PreciseType::char(s.chars().count() as u16, Collation::Ascii)
+                } else {
+                    PreciseType::char(s.chars().count() as u16, Collation::Utf8mb4)
+                }
+            }
+            Bytes(b) => PreciseType::bytes(b.len() as u16),
             Bool(_) => PreciseType::bool(),
             Null => PreciseType::null(),
         }
@@ -81,6 +93,12 @@ impl Const {
             Const::Decimal(d) => d.is_zero(),
             Const::Bool(b) => !*b, // treat false as zero
             Const::Null => return None,
+            // date and datetime cannot be zero
+            Const::Date(_) | Const::Datetime(_) => false,
+            Const::Time(tm) => {
+                tm.hour() == 0 && tm.minute() == 0 && tm.second() == 0 && tm.nanosecond() == 0
+            }
+            Const::Interval(Interval { value, .. }) => *value == 0,
             other => return other.cast_to_f64().map(|v| v == 0.0),
         };
         Some(res)

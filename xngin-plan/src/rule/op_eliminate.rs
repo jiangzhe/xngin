@@ -24,6 +24,7 @@ pub fn op_eliminate(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffec
     eliminate_op(qry_set, qry_id, false)
 }
 
+#[inline]
 fn eliminate_op(qry_set: &mut QuerySet, qry_id: QueryID, is_subq: bool) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut eo = EliminateOp::new(qry_set, is_subq);
@@ -39,6 +40,7 @@ struct EliminateOp<'a> {
 }
 
 impl<'a> EliminateOp<'a> {
+    #[inline]
     fn new(qry_set: &'a mut QuerySet, is_subq: bool) -> Self {
         EliminateOp {
             qry_set,
@@ -48,6 +50,7 @@ impl<'a> EliminateOp<'a> {
         }
     }
 
+    #[inline]
     fn bottom_up(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
         match op {

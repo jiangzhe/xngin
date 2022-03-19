@@ -65,6 +65,7 @@ pub fn joingraph_initialize(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<(
     init_joingraph(qry_set, qry_id)
 }
 
+#[inline]
 fn init_joingraph(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, location, op| {
         if location == Location::Intermediate {
@@ -108,6 +109,7 @@ struct BuildGraph<'a> {
 }
 
 impl<'a> BuildGraph<'a> {
+    #[inline]
     fn new(qry_set: &'a mut QuerySet) -> Self {
         BuildGraph {
             qry_set,
@@ -117,6 +119,7 @@ impl<'a> BuildGraph<'a> {
 }
 
 impl BuildGraph<'_> {
+    #[inline]
     fn build(mut self, join: &mut Join) -> Result<Graph> {
         let _ = self.process_join(join)?;
         Ok(self.graph)
@@ -124,6 +127,7 @@ impl BuildGraph<'_> {
 
     // Process join, add vertexes and edges into join graph.
     // Returns nodes of entire tree covered by the join.
+    #[inline]
     fn process_join(&mut self, join: &mut Join) -> Result<VertexSet> {
         match join {
             Join::Cross(_) => Err(Error::CrossJoinNotSupport),
@@ -181,6 +185,7 @@ impl BuildGraph<'_> {
         }
     }
 
+    #[inline]
     fn add_edge(
         &mut self,
         kind: JoinKind,
@@ -196,6 +201,7 @@ impl BuildGraph<'_> {
             .add_edge(kind, l_vset, r_vset, e_vset, cond, filt)
     }
 
+    #[inline]
     fn update_elig_set(&self, spec: Spec, vset: VertexSet, mut join_vset: VertexSet) -> VertexSet {
         if spec.contains(Spec::X) {
             join_vset |= vset;
@@ -263,6 +269,7 @@ impl BuildGraph<'_> {
         }
     }
 
+    #[inline]
     fn process_jo(&mut self, jo: &mut JoinOp) -> Result<VertexSet> {
         let mut vset = VertexSet::default();
         match jo {

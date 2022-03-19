@@ -32,14 +32,18 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
                     ColumnAttr::empty(),
                 ),
                 ColumnSpec::new("l_tax", PreciseType::decimal(18, 2), ColumnAttr::empty()),
-                ColumnSpec::new("l_returnflag", PreciseType::char(1), ColumnAttr::empty()),
-                ColumnSpec::new("l_linestatus", PreciseType::char(1), ColumnAttr::empty()),
+                ColumnSpec::new("l_returnflag", PreciseType::ascii(1), ColumnAttr::empty()),
+                ColumnSpec::new("l_linestatus", PreciseType::ascii(1), ColumnAttr::empty()),
                 ColumnSpec::new("l_shipdate", PreciseType::date(), ColumnAttr::empty()),
                 ColumnSpec::new("l_commitdate", PreciseType::date(), ColumnAttr::empty()),
                 ColumnSpec::new("l_receiptdate", PreciseType::date(), ColumnAttr::empty()),
-                ColumnSpec::new("l_shipinstruct", PreciseType::char(25), ColumnAttr::empty()),
-                ColumnSpec::new("l_shipmode", PreciseType::char(10), ColumnAttr::empty()),
-                ColumnSpec::new("l_comment", PreciseType::varchar(44), ColumnAttr::empty()),
+                ColumnSpec::new(
+                    "l_shipinstruct",
+                    PreciseType::ascii(25),
+                    ColumnAttr::empty(),
+                ),
+                ColumnSpec::new("l_shipmode", PreciseType::ascii(10), ColumnAttr::empty()),
+                ColumnSpec::new("l_comment", PreciseType::var_utf8(44), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -50,7 +54,7 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             &[
                 ColumnSpec::new("o_orderkey", PreciseType::i32(), ColumnAttr::PK),
                 ColumnSpec::new("o_custkey", PreciseType::i32(), ColumnAttr::empty()),
-                ColumnSpec::new("o_orderstatus", PreciseType::char(1), ColumnAttr::empty()),
+                ColumnSpec::new("o_orderstatus", PreciseType::ascii(1), ColumnAttr::empty()),
                 ColumnSpec::new(
                     "o_totalprice",
                     PreciseType::decimal(18, 2),
@@ -59,12 +63,12 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
                 ColumnSpec::new("o_orderdate", PreciseType::date(), ColumnAttr::empty()),
                 ColumnSpec::new(
                     "o_orderpriority",
-                    PreciseType::char(15),
+                    PreciseType::ascii(15),
                     ColumnAttr::empty(),
                 ),
-                ColumnSpec::new("o_clerk", PreciseType::char(15), ColumnAttr::empty()),
+                ColumnSpec::new("o_clerk", PreciseType::ascii(15), ColumnAttr::empty()),
                 ColumnSpec::new("o_shippriority", PreciseType::i32(), ColumnAttr::empty()),
-                ColumnSpec::new("o_comment", PreciseType::varchar(79), ColumnAttr::empty()),
+                ColumnSpec::new("o_comment", PreciseType::var_utf8(79), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -74,17 +78,17 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             "customer",
             &[
                 ColumnSpec::new("c_custkey", PreciseType::i32(), ColumnAttr::PK),
-                ColumnSpec::new("c_name", PreciseType::char(25), ColumnAttr::empty()),
-                ColumnSpec::new("c_address", PreciseType::varchar(40), ColumnAttr::empty()),
+                ColumnSpec::new("c_name", PreciseType::utf8(25), ColumnAttr::empty()),
+                ColumnSpec::new("c_address", PreciseType::var_utf8(40), ColumnAttr::empty()),
                 ColumnSpec::new("c_nationkey", PreciseType::i32(), ColumnAttr::empty()),
-                ColumnSpec::new("c_phone", PreciseType::varchar(15), ColumnAttr::empty()),
+                ColumnSpec::new("c_phone", PreciseType::var_ascii(15), ColumnAttr::empty()),
                 ColumnSpec::new(
                     "c_acctbal",
                     PreciseType::decimal(18, 2),
                     ColumnAttr::empty(),
                 ),
-                ColumnSpec::new("c_mktsegment", PreciseType::char(10), ColumnAttr::empty()),
-                ColumnSpec::new("c_comment", PreciseType::varchar(117), ColumnAttr::empty()),
+                ColumnSpec::new("c_mktsegment", PreciseType::ascii(10), ColumnAttr::empty()),
+                ColumnSpec::new("c_comment", PreciseType::var_utf8(117), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -101,7 +105,11 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
                     PreciseType::decimal(18, 2),
                     ColumnAttr::empty(),
                 ),
-                ColumnSpec::new("ps_comment", PreciseType::varchar(199), ColumnAttr::empty()),
+                ColumnSpec::new(
+                    "ps_comment",
+                    PreciseType::var_utf8(199),
+                    ColumnAttr::empty(),
+                ),
             ],
         )
         .unwrap();
@@ -111,18 +119,18 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             "part",
             &[
                 ColumnSpec::new("p_partkey", PreciseType::i32(), ColumnAttr::PK),
-                ColumnSpec::new("p_name", PreciseType::char(55), ColumnAttr::empty()),
-                ColumnSpec::new("p_mfgr", PreciseType::char(25), ColumnAttr::empty()),
-                ColumnSpec::new("p_brand", PreciseType::char(10), ColumnAttr::empty()),
-                ColumnSpec::new("p_type", PreciseType::varchar(25), ColumnAttr::empty()),
+                ColumnSpec::new("p_name", PreciseType::ascii(55), ColumnAttr::empty()),
+                ColumnSpec::new("p_mfgr", PreciseType::ascii(25), ColumnAttr::empty()),
+                ColumnSpec::new("p_brand", PreciseType::ascii(10), ColumnAttr::empty()),
+                ColumnSpec::new("p_type", PreciseType::var_utf8(25), ColumnAttr::empty()),
                 ColumnSpec::new("p_size", PreciseType::i32(), ColumnAttr::empty()),
-                ColumnSpec::new("p_container", PreciseType::char(10), ColumnAttr::empty()),
+                ColumnSpec::new("p_container", PreciseType::ascii(10), ColumnAttr::empty()),
                 ColumnSpec::new(
                     "p_retailprice",
                     PreciseType::decimal(18, 2),
                     ColumnAttr::empty(),
                 ),
-                ColumnSpec::new("p_comment", PreciseType::varchar(23), ColumnAttr::empty()),
+                ColumnSpec::new("p_comment", PreciseType::var_utf8(23), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -132,16 +140,16 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             "supplier",
             &[
                 ColumnSpec::new("s_suppkey", PreciseType::i32(), ColumnAttr::PK),
-                ColumnSpec::new("s_name", PreciseType::char(25), ColumnAttr::empty()),
-                ColumnSpec::new("s_address", PreciseType::varchar(40), ColumnAttr::empty()),
+                ColumnSpec::new("s_name", PreciseType::utf8(25), ColumnAttr::empty()),
+                ColumnSpec::new("s_address", PreciseType::var_utf8(40), ColumnAttr::empty()),
                 ColumnSpec::new("s_nationkey", PreciseType::i32(), ColumnAttr::empty()),
-                ColumnSpec::new("s_phone", PreciseType::char(15), ColumnAttr::empty()),
+                ColumnSpec::new("s_phone", PreciseType::ascii(15), ColumnAttr::empty()),
                 ColumnSpec::new(
                     "s_acctbal",
                     PreciseType::decimal(18, 2),
                     ColumnAttr::empty(),
                 ),
-                ColumnSpec::new("s_comment", PreciseType::varchar(101), ColumnAttr::empty()),
+                ColumnSpec::new("s_comment", PreciseType::var_utf8(101), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -151,9 +159,9 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             "nation",
             &[
                 ColumnSpec::new("n_nationkey", PreciseType::i32(), ColumnAttr::PK),
-                ColumnSpec::new("n_name", PreciseType::char(25), ColumnAttr::empty()),
+                ColumnSpec::new("n_name", PreciseType::ascii(25), ColumnAttr::empty()),
                 ColumnSpec::new("n_regionkey", PreciseType::i32(), ColumnAttr::empty()),
-                ColumnSpec::new("n_comment", PreciseType::varchar(152), ColumnAttr::empty()),
+                ColumnSpec::new("n_comment", PreciseType::var_utf8(152), ColumnAttr::empty()),
             ],
         )
         .unwrap();
@@ -163,8 +171,8 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             "region",
             &[
                 ColumnSpec::new("r_regionkey", PreciseType::i32(), ColumnAttr::PK),
-                ColumnSpec::new("r_name", PreciseType::char(55), ColumnAttr::empty()),
-                ColumnSpec::new("r_comment", PreciseType::char(152), ColumnAttr::empty()),
+                ColumnSpec::new("r_name", PreciseType::ascii(55), ColumnAttr::empty()),
+                ColumnSpec::new("r_comment", PreciseType::utf8(152), ColumnAttr::empty()),
             ],
         )
         .unwrap();

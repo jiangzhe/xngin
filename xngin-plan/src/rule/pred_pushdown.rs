@@ -18,6 +18,7 @@ pub fn pred_pushdown(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffe
     pushdown_pred(qry_set, qry_id)
 }
 
+#[inline]
 fn pushdown_pred(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut ppd = PredPushdown { qry_set };
@@ -103,7 +104,7 @@ impl ExprVisitor for ExprAttr {
     #[inline]
     fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
         match &e.kind {
-            ExprKind::Aggf(_) => self.has_aggf = true,
+            ExprKind::Aggf { .. } => self.has_aggf = true,
             ExprKind::Col(Col::QueryCol(qry_id, _)) => match &mut self.qry_ids {
                 QryIDs::Empty => {
                     self.qry_ids = QryIDs::Single(*qry_id);
@@ -138,6 +139,7 @@ struct ExprItem {
 }
 
 impl ExprItem {
+    #[inline]
     fn new(e: Expr) -> Self {
         ExprItem {
             e,
@@ -146,6 +148,7 @@ impl ExprItem {
         }
     }
 
+    #[inline]
     fn load_attr(&mut self) -> &ExprAttr {
         if self.attr.is_none() {
             let mut attr = ExprAttr::default();
@@ -155,6 +158,7 @@ impl ExprItem {
         self.attr.as_ref().unwrap() // won't fail
     }
 
+    #[inline]
     fn load_reject_null(&mut self, qry_id: QueryID) -> Result<bool> {
         if let Some(reject_nulls) = &mut self.reject_nulls {
             let res = match reject_nulls.entry(qry_id) {
@@ -185,6 +189,7 @@ impl ExprItem {
         }
     }
 
+    #[inline]
     fn rewrite(&mut self, qry_id: QueryID, out: &[(Expr, SmolStr)]) {
         let mut roe = RewriteOutExpr { qry_id, out };
         let _ = self.e.walk_mut(&mut roe);
@@ -194,6 +199,7 @@ impl ExprItem {
     }
 }
 
+#[inline]
 fn push_single(
     qry_set: &mut QuerySet,
     op: &mut Op,
@@ -669,6 +675,7 @@ fn push_single(
     Ok((eff, res))
 }
 
+#[inline]
 fn push_or_accept(
     qry_set: &mut QuerySet,
     op: &mut Op,

@@ -14,6 +14,7 @@ pub mod op_eliminate;
 pub mod outerjoin_reduce;
 pub mod pred_pullup;
 pub mod pred_pushdown;
+pub mod type_fix;
 
 pub use col_prune::col_prune;
 pub use derived_unfold::derived_unfold;
@@ -23,6 +24,7 @@ pub use op_eliminate::op_eliminate;
 pub use outerjoin_reduce::outerjoin_reduce;
 pub use pred_pullup::pred_pullup;
 pub use pred_pushdown::pred_pushdown;
+pub use type_fix::type_fix;
 
 bitflags! {
     pub struct RuleEffect: u8 {
