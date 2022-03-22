@@ -1,7 +1,7 @@
 use crate::bitmap::ReadBitmap;
 use crate::error::{Error, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ViewBitmap {
     ptr: *const u8,
     bits: usize,
@@ -39,7 +39,7 @@ impl ViewBitmap {
 
 impl ReadBitmap for ViewBitmap {
     #[inline]
-    fn aligned(&self) -> (&[u8], usize) {
+    fn aligned_u64(&self) -> (&[u8], usize) {
         let aligned_len = ((self.bits + 63) >> 6) << 3;
         assert!(aligned_len * 8 <= self.max_bits);
         // # SAFETY

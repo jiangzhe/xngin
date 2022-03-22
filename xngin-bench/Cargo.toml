@@ -13,11 +13,12 @@ repository = "https://github.com/jiangzhe/xngin/xngin-bench/"
 xngin-common = {version = "0.1.0", path = "../xngin-common"}
 xngin-compute = {version = "0.1.0", path = "../xngin-compute"}
 xngin-storage = {version = "0.1.0", path = "../xngin-storage"}
+criterion = {version = "0.3", features = ["html_reports"]}
+rand = "0.8.3"
+pprof = {version = "0.4", features = ["flamegraph", "criterion"]}
 
 [dev-dependencies]
-criterion = {version = "0.3", features = ["html_reports"]}
 bytemuck = "1.7"
-rand = "0.8.3"
 
 [[bench]]
 name = "bitmap_foreach"
@@ -46,3 +47,6 @@ harness = false
 [[bench]]
 name = "codec_add"
 harness = false
+
+[[example]]
+name = "codec_add"

@@ -14,7 +14,7 @@ pub trait ReadBitmap {
     /// the map could be seen from the returned slice.
     /// In most cases, it is used for fast aligned operations, like
     /// merge, shift and extend.
-    fn aligned(&self) -> (&[u8], usize);
+    fn aligned_u64(&self) -> (&[u8], usize);
 
     /// Returns the length of this map.
     fn len(&self) -> usize;
@@ -28,7 +28,7 @@ pub trait ReadBitmap {
     /// Get single value at given position.
     #[inline]
     fn get(&self, idx: usize) -> Result<bool> {
-        let (bm, len) = self.aligned();
+        let (bm, len) = self.aligned_u64();
         if idx >= len {
             return Err(Error::IndexOutOfBound(format!(
                 "{} > bitmap length {}",
@@ -40,14 +40,14 @@ pub trait ReadBitmap {
 
     #[inline]
     fn bools(&self) -> BoolIter<'_> {
-        let (bm, len) = self.aligned();
+        let (bm, len) = self.aligned_u64();
         bitmap_bools(bm, len)
     }
 
     /// Returns value count of true.
     #[inline]
     fn true_count(&self) -> usize {
-        let (bm, len) = self.aligned();
+        let (bm, len) = self.aligned_u64();
         bitmap_true_count(bm, len)
     }
 
@@ -56,13 +56,13 @@ pub trait ReadBitmap {
     /// shows u64 is best.
     #[inline]
     fn false_count(&self) -> usize {
-        let (bm, len) = self.aligned();
+        let (bm, len) = self.aligned_u64();
         bitmap_false_count(bm, len)
     }
 
     #[inline]
     fn range_iter(&self) -> RangeIter<'_> {
-        let (bm, len) = self.aligned();
+        let (bm, len) = self.aligned_u64();
         bitmap_range_iter(bm, len)
     }
 }
@@ -496,12 +496,12 @@ impl<'a> Iterator for RangeIter<'a> {
 
 pub trait ReadBitmapExt: ReadBitmap {
     fn for_each<F: FnMut(bool)>(&self, f: F) {
-        let (bm, len) = self.aligned();
+        let (bm, len) = self.aligned_u64();
         bitmap_for_each(bm, len, f)
     }
 
     fn for_each_range<F: FnMut(bool, usize)>(&self, f: F) {
-        let (bm, len) = self.aligned();
+        let (bm, len) = self.aligned_u64();
         bitmap_for_each_range(bm, len, f)
     }
 }
@@ -510,7 +510,7 @@ impl<T: ReadBitmap> ReadBitmapExt for T {}
 
 pub trait WriteBitmap: ReadBitmap {
     /// Returns mutable ref to a bitmap.
-    fn aligned_mut(&mut self) -> (&mut [u8], usize);
+    fn aligned_u64_mut(&mut self) -> (&mut [u8], usize);
 
     /// Clear this map.
     fn clear(&mut self);
@@ -524,7 +524,7 @@ pub trait WriteBitmap: ReadBitmap {
     /// Set single value to the bitmap at given position.
     #[inline]
     fn set(&mut self, idx: usize, val: bool) -> Result<()> {
-        let (bm, len) = self.aligned_mut();
+        let (bm, len) = self.aligned_u64_mut();
         if idx >= len {
             return Err(Error::IndexOutOfBound(format!(
                 "{} >= bitmap length {}",
@@ -538,7 +538,7 @@ pub trait WriteBitmap: ReadBitmap {
     /// Shift bitmap to left with give length.
     #[inline]
     fn shift(&mut self, bits: usize) -> Result<()> {
-        let (bm, len) = self.aligned_mut();
+        let (bm, len) = self.aligned_u64_mut();
         bitmap_shift(bm, len, bits);
         self.set_len(len - bits)
     }
@@ -551,8 +551,8 @@ pub trait WriteBitmap: ReadBitmap {
     where
         T: ReadBitmap,
     {
-        let (this, this_len) = self.aligned_mut();
-        let (that, that_len) = that.aligned();
+        let (this, this_len) = self.aligned_u64_mut();
+        let (that, that_len) = that.aligned_u64();
         if this_len != that_len {
             return Err(Error::InvalidArgument(format!(
                 "lengths of merging bitmaps mismatch {} != {}",
@@ -566,7 +566,7 @@ pub trait WriteBitmap: ReadBitmap {
     /// Inverse all values in this bitmap
     #[inline]
     fn inverse(&mut self) {
-        let (bm, _) = self.aligned_mut();
+        let (bm, _) = self.aligned_u64_mut();
         bm.iter_mut().for_each(|x| *x = !*x)
     }
 }

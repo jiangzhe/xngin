@@ -3,26 +3,18 @@ use xngin_common::psma::PSMA;
 use xngin_datatype::PreciseType;
 
 pub struct Attr {
-    pub pty: PreciseType,
+    pub ty: PreciseType,
     pub codec: Codec,
     pub psma: Option<PSMA>,
 }
 
-impl From<Vec<i32>> for Attr {
+impl Attr {
     #[inline]
-    fn from(src: Vec<i32>) -> Self {
-        let codec = Codec::from(src);
-        let psma = match &codec {
-            Codec::Single(_) => None,
-            Codec::Flat(f) => {
-                let (validity, data) = f.view();
-                PSMA::build_from_i32s(validity, data)
-            }
-        };
+    pub fn to_owned(&self) -> Self {
         Attr {
-            pty: PreciseType::i32(),
-            codec,
-            psma,
+            ty: self.ty,
+            codec: self.codec.to_owned(),
+            psma: None,
         }
     }
 }

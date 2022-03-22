@@ -389,7 +389,10 @@ impl Expr {
         }
     }
 
-    pub fn walk<V: ExprVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
+    pub fn walk<'a, V: ExprVisitor<'a>>(
+        &'a self,
+        visitor: &mut V,
+    ) -> ControlFlow<V::Break, V::Cont> {
         let mut eff = visitor.enter(self)?;
         for c in self.args() {
             eff.merge(c.walk(visitor)?)
@@ -425,7 +428,7 @@ impl Expr {
             has_aggr: bool,
             cols: &'a mut Vec<Col>,
         }
-        impl ExprVisitor for Collect<'_> {
+        impl<'a> ExprVisitor<'a> for Collect<'_> {
             type Cont = ();
             type Break = ();
             #[inline]
@@ -465,7 +468,7 @@ impl Expr {
     #[inline]
     pub fn contains_aggr_func(&self) -> bool {
         struct Contains(bool);
-        impl ExprVisitor for Contains {
+        impl<'a> ExprVisitor<'a> for Contains {
             type Cont = ();
             type Break = ();
             #[inline]
@@ -489,7 +492,7 @@ impl Expr {
             has_non_aggr_cols: bool,
         }
 
-        impl ExprVisitor for Contains {
+        impl<'a> ExprVisitor<'a> for Contains {
             type Cont = ();
             type Break = ();
             #[inline]
@@ -673,18 +676,18 @@ impl Effect for () {
     fn merge(&mut self, _other: Self) {}
 }
 
-pub trait ExprVisitor {
+pub trait ExprVisitor<'a>: Sized {
     type Cont: Effect;
     type Break;
     /// Returns true if continue
     #[inline]
-    fn enter(&mut self, _e: &Expr) -> ControlFlow<Self::Break, Self::Cont> {
+    fn enter(&mut self, _e: &'a Expr) -> ControlFlow<Self::Break, Self::Cont> {
         ControlFlow::Continue(Self::Cont::default())
     }
 
     /// Returns true if continue
     #[inline]
-    fn leave(&mut self, _e: &Expr) -> ControlFlow<Self::Break, Self::Cont> {
+    fn leave(&mut self, _e: &'a Expr) -> ControlFlow<Self::Break, Self::Cont> {
         ControlFlow::Continue(Self::Cont::default())
     }
 }
@@ -707,7 +710,7 @@ pub trait ExprMutVisitor {
 
 pub struct CollectQryIDs<'a>(pub &'a mut HashSet<QueryID>);
 
-impl ExprVisitor for CollectQryIDs<'_> {
+impl<'a> ExprVisitor<'a> for CollectQryIDs<'_> {
     type Cont = ();
     type Break = ();
     #[inline]

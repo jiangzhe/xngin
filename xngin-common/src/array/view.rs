@@ -16,9 +16,18 @@ use crate::byte_repr::ByteRepr;
 ///
 /// This type cannot implement Clone or Copy, as it will make dangling pointer
 /// possible.
+#[derive(Debug)]
 pub struct ViewArray {
     ptr: *const (),
     len: usize,
+    n_bytes: usize, // total bytes of underlying array
+}
+
+impl ViewArray {
+    #[inline]
+    pub fn raw(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.n_bytes) }
+    }
 }
 
 impl ArrayCast for ViewArray {
@@ -47,6 +56,7 @@ mod tests {
         let arr = ViewArray {
             ptr: leak.as_ptr() as *const (),
             len,
+            n_bytes: leak.len() * std::mem::size_of::<i32>(),
         };
         unsafe {
             let i32s = arr.cast::<i32>();
