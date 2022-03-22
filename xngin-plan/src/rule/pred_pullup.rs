@@ -390,7 +390,7 @@ fn collect_non_aggr_qry_cols(e: &Expr, hs: &mut HashSet<QueryCol>) {
 }
 struct CollectQryCols<'a>(&'a mut HashSet<QueryCol>);
 
-impl ExprVisitor for CollectQryCols<'_> {
+impl<'a> ExprVisitor<'a> for CollectQryCols<'_> {
     type Cont = ();
     type Break = ();
     #[inline]

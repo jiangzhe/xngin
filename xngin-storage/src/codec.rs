@@ -1,4 +1,5 @@
 use smallvec::{smallvec, SmallVec};
+use std::sync::Arc;
 use xngin_common::array::{ArrayCast, VecArray, ViewArray};
 use xngin_common::bitmap::{AppendBitmap, ReadBitmap, VecBitmap, ViewBitmap};
 use xngin_common::byte_repr::ByteRepr;
@@ -11,6 +12,7 @@ use xngin_common::byte_repr::ByteRepr;
 /// Byte-addressable is to make the point search efficient, especially without
 /// decompression.
 /// the similar format between memory and disk enable easy persistence.
+#[derive(Debug)]
 pub enum Codec {
     Single(SingleCodec),
     Flat(FlatCodec),
@@ -18,6 +20,11 @@ pub enum Codec {
 
 #[allow(clippy::len_without_is_empty)]
 impl Codec {
+    #[inline]
+    pub fn new_flat(validity: Option<VecBitmap>, data: VecArray) -> Self {
+        Codec::Flat(FlatCodec::Owned(Arc::new(OwnFlat { validity, data })))
+    }
+
     #[inline]
     pub fn kind(&self) -> CodecKind {
         match self {
@@ -33,46 +40,42 @@ impl Codec {
             Codec::Flat(f) => f.len(),
         }
     }
-}
 
-impl FromIterator<Option<i32>> for Codec {
     #[inline]
-    fn from_iter<T: IntoIterator<Item = Option<i32>>>(iter: T) -> Self {
-        let mut bm = VecBitmap::new();
-        let mut data = vec![];
-        for item in iter {
-            match item {
-                Some(v) => {
-                    bm.add(true).unwrap();
-                    data.push(v);
-                }
-                None => {
-                    bm.add(false).unwrap();
-                    data.push(0);
-                }
+    pub fn to_owned(&self) -> Self {
+        match self {
+            Codec::Single(s) => Codec::Single(s.clone()),
+            Codec::Flat(f) => Codec::Flat(f.to_owned()),
+        }
+    }
+
+    #[inline]
+    pub fn into_owned(self) -> Self {
+        match self {
+            c @ Codec::Single(_) | c @ Codec::Flat(FlatCodec::Owned(_)) => c,
+            Codec::Flat(FlatCodec::Borrowed(bf)) => {
+                Codec::Flat(FlatCodec::Owned(Arc::new(OwnFlat::from_view(&bf))))
             }
         }
-        assert!(data.len() < u16::MAX as usize);
-        let true_count = bm.true_count();
-        if true_count == 0 {
-            // that means all values are null, we create single codec
-            return Codec::Single(SingleCodec::new_null(data.len()));
+    }
+
+    #[inline]
+    pub fn as_flat(&self) -> Option<&FlatCodec> {
+        match self {
+            Codec::Flat(f) => Some(f),
+            _ => None,
         }
-        if true_count == data.len() {
-            // that means all values are not null, we discard validity map
-            return Codec::Flat(FlatCodec::Owned(OwnFlat::new(None, VecArray::from(data))));
-        }
-        Codec::Flat(FlatCodec::Owned(OwnFlat::new(
-            Some(bm),
-            VecArray::from(data),
-        )))
     }
 }
 
-impl From<Vec<i32>> for Codec {
+impl<T, I> From<I> for Codec
+where
+    T: ByteRepr,
+    I: ExactSizeIterator<Item = T>,
+{
     #[inline]
-    fn from(src: Vec<i32>) -> Self {
-        Codec::Flat(FlatCodec::Owned(OwnFlat::new(None, VecArray::from(src))))
+    fn from(src: I) -> Self {
+        Codec::Flat(FlatCodec::Owned(Arc::new(OwnFlat::from(src))))
     }
 }
 
@@ -88,6 +91,7 @@ pub enum CodecKind {
 
 /// Single codec encodes single value as bytes in case all
 /// values of that attribute are identical.
+#[derive(Debug, Clone)]
 pub struct SingleCodec {
     valid: bool,
     data: SmallVec<[u8; 16]>,
@@ -129,18 +133,14 @@ impl SingleCodec {
     }
 }
 
+#[derive(Debug)]
 pub enum FlatCodec {
     Borrowed(BorrowFlat),
-    Owned(OwnFlat),
+    Owned(Arc<OwnFlat>),
 }
 
 #[allow(clippy::len_without_is_empty)]
 impl FlatCodec {
-    #[inline]
-    pub fn new_owned(validity: Option<VecBitmap>, data: VecArray) -> Self {
-        FlatCodec::Owned(OwnFlat { validity, data })
-    }
-
     #[inline]
     pub fn view<T: ByteRepr>(&self) -> (Option<&[u8]>, &[T]) {
         match self {
@@ -156,9 +156,38 @@ impl FlatCodec {
             FlatCodec::Owned(of) => of.len(),
         }
     }
+
+    #[inline]
+    pub fn to_owned(&self) -> Self {
+        match self {
+            FlatCodec::Borrowed(bf) => FlatCodec::Owned(Arc::new(OwnFlat::from_view(bf))),
+            FlatCodec::Owned(of) => FlatCodec::Owned(Arc::clone(of)),
+        }
+    }
+}
+
+impl<T, I> From<I> for FlatCodec
+where
+    T: ByteRepr,
+    I: ExactSizeIterator<Item = T>,
+{
+    #[inline]
+    fn from(src: I) -> Self {
+        let owned = OwnFlat::from(src);
+        FlatCodec::Owned(Arc::new(owned))
+    }
+}
+
+impl<T: ByteRepr + Default> FromIterator<Option<T>> for FlatCodec {
+    #[inline]
+    fn from_iter<I: IntoIterator<Item = Option<T>>>(iter: I) -> Self {
+        let owned = OwnFlat::from_iter(iter);
+        FlatCodec::Owned(Arc::new(owned))
+    }
 }
 
 /// Flat codec represents uncompressed data of one attribute.
+#[derive(Debug)]
 pub struct BorrowFlat {
     validity: Option<ViewBitmap>,
     data: ViewArray,
@@ -168,7 +197,7 @@ pub struct BorrowFlat {
 impl BorrowFlat {
     #[inline]
     pub fn view<T: ByteRepr>(&self) -> (Option<&[u8]>, &[T]) {
-        let valid_map = self.validity.as_ref().map(|vm| vm.aligned().0);
+        let valid_map = self.validity.as_ref().map(|vm| vm.aligned_u64().0);
         let data = self.data.cast();
         (valid_map, data)
     }
@@ -179,6 +208,7 @@ impl BorrowFlat {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct OwnFlat {
     validity: Option<VecBitmap>,
     data: VecArray,
@@ -196,7 +226,7 @@ impl OwnFlat {
 
     #[inline]
     pub fn view<T: ByteRepr>(&self) -> (Option<&[u8]>, &[T]) {
-        let valid_map = self.validity.as_ref().map(|vm| vm.aligned().0);
+        let valid_map = self.validity.as_ref().map(|vm| vm.aligned_u64().0);
         let data = self.data.cast();
         (valid_map, data)
     }
@@ -205,25 +235,35 @@ impl OwnFlat {
     pub fn len(&self) -> usize {
         self.data.len()
     }
+
+    #[inline]
+    pub fn from_view(view: &BorrowFlat) -> Self {
+        let validity = view.validity.as_ref().map(VecBitmap::from_view);
+        let data = VecArray::from_view(&view.data);
+        OwnFlat { validity, data }
+    }
 }
 
-impl FromIterator<i32> for OwnFlat {
+impl<T, I> From<I> for OwnFlat
+where
+    T: ByteRepr,
+    I: ExactSizeIterator<Item = T>,
+{
     #[inline]
-    fn from_iter<T: IntoIterator<Item = i32>>(iter: T) -> Self {
-        let i32s: Vec<_> = iter.into_iter().collect();
-        let data = VecArray::from(i32s);
+    fn from(src: I) -> Self {
         OwnFlat {
             validity: None,
-            data,
+            data: VecArray::from(src),
         }
     }
 }
 
-impl FromIterator<Option<i32>> for OwnFlat {
+impl<T: ByteRepr + Default> FromIterator<Option<T>> for OwnFlat {
     #[inline]
-    fn from_iter<T: IntoIterator<Item = Option<i32>>>(iter: T) -> Self {
+    fn from_iter<I: IntoIterator<Item = Option<T>>>(iter: I) -> Self {
         let mut bm = VecBitmap::new();
         let mut data = vec![];
+        let mut all_valid = true;
         for v in iter {
             match v {
                 Some(i) => {
@@ -231,14 +271,16 @@ impl FromIterator<Option<i32>> for OwnFlat {
                     data.push(i);
                 }
                 None => {
+                    all_valid = false;
                     bm.add(false).unwrap();
-                    data.push(0);
+                    data.push(T::default());
                 }
             }
         }
-        let data = VecArray::from(data);
+        assert!(data.len() < u16::MAX as usize);
+        let data = VecArray::from(data.into_iter());
         OwnFlat {
-            validity: Some(bm),
+            validity: if all_valid { None } else { Some(bm) },
             data,
         }
     }

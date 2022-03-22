@@ -98,7 +98,7 @@ struct ExprAttr {
     has_subq: bool,
 }
 
-impl ExprVisitor for ExprAttr {
+impl<'a> ExprVisitor<'a> for ExprAttr {
     type Cont = ();
     type Break = ();
     #[inline]
