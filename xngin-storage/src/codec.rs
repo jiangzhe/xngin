@@ -278,10 +278,25 @@ impl<T: ByteRepr + Default> FromIterator<Option<T>> for OwnFlat {
             }
         }
         assert!(data.len() < u16::MAX as usize);
-        let data = VecArray::from(data.into_iter());
+        let data = VecArray::from_slice(&data);
         OwnFlat {
             validity: if all_valid { None } else { Some(bm) },
             data,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flat_codec_from_iter() {
+        let f = FlatCodec::from_iter(vec![Some(1), None, Some(3)]);
+        let (bm, data) = f.view::<i32>();
+        let bm = bm.unwrap();
+        assert!(bm[0] & 1 != 0);
+        assert!(bm[0] & 4 != 0);
+        assert_eq!(&[1, 0, 3], data);
     }
 }

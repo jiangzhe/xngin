@@ -26,6 +26,26 @@ impl VecArray {
         inner.as_slice_mut().copy_from_slice(raw);
         VecArray { inner, len }
     }
+
+    #[inline]
+    pub fn from_slice<T: ByteRepr>(src: &[T]) -> Self {
+        // zero sized typed are not allowed
+        assert!(size_of::<T>() > 0);
+        let len = src.len();
+        let len_u8 = len * size_of::<T>();
+        // let mut arr = VecArray::new::<T>(cap_u8);
+        let mut inner = AlignedVec::with_capacity(len_u8);
+        if T::allow_memcpy() {
+            // fast path: direct memcpy
+            T::memcpy(src, &mut inner.as_slice_mut()[..len_u8]);
+        } else {
+            let chunks = inner.as_slice_mut().chunks_exact_mut(size_of::<T>());
+            for (chk, v) in chunks.zip(src) {
+                v.write_bytes(chk);
+            }
+        }
+        VecArray { inner, len }
+    }
 }
 
 impl ArrayCast for VecArray {
@@ -135,5 +155,12 @@ mod tests {
         bytes[4..8].copy_from_slice(&2i32.to_ne_bytes());
         bytes[8..12].copy_from_slice(&3i32.to_ne_bytes());
         assert_eq!(bytemuck::cast_slice::<_, u8>(arr.cast::<i32>()), &bytes[..]);
+    }
+
+    #[test]
+    fn test_vec_cast_more_cap() {
+        let mut arr = VecArray::new::<i32>(64);
+        let _ = arr.cast_mut::<i32>(128);
+        assert_eq!(128, arr.len());
     }
 }
