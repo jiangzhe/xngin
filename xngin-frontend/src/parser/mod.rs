@@ -7,6 +7,7 @@ pub(crate) mod expr;
 pub(crate) mod query;
 
 use crate::ast::*;
+use crate::error::{Error, Result};
 use crate::parser::dml::{delete, insert, update};
 use crate::parser::expr::{char_sp0, expr_sp0};
 use crate::parser::query::query_expr;
@@ -20,8 +21,8 @@ use nom::sequence::{delimited, pair, preceded, terminated};
 
 pub use crate::parser::dialect::ParseInput;
 pub use nom::error::convert_error;
-pub use nom::error::{Error, VerboseError};
-pub use nom::IResult;
+pub use nom::error::{Error as NomError, VerboseError};
+pub use nom::{Err as NomErr, IResult};
 
 reserved_keywords!(
     /// Reserved keywords defined by MySQL.
@@ -347,32 +348,52 @@ impl<'a> std::cmp::PartialEq for CastAsciiLowerCase<'a> {
 
 /// fast query parsing
 #[inline]
-pub fn parse_query<'a, I: ParseInput<'a>>(input: I) -> IResult<I, QueryExpr<'a>, Error<I>> {
-    terminated::<_, _, _, Error<I>, _, _>(query::query_expr, spcmt0)(input)
+pub fn parse_query<'a, I: ParseInput<'a>>(input: I) -> Result<QueryExpr<'a>> {
+    terminated::<_, _, _, NomError<I>, _, _>(query::query_expr, spcmt0)(input)
+        .map(|(_, o)| o)
+        .map_err(convert_simple_error)
 }
 
 /// verbose query parsing, if error occurs, use `convert_error` to find more details
 #[inline]
-pub fn parse_query_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<(I, QueryExpr<'a>), String> {
-    terminated(query_expr, spcmt0)(input).map_err(|e| match e {
-        nom::Err::Incomplete(e) => format!("incompleted query: {:?}", e),
-        nom::Err::Error(e) | nom::Err::Failure(e) => convert_error(input, e),
-    })
+pub fn parse_query_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<QueryExpr<'a>> {
+    terminated(query_expr, spcmt0)(input)
+        .map(|(_, o)| o)
+        .map_err(|e| convert_verbose_error(input, e))
 }
 
 /// fast statement parsing
 #[inline]
-pub fn parse_stmt<'a, I: ParseInput<'a>>(input: I) -> IResult<I, Statement<'a>, Error<I>> {
-    terminated::<_, _, _, Error<I>, _, _>(statement, spcmt0)(input)
+pub fn parse_stmt<'a, I: ParseInput<'a>>(input: I) -> Result<Statement<'a>> {
+    terminated::<_, _, _, NomError<I>, _, _>(statement, spcmt0)(input)
+        .map(|(_, o)| o)
+        .map_err(convert_simple_error)
 }
 
 /// verbose statement parsing, if error occurs, use `convert_error` to find more details
 #[inline]
-pub fn parse_stmt_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<(I, Statement<'a>), String> {
-    terminated(statement, spcmt0)(input).map_err(|e| match e {
-        nom::Err::Incomplete(e) => format!("incompleted statement: {:?}", e),
+pub fn parse_stmt_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<Statement<'a>> {
+    terminated(statement, spcmt0)(input)
+        .map(|(_, o)| o)
+        .map_err(|e| convert_verbose_error(input, e))
+}
+
+#[inline]
+fn convert_simple_error<'a, I: ParseInput<'a>>(e: NomErr<NomError<I>>) -> Error {
+    let err_msg = match e {
+        NomErr::Incomplete(_) => "Incomplete input".to_string(),
+        NomErr::Error(e) | NomErr::Failure(e) => format!("{:?}", e.code),
+    };
+    Error::SyntaxError(Box::new(err_msg))
+}
+
+#[inline]
+fn convert_verbose_error<'a, I: ParseInput<'a>>(input: I, e: NomErr<VerboseError<I>>) -> Error {
+    let err_msg = match e {
+        nom::Err::Incomplete(_) => "Incomplete input".to_string(),
         nom::Err::Error(e) | nom::Err::Failure(e) => convert_error(input, e),
-    })
+    };
+    Error::SyntaxError(Box::new(err_msg))
 }
 
 parse!(

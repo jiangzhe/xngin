@@ -5,14 +5,13 @@ use xngin_frontend::pretty::{PrettyConf, PrettyFormat};
 macro_rules! check_sql {
     ($filename:literal) => {
         let sql = include_str!($filename).trim();
-        let (i, res) = match parse_query_verbose(MySQL(sql)) {
-            Ok((i, query)) => (i, query),
+        let res = match parse_query_verbose(MySQL(sql)) {
+            Ok(query) => query,
             Err(err) => {
                 eprintln!("Failed to parse query:\n{}", err);
                 panic!()
             }
         };
-        assert!(i.is_empty());
         let actual = res.pretty_string(PrettyConf::default()).unwrap();
         assert_eq!(sql, actual);
     };

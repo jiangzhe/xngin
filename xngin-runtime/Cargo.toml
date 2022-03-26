@@ -15,6 +15,12 @@ futures-lite = "1.12"
 pin-project-lite = "0.2"
 thiserror = "1.0"
 flume = "0.10"
+xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
+xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
+xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
+xngin-plan = { version = "0.1.0", path = "../xngin-plan" }
+xngin-storage = { version = "0.1.0", path = "../xngin-storage" }
+xngin-compute = { version = "0.1.0", path = "../xngin-compute" }
 
 [dev-dependencies]
 smol = "1.2"

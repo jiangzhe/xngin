@@ -27,14 +27,13 @@ macro_rules! table {
 macro_rules! check_sql {
     ($expected:ident, $filename:literal) => {
         let sql = include_str!($filename).trim();
-        let (i, res) = match parse_query_verbose(Ansi(sql)) {
-            Ok((i, query)) => (i, query),
+        let res = match parse_query_verbose(Ansi(sql)) {
+            Ok(query) => query,
             Err(err) => {
                 eprintln!("Failed to parse query:\n{}", err);
                 panic!()
             }
         };
-        assert!(i.is_empty());
         assert_eq!($expected, res);
     };
 }

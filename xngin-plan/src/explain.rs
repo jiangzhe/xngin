@@ -515,7 +515,6 @@ mod tests {
     use super::Explain;
     use crate::builder::tests::tpch_catalog;
     use crate::builder::PlanBuilder;
-    use std::sync::Arc;
     use xngin_frontend::parser::dialect::MySQL;
     use xngin_frontend::parser::parse_query;
 
@@ -530,8 +529,8 @@ mod tests {
             "select 1 union select 2",
             "select 1 from lineitem join (select 1) t1",
         ] {
-            let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
-            let (_, qr) = parse_query(MySQL(sql)).unwrap();
+            let builder = PlanBuilder::new(&cat, "tpch").unwrap();
+            let qr = parse_query(MySQL(sql)).unwrap();
             let plan = builder.build_plan(&qr).unwrap();
             let mut s = String::new();
             let _ = plan.explain(&mut s).unwrap();

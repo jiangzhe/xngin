@@ -239,7 +239,7 @@ mod tests {
     fn test_join_reorder_greedy() {
         use crate::op::OpKind::*;
         let cat = j_catalog();
-        let tbl_map = table_map(&*cat, "j", vec!["t0", "t1", "t2", "t3"]);
+        let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
@@ -297,7 +297,7 @@ mod tests {
     fn test_join_reorder_dpsize() {
         use crate::op::OpKind::*;
         let cat = j_catalog();
-        let tbl_map = table_map(&*cat, "j", vec!["t0", "t1", "t2", "t3"]);
+        let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
@@ -356,7 +356,7 @@ mod tests {
     fn test_join_reorder_dphyp() {
         use crate::op::OpKind::*;
         let cat = j_catalog();
-        let tbl_map = table_map(&*cat, "j", vec!["t0", "t1", "t2", "t3"]);
+        let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
