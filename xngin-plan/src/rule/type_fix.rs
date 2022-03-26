@@ -118,8 +118,7 @@ mod tests {
     use super::*;
     use crate::builder::tests::{build_plan, get_filt_expr, print_plan};
     use crate::query::QueryPlan;
-    use std::sync::Arc;
-    use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
+    use xngin_catalog::mem_impl::{ColumnSpec, MemCatalog, MemCatalogBuilder};
     use xngin_catalog::{ColumnAttr, QueryCatalog};
 
     macro_rules! vec2 {
@@ -430,7 +429,7 @@ mod tests {
     }
 
     #[inline]
-    fn ty_catalog() -> Arc<dyn QueryCatalog> {
+    fn ty_catalog() -> MemCatalog {
         let mut builder = MemCatalogBuilder::default();
         builder.add_schema("ty").unwrap();
         builder
@@ -506,12 +505,10 @@ mod tests {
                 ],
             )
             .unwrap();
-
-        let cat = builder.build();
-        Arc::new(cat)
+        builder.build()
     }
 
-    fn assert_ty_plan1<F: FnOnce(&str, QueryPlan)>(cat: &Arc<dyn QueryCatalog>, sql: &str, f: F) {
+    fn assert_ty_plan1<C: QueryCatalog, F: FnOnce(&str, QueryPlan)>(cat: &C, sql: &str, f: F) {
         let plan = build_plan(cat, "ty", sql);
         f(sql, plan)
     }

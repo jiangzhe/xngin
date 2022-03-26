@@ -3,8 +3,7 @@ use crate::join::{Join, JoinGraph, QualifiedJoin};
 use crate::op::OpKind;
 use crate::op::OpVisitor;
 use std::collections::HashMap;
-use std::sync::Arc;
-use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
+use xngin_catalog::mem_impl::{ColumnSpec, MemCatalog, MemCatalogBuilder};
 use xngin_catalog::ColumnAttr;
 use xngin_datatype::{Collation, PreciseType};
 use xngin_frontend::parser::dialect::MySQL;
@@ -30,8 +29,8 @@ fn test_plan_build_select_row() {
         "select 1 as a",
         "select 1 as a, 2 as b",
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "default").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "default").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         let plan = builder.build_plan(&qr).unwrap();
         assert_eq!(shape, plan.shape())
     }
@@ -48,8 +47,8 @@ fn test_plan_build_row_expr() {
         "select true, false, 1 and 2, 1 or 2, 1 xor 2, 1=2, 1>=2, 1>2, 1<=2, 1<2, 1<>2",
         "select null, date '2021-01-01'",
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "tpch").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         let plan = builder.build_plan(&qr).unwrap();
         assert_eq!(shape, plan.shape())
     }
@@ -59,8 +58,8 @@ fn test_plan_build_row_expr() {
 fn test_plan_build_aggr_expr() {
     let cat = j_catalog();
     let sql = "select count(*), count(distinct c0), sum(c0), max(c1), min(c1), avg(c1) from t1";
-    let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
-    let (_, qr) = parse_query(MySQL(sql)).unwrap();
+    let builder = PlanBuilder::new(&cat, "j").unwrap();
+    let qr = parse_query(MySQL(sql)).unwrap();
     let plan = builder.build_plan(&qr).unwrap();
     assert_eq!(plan_shape![Aggr, Proj, Table], plan.shape())
 }
@@ -78,8 +77,8 @@ fn test_plan_build_expr_from_table() {
         "select extract(hour from l_shipdate), extract(minute from l_shipdate), extract(second from l_shipdate), extract(microsecond from l_shipdate) from lineitem",
         "select substring(l_comment, 1), substring(l_comment, 1, 10) from lineitem",
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "tpch").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         let plan = builder.build_plan(&qr).unwrap();
         assert_eq!(shape, plan.shape())
     }
@@ -149,8 +148,8 @@ fn test_plan_build_select_table() {
         ("select * from (select l_orderkey from lineitem order by l_orderkey limit 1) a, (select l_orderkey from lineitem order by l_orderkey desc limit 1) b", 2, plan_shape![Proj, Join, Limit, Sort, Proj, Proj, Table, Limit, Sort, Proj, Proj, Table]),
         ("select a.* from (select l_orderkey, l_linenumber from lineitem) a, (select l_orderkey from lineitem limit 1) b", 2, plan_shape![Proj, Join, Proj, Proj, Table, Limit, Proj, Proj, Table]),
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "tpch").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         let plan = match builder.build_plan(&qr) {
             Ok(plan) => plan,
             Err(e) => {
@@ -248,8 +247,8 @@ fn test_plan_build_join() {
             plan_shape![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
         ),
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "j").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         let plan = match builder.build_plan(&qr) {
             Err(e) => {
                 eprintln!("sql={}", sql);
@@ -296,8 +295,8 @@ fn test_plan_build_subquery() {
         "select * from t1 where c0 > (select max(c0) from t2 where t2.c1 = t1.c1)",
         "select * from t2 where c0 > (select max(c0) from t1 where t1.c1 = c2)",
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "j").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         let plan = match builder.build_plan(&qr) {
             Ok(plan) => plan,
             Err(e) => {
@@ -313,8 +312,8 @@ fn test_plan_build_subquery() {
         "select * from t0, (select * from t1 where t1.c0 = t0.c0) tmp",
         "select * from t0, (select * from t1 where exists (select 1 from t2 where t2.c0 = t0.c0)) tmp",
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "j").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "j").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         assert!(builder.build_plan(&qr).is_err())
     }
 }
@@ -395,8 +394,8 @@ fn test_plan_build_setop() {
             plan_shape![Setop, Proj, Proj, Table, Proj, Proj, Table],
         ),
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "tpch").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         let plan = builder.build_plan(&qr).unwrap();
         assert_eq!(shape, plan.shape());
         print_plan(sql, &plan)
@@ -422,8 +421,8 @@ fn test_plan_build_with() {
         ("with a as (select l_orderkey, count(*) cnt from (select * from lineitem) li group by l_orderkey) select l_orderkey from a where cnt > 10", 1, plan_shape![Proj, Filt, Aggr, Proj, Proj, Table]),
         ("with a as (select l_orderkey, n from lineitem, (select 1 as n) b) select * from a", 2, plan_shape![Proj, Proj, Join, Proj, Table, Row]),
     ] {
-        let builder = PlanBuilder::new(Arc::clone(&cat), "tpch").unwrap();
-        let (_, qr) = parse_query(MySQL(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "tpch").unwrap();
+        let qr = parse_query(MySQL(sql)).unwrap();
         let plan = builder.build_plan(&qr).unwrap();
         assert_eq!(shape, plan.shape());
         let p = plan.qry_set.get(&plan.root).unwrap();
@@ -450,7 +449,7 @@ fn test_plan_build_attach_value() {
 
 /* below are helper functions to setup and test planning */
 #[inline]
-pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
+pub(crate) fn j_catalog() -> MemCatalog {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("j").unwrap();
     builder
@@ -510,13 +509,12 @@ pub(crate) fn j_catalog() -> Arc<dyn QueryCatalog> {
             ],
         )
         .unwrap();
-    let cat = builder.build();
-    Arc::new(cat)
+    builder.build()
 }
 
 #[inline]
-pub(crate) fn table_map(
-    cat: &dyn QueryCatalog,
+pub(crate) fn table_map<C: QueryCatalog>(
+    cat: &C,
     schema_name: &'static str,
     tbl_names: Vec<&'static str>,
 ) -> HashMap<&'static str, TableID> {
@@ -535,29 +533,29 @@ pub(crate) fn assert_j_plan<F: FnOnce(&str, QueryPlan)>(sql: &str, f: F) {
     f(sql, plan)
 }
 
-pub(crate) fn assert_j_plan1<F: FnOnce(&str, QueryPlan)>(
-    cat: &Arc<dyn QueryCatalog>,
+pub(crate) fn assert_j_plan1<C: QueryCatalog, F: FnOnce(&str, QueryPlan)>(
+    cat: &C,
     sql: &str,
     f: F,
 ) {
-    let plan = build_plan(&cat, "j", sql);
+    let plan = build_plan(cat, "j", sql);
     f(sql, plan)
 }
 
-pub(crate) fn assert_j_plan2<F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
-    cat: &Arc<dyn QueryCatalog>,
+pub(crate) fn assert_j_plan2<C: QueryCatalog, F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
+    cat: &C,
     sql1: &str,
     sql2: &str,
     f: F,
 ) {
-    let p1 = build_plan(&cat, "j", sql1);
-    let p2 = build_plan(&cat, "j", sql2);
+    let p1 = build_plan(cat, "j", sql1);
+    let p2 = build_plan(cat, "j", sql2);
     f(sql1, p1, sql2, p2)
 }
 
-pub(crate) fn build_plan(cat: &Arc<dyn QueryCatalog>, schema_name: &str, sql: &str) -> QueryPlan {
-    let builder = PlanBuilder::new(Arc::clone(&cat), schema_name).unwrap();
-    let (_, qr) = parse_query(MySQL(sql)).unwrap();
+pub(crate) fn build_plan<C: QueryCatalog>(cat: &C, schema_name: &str, sql: &str) -> QueryPlan {
+    let builder = PlanBuilder::new(cat, schema_name).unwrap();
+    let qr = parse_query(MySQL(sql)).unwrap();
     builder.build_plan(&qr).unwrap()
 }
 
@@ -747,15 +745,14 @@ impl<'a, 'b> OpVisitor for CollectSubqByLocation<'a, 'b> {
 }
 
 #[inline]
-fn empty_catalog() -> Arc<dyn QueryCatalog> {
+fn empty_catalog() -> MemCatalog {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("default").unwrap();
-    let cat = builder.build();
-    Arc::new(cat)
+    builder.build()
 }
 
 #[inline]
-pub(crate) fn tpch_catalog() -> Arc<dyn QueryCatalog> {
+pub(crate) fn tpch_catalog() -> MemCatalog {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("tpch").unwrap();
     builder
@@ -814,8 +811,7 @@ pub(crate) fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             ],
         )
         .unwrap();
-    let cat = builder.build();
-    Arc::new(cat)
+    builder.build()
 }
 
 pub(crate) fn print_plan(sql: &str, plan: &QueryPlan) {

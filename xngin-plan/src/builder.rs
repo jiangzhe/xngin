@@ -11,23 +11,22 @@ use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::scope::{Scope, Scopes};
 use crate::setop::{SetopKind, SubqOp};
 use smol_str::SmolStr;
-use std::sync::Arc;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::{self as expr, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind};
 use xngin_frontend::ast::*;
 
-pub struct PlanBuilder {
-    catalog: Arc<dyn QueryCatalog>,
+pub struct PlanBuilder<'a, C> {
+    catalog: &'a C,
     default_schema: SchemaID,
     qs: QuerySet,
     scopes: Scopes,
     attaches: Vec<QueryID>,
 }
 
-impl PlanBuilder {
+impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
     #[inline]
-    pub fn new(catalog: Arc<dyn QueryCatalog>, default_schema: &str) -> Result<Self> {
+    pub fn new(catalog: &'c C, default_schema: &str) -> Result<Self> {
         let qs = QuerySet::default();
         let default_schema = if let Some(s) = catalog.find_schema_by_name(default_schema) {
             s.id
@@ -340,7 +339,7 @@ impl PlanBuilder {
         // 2. translate SELECT clause
         let (proj_cols, distinct) = {
             let resolver = ResolveProjOrFilt {
-                catalog: self.catalog.as_ref(),
+                catalog: self.catalog,
                 qs: &self.qs,
                 query_aliases,
             };
@@ -351,7 +350,7 @@ impl PlanBuilder {
         // 3. translate WHERE clause
         let filter = if let Some(filter) = &select_table.filter {
             let resolver = ResolveProjOrFilt {
-                catalog: self.catalog.as_ref(),
+                catalog: self.catalog,
                 qs: &self.qs,
                 query_aliases,
             };
@@ -363,7 +362,7 @@ impl PlanBuilder {
         // 4. translate GROUP BY clause
         let (mut groups, scalar_aggr) = if !select_table.group_by.is_empty() {
             let resolver = ResolveGroup {
-                catalog: self.catalog.as_ref(),
+                catalog: self.catalog,
                 qs: &self.qs,
                 query_aliases,
                 proj_cols: &proj_cols,
@@ -386,7 +385,7 @@ impl PlanBuilder {
                 Some(groups.as_slice())
             };
             let resolver = ResolveHavingOrOrder {
-                catalog: self.catalog.as_ref(),
+                catalog: self.catalog,
                 qs: &self.qs,
                 query_aliases,
                 proj_cols: &proj_cols,
@@ -401,7 +400,7 @@ impl PlanBuilder {
         // 6. translate ORDER BY clause
         let order = if !select_table.order_by.is_empty() {
             let resolver = ResolveHavingOrOrder {
-                catalog: self.catalog.as_ref(),
+                catalog: self.catalog,
                 qs: &self.qs,
                 query_aliases,
                 proj_cols: &proj_cols,
@@ -713,7 +712,7 @@ impl PlanBuilder {
                                     .curr_scope()
                                     .restrict_from_aliases(&left_aliases);
                                 let resolver = ResolveProjOrFilt {
-                                    catalog: self.catalog.as_ref(),
+                                    catalog: self.catalog,
                                     qs: &self.qs,
                                     query_aliases: &from_aliases,
                                 };
@@ -1032,13 +1031,13 @@ impl ExprResolve for ResolveNone {
 }
 
 /// Resolver for SELECT, WHERE
-pub struct ResolveProjOrFilt<'a> {
-    catalog: &'a dyn QueryCatalog,
+pub struct ResolveProjOrFilt<'a, C> {
+    catalog: &'a C,
     qs: &'a QuerySet,
     query_aliases: &'a QueryAliases,
 }
 
-impl<'a> ExprResolve for ResolveProjOrFilt<'a> {
+impl<'a, C: QueryCatalog> ExprResolve for ResolveProjOrFilt<'a, C> {
     fn catalog(&self) -> Option<&dyn QueryCatalog> {
         Some(self.catalog)
     }

@@ -1,10 +1,9 @@
-use std::sync::Arc;
-use xngin_catalog::mem_impl::{ColumnSpec, MemCatalogBuilder};
-use xngin_catalog::{ColumnAttr, QueryCatalog};
+use xngin_catalog::mem_impl::{ColumnSpec, MemCatalog, MemCatalogBuilder};
+use xngin_catalog::ColumnAttr;
 use xngin_datatype::PreciseType;
 
 #[inline]
-pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
+pub fn tpch_catalog() -> MemCatalog {
     let mut builder = MemCatalogBuilder::default();
     builder.add_schema("tpch").unwrap();
     builder
@@ -176,6 +175,5 @@ pub fn tpch_catalog() -> Arc<dyn QueryCatalog> {
             ],
         )
         .unwrap();
-    let cat = builder.build();
-    Arc::new(cat)
+    builder.build()
 }

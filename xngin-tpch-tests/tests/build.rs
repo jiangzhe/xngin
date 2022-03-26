@@ -8,8 +8,8 @@ macro_rules! check_build {
     ( $filename:literal ) => {
         let cat = tpch_catalog();
         let sql = include_str!($filename);
-        let (_, qry) = parse_query_verbose(Ansi(sql)).unwrap();
-        let builder = PlanBuilder::new(cat, "tpch").unwrap();
+        let qry = parse_query_verbose(Ansi(sql)).unwrap();
+        let builder = PlanBuilder::new(&cat, "tpch").unwrap();
         let plan = builder.build_plan(&qry).unwrap();
         let mut s = String::new();
         assert!(plan.explain(&mut s).is_ok());
