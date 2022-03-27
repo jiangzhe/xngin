@@ -22,7 +22,7 @@ pub enum Codec {
 impl Codec {
     #[inline]
     pub fn new_flat(validity: Option<VecBitmap>, data: VecArray) -> Self {
-        Codec::Flat(FlatCodec::Owned(Arc::new(OwnFlat { validity, data })))
+        Codec::Flat(FlatCodec::Owned(Arc::new(OwnFlat::new(validity, data))))
     }
 
     #[inline]
@@ -221,7 +221,7 @@ impl OwnFlat {
         if let Some(bm) = validity.as_ref() {
             assert!(bm.len() == data.len());
         }
-        OwnFlat::new(validity, data)
+        OwnFlat { validity, data }
     }
 
     #[inline]

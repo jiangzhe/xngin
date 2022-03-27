@@ -2,8 +2,9 @@ use crate::binary::ArithKind;
 use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::mem;
+use xngin_catalog::TableID;
 use xngin_datatype::{PreciseType, Typed};
-use xngin_expr::{Col, Const, Expr, ExprKind, FuncKind, QueryID};
+use xngin_expr::{Const, DataSourceID, Expr, ExprKind, FuncKind, QueryID};
 use xngin_storage::attr::Attr;
 use xngin_storage::block::Block;
 use xngin_storage::codec::{Codec, SingleCodec};
@@ -76,17 +77,29 @@ pub enum ComputeKind {
     Arith { kind: ArithKind, args: Box<[Eval]> },
 }
 
-#[derive(Debug, Default)]
-pub struct Builder<'a> {
-    input: Vec<(QueryID, u32)>,
-    input_map: HashMap<(QueryID, u32), (usize, PreciseType)>,
+#[derive(Debug)]
+struct Builder<'a, T> {
+    input: Vec<(T, u32)>,
+    input_map: HashMap<(T, u32), (usize, PreciseType)>,
     cache: Vec<Eval>,
     cache_map: HashMap<&'a Expr, (usize, PreciseType)>,
 }
 
-impl<'a> Builder<'a> {
+impl<'a, T> Builder<'a, T> {
     #[inline]
-    pub fn build(mut self, exprs: &'a [Expr]) -> Result<EvalPlan> {
+    fn new() -> Self {
+        Builder {
+            input: vec![],
+            input_map: HashMap::new(),
+            cache: vec![],
+            cache_map: HashMap::new(),
+        }
+    }
+}
+
+impl<'a, T: DataSourceID> Builder<'a, T> {
+    #[inline]
+    pub fn build<I: IntoIterator<Item = &'a Expr>>(mut self, exprs: I) -> Result<EvalPlan<T>> {
         let mut output = vec![];
         for e in exprs {
             let (out, _) = self.find_ref_or_gen(e)?;
@@ -115,29 +128,27 @@ impl<'a> Builder<'a> {
 
     #[inline]
     fn find(&self, e: &'a Expr) -> Option<(EvalRef, PreciseType)> {
-        match &e.kind {
-            ExprKind::Col(Col::QueryCol(qry_id, idx)) => self
-                .input_map
-                .get(&(*qry_id, *idx))
-                .map(|(idx, ty)| (EvalRef::Input(*idx), *ty)),
-            ExprKind::Col(_) => unreachable!(),
-            _ => self
-                .cache_map
+        if let Some((dsid, idx)) = T::from_expr(e) {
+            self.input_map
+                .get(&(dsid, idx))
+                .map(|(idx, ty)| (EvalRef::Input(*idx), *ty))
+        } else {
+            self.cache_map
                 .get(e)
-                .map(|(idx, ty)| (EvalRef::Cache(*idx), *ty)),
+                .map(|(idx, ty)| (EvalRef::Cache(*idx), *ty))
         }
     }
 
     #[inline]
     fn gen(&mut self, e: &'a Expr) -> Result<(EvalRef, PreciseType)> {
         let mut cached = match &e.kind {
-            ExprKind::Col(Col::QueryCol(qry_id, idx)) => {
+            ExprKind::Col(_) => {
+                let (dsid, idx) = T::from_expr(e).ok_or(Error::FailToBuildEvalArgs)?;
                 let in_idx = self.input.len();
-                self.input_map.insert((*qry_id, *idx), (in_idx, e.ty));
-                self.input.push((*qry_id, *idx));
+                self.input_map.insert((dsid, idx), (in_idx, e.ty));
+                self.input.push((dsid, idx));
                 return Ok((EvalRef::Input(in_idx), e.ty));
             }
-            ExprKind::Col(_) => unreachable!(),
             ExprKind::Const(c) => Eval::new_const(c.clone()),
             ExprKind::Func {
                 kind: FuncKind::Add,
@@ -164,6 +175,9 @@ pub enum EvalRef {
     Cache(usize),
 }
 
+pub type TableEvalPlan = EvalPlan<TableID>;
+pub type QueryEvalPlan = EvalPlan<QueryID>;
+
 /// Evaluation Plan.
 ///
 /// It is designed to evaluate all expressions in order,
@@ -177,13 +191,18 @@ pub enum EvalRef {
 ///
 /// Currently, all expressions are considered as deterministic.
 #[derive(Debug)]
-pub struct EvalPlan {
-    pub input: Vec<(QueryID, u32)>,
+pub struct EvalPlan<T> {
+    pub input: Vec<(T, u32)>,
     pub evals: Vec<Eval>,
     pub output: Vec<EvalRef>,
 }
 
-impl EvalPlan {
+impl<T: DataSourceID> EvalPlan<T> {
+    #[inline]
+    pub fn new<'a, I: IntoIterator<Item = &'a Expr>>(exprs: I) -> Result<Self> {
+        Builder::new().build(exprs)
+    }
+
     #[inline]
     pub fn eval(&self, block: &Block) -> Result<Vec<Attr>> {
         assert!(block.attrs.len() >= self.input.len());
@@ -333,6 +352,7 @@ impl Default for CacheEntry {
 mod tests {
     use super::*;
     use xngin_expr::infer::fix_rec;
+    use xngin_expr::QueryID;
     use xngin_storage::codec::FlatCodec;
 
     #[test]
@@ -433,6 +453,31 @@ mod tests {
         assert!(bm.is_none());
         let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + 1) as i64).collect();
         assert_eq!(&expected, data);
+        // select c1 + 1, c1 + 1
+        let es = vec![
+            Expr::func(
+                FuncKind::Add,
+                vec![col1.clone(), Expr::new_const(Const::I64(1))],
+            ),
+            Expr::func(
+                FuncKind::Add,
+                vec![col1.clone(), Expr::new_const(Const::I64(1))],
+            ),
+        ];
+        let plan = build_plan(es);
+        let res = plan.eval(&block).unwrap();
+        assert_eq!(2, res.len());
+        assert_eq!(PreciseType::i64(), res[0].ty);
+        assert_eq!(PreciseType::i64(), res[1].ty);
+        let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + 1) as i64).collect();
+        let f = res[0].codec.as_flat().unwrap();
+        let (bm, data) = f.view::<i64>();
+        assert!(bm.is_none());
+        assert_eq!(&expected, data);
+        let f = res[1].codec.as_flat().unwrap();
+        let (bm, data) = f.view::<i64>();
+        assert!(bm.is_none());
+        assert_eq!(&expected, data);
         // select c1 + c2
         let es = vec![Expr::func(FuncKind::Add, vec![col1.clone(), col2.clone()])];
         let plan = build_plan(es);
@@ -470,10 +515,10 @@ mod tests {
     }
 
     #[inline]
-    fn build_plan(mut exprs: Vec<Expr>) -> EvalPlan {
+    fn build_plan(mut exprs: Vec<Expr>) -> QueryEvalPlan {
         for e in &mut exprs {
             fix_rec(e, |_, _| Some(PreciseType::i64())).unwrap();
         }
-        Builder::default().build(&exprs).unwrap()
+        QueryEvalPlan::new(&exprs).unwrap()
     }
 }

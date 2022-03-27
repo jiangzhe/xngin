@@ -5,10 +5,12 @@ pub mod fold;
 pub mod func;
 pub mod infer;
 pub mod pred;
+pub mod source;
 
 pub use crate::expr::*;
 pub use crate::func::*;
 pub use crate::pred::*;
+pub use crate::source::*;
 
 #[cfg(test)]
 mod tests {

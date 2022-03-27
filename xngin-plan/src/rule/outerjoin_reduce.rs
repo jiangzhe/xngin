@@ -289,7 +289,7 @@ mod tests {
     use crate::builder::tests::{
         assert_j_plan1, extract_join_kinds, get_lvl_queries, j_catalog, print_plan,
     };
-    use crate::query::QueryPlan;
+    use crate::lgc::LgcPlan;
 
     #[test]
     fn test_outerjoin_reduce_left_join() {
@@ -415,7 +415,7 @@ mod tests {
         assert_j_plan1(&cat, "select 1 from t1, t2 where t1.c1 = 0", assert_cross);
     }
 
-    fn assert_inner(sql: &str, mut plan: QueryPlan) {
+    fn assert_inner(sql: &str, mut plan: LgcPlan) {
         outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
@@ -423,7 +423,7 @@ mod tests {
         assert!(joins.into_iter().all(|k| k == "inner"));
     }
 
-    fn assert_subq_inner(sql: &str, mut plan: QueryPlan) {
+    fn assert_subq_inner(sql: &str, mut plan: LgcPlan) {
         outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         // let subq = plan.root_query().unwrap();
@@ -432,7 +432,7 @@ mod tests {
         assert!(joins.into_iter().all(|k| k == "inner"));
     }
 
-    fn assert_left(sql: &str, mut plan: QueryPlan) {
+    fn assert_left(sql: &str, mut plan: LgcPlan) {
         outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
@@ -440,7 +440,7 @@ mod tests {
         assert!(joins.into_iter().all(|k| k == "left"));
     }
 
-    fn assert_full(sql: &str, mut plan: QueryPlan) {
+    fn assert_full(sql: &str, mut plan: LgcPlan) {
         outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
@@ -448,7 +448,7 @@ mod tests {
         assert!(joins.into_iter().all(|k| k == "full"));
     }
 
-    fn assert_cross(sql: &str, mut plan: QueryPlan) {
+    fn assert_cross(sql: &str, mut plan: LgcPlan) {
         outerjoin_reduce(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();

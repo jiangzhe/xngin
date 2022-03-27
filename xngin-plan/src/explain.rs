@@ -1,7 +1,8 @@
 use crate::join::graph::Edge;
 use crate::join::{Join, JoinGraph, QualifiedJoin};
+use crate::lgc::LgcPlan;
 use crate::op::{Aggr, Apply, Op, OpVisitor, SortItem};
-use crate::query::{QueryPlan, QuerySet};
+use crate::query::QuerySet;
 use crate::setop::Setop;
 use std::fmt::{self, Write};
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
@@ -19,7 +20,7 @@ pub trait Explain {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result;
 }
 
-impl Explain for QueryPlan {
+impl Explain for LgcPlan {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         for attach in &self.attaches {
             match self.qry_set.get(attach) {

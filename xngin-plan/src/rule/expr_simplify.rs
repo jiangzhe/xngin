@@ -1786,7 +1786,7 @@ mod tests {
     use crate::builder::tests::{
         assert_j_plan1, assert_j_plan2, get_filt_expr, j_catalog, print_plan,
     };
-    use crate::query::QueryPlan;
+    use crate::lgc::LgcPlan;
 
     #[test]
     fn test_expr_simplify_neg_neg() {
@@ -2578,26 +2578,26 @@ mod tests {
         );
     }
 
-    fn assert_eq_filt_expr(s1: &str, mut q1: QueryPlan, _s2: &str, q2: QueryPlan) {
+    fn assert_eq_filt_expr(s1: &str, mut q1: LgcPlan, _s2: &str, q2: LgcPlan) {
         expr_simplify(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         assert_eq!(get_filt_expr(&q1), get_filt_expr(&q2));
     }
 
-    fn assert_no_filt_expr(s1: &str, mut q1: QueryPlan) {
+    fn assert_no_filt_expr(s1: &str, mut q1: LgcPlan) {
         expr_simplify(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let filt = get_filt_expr(&q1);
         assert!(filt.is_empty());
     }
 
-    fn assert_col_rejects_null(s1: &str, q1: QueryPlan) {
+    fn assert_col_rejects_null(s1: &str, q1: LgcPlan) {
         print_plan(s1, &q1);
         let filter = get_filt_expr(&q1);
         assert!(expr_rejects_null(&Expr::pred_conj(filter)))
     }
 
-    fn assert_col_not_rejects_null(s1: &str, q1: QueryPlan) {
+    fn assert_col_not_rejects_null(s1: &str, q1: LgcPlan) {
         print_plan(s1, &q1);
         let filter = get_filt_expr(&q1);
         assert!(!expr_rejects_null(&Expr::pred_conj(filter)))

@@ -4,8 +4,9 @@ pub(crate) mod tests;
 use crate::alias::QueryAliases;
 use crate::error::{Error, Result, ToResult};
 use crate::join::{JoinKind, JoinOp};
+use crate::lgc::LgcPlan;
 use crate::op::{Op, OpMutVisitor, SortItem};
-use crate::query::{Location, QueryPlan, QuerySet, Subquery};
+use crate::query::{Location, QuerySet, Subquery};
 use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::scope::{Scope, Scopes};
@@ -43,9 +44,9 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
     }
 
     #[inline]
-    pub fn build_plan(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<QueryPlan> {
+    pub fn build_plan(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<LgcPlan> {
         let (root, _) = self.build_subquery(with, query, false)?;
-        Ok(QueryPlan {
+        Ok(LgcPlan {
             qry_set: self.qs,
             root,
             attaches: self.attaches,

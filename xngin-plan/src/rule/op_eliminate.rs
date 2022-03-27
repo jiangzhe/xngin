@@ -328,8 +328,8 @@ fn pair_const_false(es: &[Expr]) -> (bool, bool) {
 mod tests {
     use super::*;
     use crate::builder::tests::{assert_j_plan1, get_lvl_queries, j_catalog, print_plan};
+    use crate::lgc::LgcPlan;
     use crate::op::preorder;
-    use crate::query::QueryPlan;
 
     #[test]
     fn test_op_eliminate_false_pred() {
@@ -662,7 +662,7 @@ mod tests {
         );
     }
 
-    fn assert_empty_root(s1: &str, mut q1: QueryPlan) {
+    fn assert_empty_root(s1: &str, mut q1: LgcPlan) {
         op_eliminate(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let root = &q1.root_query().unwrap().root;

@@ -117,7 +117,7 @@ impl OpMutVisitor for FixType<'_> {
 mod tests {
     use super::*;
     use crate::builder::tests::{build_plan, get_filt_expr, print_plan};
-    use crate::query::QueryPlan;
+    use crate::lgc::LgcPlan;
     use xngin_catalog::mem_impl::{ColumnSpec, MemCatalog, MemCatalogBuilder};
     use xngin_catalog::{ColumnAttr, QueryCatalog};
 
@@ -508,13 +508,13 @@ mod tests {
         builder.build()
     }
 
-    fn assert_ty_plan1<C: QueryCatalog, F: FnOnce(&str, QueryPlan)>(cat: &C, sql: &str, f: F) {
+    fn assert_ty_plan1<C: QueryCatalog, F: FnOnce(&str, LgcPlan)>(cat: &C, sql: &str, f: F) {
         let plan = build_plan(cat, "ty", sql);
         f(sql, plan)
     }
 
     #[inline]
-    fn extract_proj_types(p: &QueryPlan) -> Vec<PreciseType> {
+    fn extract_proj_types(p: &LgcPlan) -> Vec<PreciseType> {
         if let Some(subq) = p.root_query() {
             subq.out_cols().iter().map(|(e, _)| e.ty).collect()
         } else {
@@ -523,7 +523,7 @@ mod tests {
     }
 
     #[inline]
-    fn extract_child_types(p: &QueryPlan) -> Vec<Vec<PreciseType>> {
+    fn extract_child_types(p: &LgcPlan) -> Vec<Vec<PreciseType>> {
         if let Some(subq) = p.root_query() {
             subq.out_cols()
                 .iter()
