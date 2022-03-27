@@ -18,6 +18,7 @@ flume = "0.10"
 xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
+xngin-expr = { version = "0.1.0", path = "../xngin-expr" }
 xngin-plan = { version = "0.1.0", path = "../xngin-plan" }
 xngin-storage = { version = "0.1.0", path = "../xngin-storage" }
 xngin-compute = { version = "0.1.0", path = "../xngin-compute" }

@@ -5,6 +5,7 @@ pub mod builder;
 pub mod error;
 pub mod explain;
 pub mod join;
+pub mod lgc;
 pub mod op;
 pub mod query;
 pub mod resolv;

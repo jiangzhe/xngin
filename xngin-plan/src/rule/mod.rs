@@ -2,7 +2,8 @@
 //! in early stage. "Canonical" means if the rule applies, the plan
 //! is supposed to be always better, so that no cost model involved.
 use crate::error::Result;
-use crate::query::{QueryPlan, QuerySet};
+use crate::lgc::LgcPlan;
+use crate::query::QuerySet;
 use bitflags::bitflags;
 use xngin_expr::{Effect, QueryID};
 
@@ -50,7 +51,7 @@ impl Effect for RuleEffect {
 }
 
 #[inline]
-pub fn rule_optimize(plan: &mut QueryPlan) -> Result<()> {
+pub fn rule_optimize(plan: &mut LgcPlan) -> Result<()> {
     for qry_id in &plan.attaches {
         rule_optimize_each(&mut plan.qry_set, *qry_id)?
     }

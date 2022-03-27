@@ -721,7 +721,8 @@ mod tests {
         assert_j_plan1, extract_join_kinds, get_subq_by_location, get_subq_filt_expr, j_catalog,
         print_plan,
     };
-    use crate::query::{Location, QueryPlan};
+    use crate::lgc::LgcPlan;
+    use crate::query::Location;
 
     #[test]
     fn test_pred_pushdown_single_table() {
@@ -1053,21 +1054,21 @@ mod tests {
         );
     }
 
-    fn assert_filt_on_disk_table1(s1: &str, mut q1: QueryPlan) {
+    fn assert_filt_on_disk_table1(s1: &str, mut q1: LgcPlan) {
         pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
     }
 
-    fn assert_filt_on_disk_table1r(s1: &str, mut q1: QueryPlan) {
+    fn assert_filt_on_disk_table1r(s1: &str, mut q1: LgcPlan) {
         pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
     }
 
-    fn assert_filt_on_disk_table2(s1: &str, mut q1: QueryPlan) {
+    fn assert_filt_on_disk_table2(s1: &str, mut q1: LgcPlan) {
         pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
@@ -1075,7 +1076,7 @@ mod tests {
         assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
     }
 
-    fn assert_no_filt_on_disk_table(s1: &str, mut q1: QueryPlan) {
+    fn assert_no_filt_on_disk_table(s1: &str, mut q1: LgcPlan) {
         pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);

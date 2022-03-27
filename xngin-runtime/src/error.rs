@@ -8,4 +8,12 @@ pub enum Error {
     Syntax(#[from] xngin_frontend::error::Error),
     #[error("{0}")]
     Plan(#[from] xngin_plan::error::Error),
+    #[error("{0}")]
+    Compute(#[from] xngin_compute::error::Error),
+    #[error("Empty logical plan")]
+    EmptyLgcPlan,
+    #[error("Unsupported physical table scan")]
+    UnsupportedPhyTableScan,
+    #[error("Invalid logical node")]
+    InvalidLgcNode,
 }

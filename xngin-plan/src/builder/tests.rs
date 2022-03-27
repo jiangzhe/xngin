@@ -527,22 +527,18 @@ pub(crate) fn table_map<C: QueryCatalog>(
     m
 }
 
-pub(crate) fn assert_j_plan<F: FnOnce(&str, QueryPlan)>(sql: &str, f: F) {
+pub(crate) fn assert_j_plan<F: FnOnce(&str, LgcPlan)>(sql: &str, f: F) {
     let cat = j_catalog();
     let plan = build_plan(&cat, "j", sql);
     f(sql, plan)
 }
 
-pub(crate) fn assert_j_plan1<C: QueryCatalog, F: FnOnce(&str, QueryPlan)>(
-    cat: &C,
-    sql: &str,
-    f: F,
-) {
+pub(crate) fn assert_j_plan1<C: QueryCatalog, F: FnOnce(&str, LgcPlan)>(cat: &C, sql: &str, f: F) {
     let plan = build_plan(cat, "j", sql);
     f(sql, plan)
 }
 
-pub(crate) fn assert_j_plan2<C: QueryCatalog, F: FnOnce(&str, QueryPlan, &str, QueryPlan)>(
+pub(crate) fn assert_j_plan2<C: QueryCatalog, F: FnOnce(&str, LgcPlan, &str, LgcPlan)>(
     cat: &C,
     sql1: &str,
     sql2: &str,
@@ -553,13 +549,13 @@ pub(crate) fn assert_j_plan2<C: QueryCatalog, F: FnOnce(&str, QueryPlan, &str, Q
     f(sql1, p1, sql2, p2)
 }
 
-pub(crate) fn build_plan<C: QueryCatalog>(cat: &C, schema_name: &str, sql: &str) -> QueryPlan {
+pub(crate) fn build_plan<C: QueryCatalog>(cat: &C, schema_name: &str, sql: &str) -> LgcPlan {
     let builder = PlanBuilder::new(cat, schema_name).unwrap();
     let qr = parse_query(MySQL(sql)).unwrap();
     builder.build_plan(&qr).unwrap()
 }
 
-pub(crate) fn get_lvl_queries(plan: &QueryPlan, lvl: usize) -> Vec<&Subquery> {
+pub(crate) fn get_lvl_queries(plan: &LgcPlan, lvl: usize) -> Vec<&Subquery> {
     if lvl == 0 {
         return plan.root_query().into_iter().collect();
     }
@@ -631,7 +627,7 @@ pub(crate) fn collect_queries<'a>(
     }
 }
 
-pub(crate) fn get_filt_expr(plan: &QueryPlan) -> Vec<xngin_expr::Expr> {
+pub(crate) fn get_filt_expr(plan: &LgcPlan) -> Vec<xngin_expr::Expr> {
     match plan.root_query() {
         Some(subq) => get_subq_filt_expr(subq),
         None => vec![],
@@ -644,10 +640,7 @@ pub(crate) fn get_subq_filt_expr(subq: &Subquery) -> Vec<xngin_expr::Expr> {
     cfe.0
 }
 
-pub(crate) fn get_subq_by_location<'a>(
-    plan: &'a QueryPlan,
-    location: Location,
-) -> Vec<&'a Subquery> {
+pub(crate) fn get_subq_by_location<'a>(plan: &'a LgcPlan, location: Location) -> Vec<&'a Subquery> {
     let mut subqs = vec![];
     if let Some(subq) = plan.root_query() {
         let mut csbl = CollectSubqByLocation {
@@ -814,7 +807,7 @@ pub(crate) fn tpch_catalog() -> MemCatalog {
     builder.build()
 }
 
-pub(crate) fn print_plan(sql: &str, plan: &QueryPlan) {
+pub(crate) fn print_plan(sql: &str, plan: &LgcPlan) {
     use crate::explain::Explain;
     println!("SQL: {}", sql);
     let mut s = String::new();

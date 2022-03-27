@@ -5,8 +5,9 @@ pub(crate) mod greedy;
 use crate::error::{Error, Result};
 use crate::join::graph::{Edge, Graph, VertexSet};
 use crate::join::{JoinKind, JoinOp};
+use crate::lgc::LgcPlan;
 use crate::op::{Op, OpMutVisitor};
-use crate::query::{QueryPlan, QuerySet};
+use crate::query::QuerySet;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem;
@@ -22,7 +23,7 @@ pub use dphyp::DPhyp;
 
 /// Entry to perform join reorder.
 #[inline]
-pub fn join_reorder<R, F>(plan: &mut QueryPlan, mut f: F) -> Result<()>
+pub fn join_reorder<R, F>(plan: &mut LgcPlan, mut f: F) -> Result<()>
 where
     R: Reorder,
     F: FnMut() -> R,

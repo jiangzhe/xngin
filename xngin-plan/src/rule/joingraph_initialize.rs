@@ -294,7 +294,7 @@ impl BuildGraph<'_> {
 mod tests {
     use super::*;
     use crate::builder::tests::{assert_j_plan1, get_join_graph, j_catalog, print_plan};
-    use crate::query::QueryPlan;
+    use crate::lgc::LgcPlan;
     use crate::rule::derived_unfold;
 
     #[test]
@@ -420,7 +420,7 @@ mod tests {
         )
     }
 
-    fn assert_join_graph_exists(sql: &str, mut plan: QueryPlan) {
+    fn assert_join_graph_exists(sql: &str, mut plan: LgcPlan) {
         joingraph_initialize(&mut plan.qry_set, plan.root).unwrap();
         print_plan(sql, &plan);
         let subq = plan.root_query().unwrap();
