@@ -1,9 +1,11 @@
+use crate::error::Error;
 use event_listener::{Event, EventListener};
 use futures_lite::Stream;
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -36,8 +38,8 @@ impl Cancellation {
     }
 
     #[inline]
-    pub fn cancel(&self) {
-        self.inner.cancel()
+    pub fn cancel(&self, err: Error) {
+        self.inner.cancel(err)
     }
 
     #[inline]
@@ -45,11 +47,23 @@ impl Cancellation {
     where
         S: Stream<Item = T>,
     {
+        let listener = self.inner.event.listen();
+        let cancelled = self.inner.cancelled();
         CancellableStream {
             stream,
-            listener: self.inner.event.listen(),
-            cancelled: false,
+            listener,
+            cancelled,
         }
+    }
+
+    #[inline]
+    pub fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+
+    #[inline]
+    pub fn err(&self) -> Option<&Error> {
+        self.inner.err()
     }
 }
 
@@ -57,6 +71,7 @@ impl Cancellation {
 struct Inner {
     flag: AtomicBool,
     event: Event,
+    err: AtomicPtr<Error>,
 }
 
 impl Inner {
@@ -65,20 +80,44 @@ impl Inner {
         Inner {
             flag: AtomicBool::new(false),
             event: Event::new(),
+            err: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
     #[inline]
-    fn cancel(&self) {
+    fn cancelled(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn cancel(&self, err: Error) {
         if self
             .flag
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
+            let boxed = Box::new(err);
+            let new = Box::leak(boxed);
+            self.err.store(new, Ordering::Release);
             self.event.notify(usize::MAX)
         }
     }
+
+    #[inline]
+    fn err(&self) -> Option<&Error> {
+        let err_ptr = self.err.load(Ordering::Acquire);
+        if err_ptr.is_null() {
+            return None;
+        }
+        // safety:
+        //
+        // err_ptr won't be changed if set, so the pointer is always valid
+        unsafe { Some(&*err_ptr) }
+    }
 }
+
+unsafe impl Send for Inner {}
+unsafe impl Sync for Inner {}
 
 pin_project! {
     pub struct CancellableStream<S> {
@@ -113,28 +152,31 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::single_thread_executor;
+    use async_io::Timer;
     use futures_lite::StreamExt;
     use std::time::Duration;
 
     #[test]
     fn test_cancel_stream() {
-        smol::block_on(async {
+        let ex = single_thread_executor();
+        async_io::block_on(async {
             let (tx, rx) = flume::unbounded();
             // send 10 items in one thread
-            smol::spawn(async move {
+            ex.spawn(async move {
                 for _ in 0..10 {
-                    smol::Timer::after(Duration::from_millis(10)).await;
+                    Timer::after(Duration::from_millis(10)).await;
                     let _ = tx.send_async(()).await;
                 }
             })
             .detach();
             // cancel in another thread
-            let cancel = Cancellation::new();
+            let cancel = Cancellation::default();
             {
                 let cancel = cancel.clone();
-                smol::spawn(async move {
-                    smol::Timer::after(Duration::from_millis(50)).await;
-                    cancel.cancel();
+                ex.spawn(async move {
+                    Timer::after(Duration::from_millis(50)).await;
+                    cancel.cancel(Error::Cancelled);
                 })
                 .detach();
             }
@@ -146,6 +188,7 @@ mod tests {
                 .next()
                 .await;
             assert!(cancelled.is_some());
+            assert!(matches!(cancel.err(), Some(Error::Cancelled)));
         })
     }
 }

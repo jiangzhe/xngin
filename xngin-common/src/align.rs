@@ -13,6 +13,9 @@ pub struct AlignedVec {
     cap_u8: usize,
 }
 
+unsafe impl Send for AlignedVec {}
+unsafe impl Sync for AlignedVec {}
+
 impl Drop for AlignedVec {
     #[inline]
     fn drop(&mut self) {

@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn test_run_eval() {
         let size = 1024i32;
-        let codec1 = Codec::Flat(FlatCodec::from((0..1024).into_iter().map(|i| i as i64)));
+        let codec1 = Codec::Flat(FlatCodec::from((0..size).into_iter().map(|i| i as i64)));
         let attr1 = Attr {
             ty: PreciseType::i64(),
             codec: codec1,
