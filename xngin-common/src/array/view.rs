@@ -18,15 +18,21 @@ use crate::byte_repr::ByteRepr;
 /// possible.
 #[derive(Debug)]
 pub struct ViewArray {
-    ptr: *const (),
+    ptr: *const u8,
     len: usize,
     n_bytes: usize, // total bytes of underlying array
 }
 
+/// todo:
+/// this is not safe, we should keep Arc<[u8]> to ensure the raw pointer
+/// is always valid.
+unsafe impl Send for ViewArray {}
+unsafe impl Sync for ViewArray {}
+
 impl ViewArray {
     #[inline]
     pub fn raw(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.n_bytes) }
+        unsafe { std::slice::from_raw_parts(self.ptr, self.n_bytes) }
     }
 }
 
@@ -49,12 +55,12 @@ mod tests {
 
     #[test]
     fn test_ffi_array_as_i32s() {
-        let mut vec = vec![1, 2, 3];
+        let mut vec: Vec<i32> = vec![1, 2, 3];
         vec.shrink_to_fit();
         let len = vec.len();
         let leak = vec.leak();
         let arr = ViewArray {
-            ptr: leak.as_ptr() as *const (),
+            ptr: leak.as_ptr() as *const u8,
             len,
             n_bytes: leak.len() * std::mem::size_of::<i32>(),
         };

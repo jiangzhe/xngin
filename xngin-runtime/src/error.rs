@@ -16,4 +16,12 @@ pub enum Error {
     UnsupportedPhyTableScan,
     #[error("Invalid logical node")]
     InvalidLgcNode,
+    #[error("Buffer closed")]
+    BufferClosed,
+    #[error("Cancelled")]
+    Cancelled,
+    #[error("Dispatch error")]
+    DispatchError,
+    #[error("Rerun not allowed")]
+    RerunNotAllowed,
 }

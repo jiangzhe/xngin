@@ -8,6 +8,10 @@ pub struct ViewBitmap {
     max_bits: usize,
 }
 
+/// todo: store Arc<[u8]> to ensure pointer is valid.
+unsafe impl Send for ViewBitmap {}
+unsafe impl Sync for ViewBitmap {}
+
 impl ViewBitmap {
     /// Construct a ViewBitmap using raw pointer, with length and capacity.
     ///

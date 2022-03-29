@@ -13,9 +13,13 @@ use std::slice;
 /// the start and end(exclusive) of such value with identical
 /// prefix.
 pub struct ViewLookup {
-    ptr: *const (),
+    ptr: *const u8,
     len: usize,
 }
+
+/// todo: store Arc<[u8]> to ensure pointer is valid.
+unsafe impl Send for ViewLookup {}
+unsafe impl Sync for ViewLookup {}
 
 impl ViewLookup {
     #[inline]
