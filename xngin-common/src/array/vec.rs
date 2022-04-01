@@ -1,4 +1,4 @@
-use crate::align::AlignedVec;
+use crate::alloc::RawArray;
 use crate::array::view::ViewArray;
 use crate::array::ArrayBuild;
 use crate::array::ArrayCast;
@@ -11,30 +11,31 @@ pub struct VecArray {
     /// Aligned vector to store arbitrary elements using binary format.
     /// The implicit conversion uses native endianness, which must be
     /// considered if data is to be persisted in external storage.
-    inner: AlignedVec,
+    inner: RawArray,
     /// Original length of typed values.
     /// This is different from the byte length of inner vector.
     len: usize,
 }
 
 impl VecArray {
+    /// Create a owned array from view array.
     #[inline]
     pub fn from_view(view: &ViewArray) -> Self {
         let len = view.len();
         let raw = view.raw();
-        let mut inner = AlignedVec::with_capacity(raw.len());
+        let mut inner = RawArray::with_capacity(raw.len());
         inner.as_slice_mut().copy_from_slice(raw);
         VecArray { inner, len }
     }
 
+    /// Create a owned array from slice.
     #[inline]
     pub fn from_slice<T: ByteRepr>(src: &[T]) -> Self {
         // zero sized typed are not allowed
         assert!(size_of::<T>() > 0);
         let len = src.len();
         let len_u8 = len * size_of::<T>();
-        // let mut arr = VecArray::new::<T>(cap_u8);
-        let mut inner = AlignedVec::with_capacity(len_u8);
+        let mut inner = RawArray::with_capacity(len_u8);
         if T::allow_memcpy() {
             // fast path: direct memcpy
             T::memcpy(src, &mut inner.as_slice_mut()[..len_u8]);
@@ -60,7 +61,7 @@ impl ArrayCast for VecArray {
         // # SAFETY
         //
         // Length is guaranteed to be valid as above assertion succeeds.
-        unsafe { std::slice::from_raw_parts(self.inner.as_ptr() as *const T, self.len()) }
+        unsafe { self.inner.cast_slice::<T>(self.len) }
     }
 }
 
@@ -68,7 +69,7 @@ impl ArrayBuild for VecArray {
     #[inline]
     fn new<T: ByteRepr>(cap: usize) -> Self {
         let cap_u8 = cap * size_of::<T>();
-        let inner = AlignedVec::with_capacity(cap_u8);
+        let inner = RawArray::with_capacity(cap_u8);
         VecArray { inner, len: 0 }
     }
 
@@ -77,18 +78,16 @@ impl ArrayBuild for VecArray {
         let len_u8 = len * size_of::<T>();
         if len_u8 > self.inner.cap_u8() {
             // reallocate a new aligned vec
-            let mut new_inner = AlignedVec::with_capacity(len_u8);
+            let mut new_inner = RawArray::with_capacity(len_u8);
             let raw = self.inner.as_slice();
             new_inner.as_slice_mut()[..raw.len()].copy_from_slice(raw);
             self.inner = new_inner;
         }
+        self.len = len;
         // # SAFETY
         //
-        // length is ensured to be less than or equal to capacity
-        unsafe {
-            self.len = len;
-            std::slice::from_raw_parts_mut(self.inner.as_mut_ptr() as *mut T, len)
-        }
+        // length is ensured to be less than or equal to capacity.
+        unsafe { self.inner.cast_slice_mut(len) }
     }
 }
 
@@ -104,8 +103,7 @@ where
         assert!(size_of::<T>() > 0);
         let len = src.len();
         let cap_u8 = len * size_of::<T>();
-        // let mut arr = VecArray::new::<T>(cap_u8);
-        let mut inner = AlignedVec::with_capacity(cap_u8);
+        let mut inner = RawArray::with_capacity(cap_u8);
         let chunks = inner.as_slice_mut().chunks_exact_mut(size_of::<T>());
         for (chk, v) in chunks.zip(src) {
             v.write_bytes(chk);

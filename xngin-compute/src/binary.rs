@@ -125,7 +125,7 @@ pub trait ArithEval {
             (None, Some(r_bm)) => Some(VecBitmap::from((r_bm, r_vals.len()))),
             (Some(l_bm), Some(r_bm)) => {
                 let mut res = VecBitmap::from((l_bm, l_vals.len()));
-                let (res_bm, res_len) = res.aligned_u64_mut();
+                let (res_bm, res_len) = res.aligned_u64s_mut();
                 bitmap_merge(res_bm, res_len, r_bm, r_vals.len());
                 Some(res)
             }

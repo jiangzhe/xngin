@@ -5,7 +5,7 @@ use std::mem;
 use xngin_catalog::TableID;
 use xngin_datatype::{PreciseType, Typed};
 use xngin_expr::{Const, DataSourceID, Expr, ExprKind, FuncKind, QueryID};
-use xngin_storage::attr::Attr;
+use xngin_storage::block::Attr;
 use xngin_storage::block::Block;
 use xngin_storage::codec::{Codec, SingleCodec};
 
@@ -223,26 +223,26 @@ impl<T: DataSourceID> EvalPlan<T> {
         for r in &self.output {
             match r {
                 EvalRef::Input(idx) => {
-                    let attr = block.fetch_attr(*idx).ok_or(Error::FailToFetchAttr)?;
-                    output.push(attr);
+                    let ext = block.fetch_attr(*idx).ok_or(Error::FailToFetchAttr)?;
+                    output.push(ext);
                 }
                 EvalRef::Cache(idx) => {
                     let ent = cache.get_mut(*idx).ok_or(Error::FailToFetchEvalCache)?;
                     match mem::take(ent) {
                         CacheEntry::Empty => return Err(Error::FailToFetchEvalCache),
                         CacheEntry::Some(codec, ty) => {
-                            let attr = Attr {
+                            let ext = Attr {
                                 ty,
                                 codec,
                                 psma: None,
                             };
                             let idx = output.len();
-                            output.push(attr);
+                            output.push(ext);
                             *ent = CacheEntry::Taken(idx); // update output index back
                         }
                         CacheEntry::Taken(out_idx) => {
-                            let attr = output[out_idx].to_owned();
-                            output.push(attr);
+                            let ext = output[out_idx].to_owned();
+                            output.push(ext);
                             *ent = CacheEntry::Taken(out_idx); // update it back
                         }
                     }

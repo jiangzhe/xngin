@@ -114,7 +114,7 @@ mod tests {
     use xngin_datatype::PreciseType;
     use xngin_expr::infer::fix_rec;
     use xngin_expr::{Const, Expr, FuncKind, QueryID};
-    use xngin_storage::attr::Attr;
+    use xngin_storage::block::Attr;
     use xngin_storage::codec::{Codec, FlatCodec};
 
     #[test]
