@@ -1,9 +1,11 @@
 pub mod align;
+pub mod error;
 pub mod konst;
 
 pub use align::*;
 pub use konst::*;
 
+pub use error::{Error, Result};
 pub use fxd::{Error as DecimalError, FixedDecimal as Decimal};
 pub use time::format_description::{self, FormatItem};
 pub use time::PrimitiveDateTime as Datetime;
@@ -15,28 +17,45 @@ use std::borrow::Cow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PreciseType {
+    /// code=0
     /// Most expressions are initialized with unknown type.
     /// After type inference, the precise type will be assigned.
     Unknown,
+    /// code=1
     /// Only constant null will have null type.
     Null,
+    /// code=2
     /// Integer type.
     /// First argument is byte number.
     /// Second argument is unsigned flag.
     Int(u8, bool),
+    /// code=3
+    /// Fixed point decimal.
+    /// Precision and fraction are specified.
     Decimal(u8, u8),
+    /// code=4
+    /// Float type.
+    /// Bytes specified, only 4 and 8 are valid.
     Float(u8),
+    /// code=5
     Bool,
+    /// code=6
     Date,
+    /// code=7
     Time(u8),
+    /// code=8
     Datetime(u8),
+    /// code=9
     Interval,
+    /// code=10
     /// Note: Char and Varchar length is not same as bytes.
     /// It depends on collation, e.g. commonly used utf8mb4
     /// uses at most 4 bytes to store single character.
     Char(u16, Collation),
+    /// code=11
     Varchar(u16, Collation),
-    // multiple types, only for tuple value.
+    /// code=12
+    /// Compound type, currently not support.
     Compound,
 }
 
@@ -227,6 +246,111 @@ impl PreciseType {
     }
 }
 
+impl TryFrom<[u8; 8]> for PreciseType {
+    type Error = Error;
+    #[inline]
+    fn try_from(src: [u8; 8]) -> Result<Self> {
+        let res = match src[0] {
+            0 => PreciseType::Unknown,
+            1 => PreciseType::Null,
+            2 => {
+                let bytes = src[1];
+                let neg = match src[2] {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(Error::InvalidFormat),
+                };
+                PreciseType::Int(bytes, neg)
+            }
+            3 => {
+                let prec = src[1];
+                let frac = src[2];
+                PreciseType::Decimal(prec, frac)
+            }
+            4 => {
+                let bytes = src[1];
+                PreciseType::Float(bytes)
+            }
+            5 => PreciseType::Bool,
+            6 => PreciseType::Date,
+            7 => {
+                let frac = src[1];
+                PreciseType::Time(frac)
+            }
+            8 => {
+                let frac = src[1];
+                PreciseType::Datetime(frac)
+            }
+            9 => PreciseType::Interval,
+            10 => {
+                let len = src[1] as u16 + ((src[2] as u16) << 8);
+                let collation = Collation::try_from(src[3])?;
+                PreciseType::Char(len, collation)
+            }
+            11 => {
+                let len = src[1] as u16 + ((src[2] as u16) << 8);
+                let collation = Collation::try_from(src[3])?;
+                PreciseType::Varchar(len, collation)
+            }
+            12 => PreciseType::Compound,
+            _ => return Err(Error::InvalidFormat),
+        };
+        Ok(res)
+    }
+}
+
+impl From<PreciseType> for [u8; 8] {
+    #[inline]
+    fn from(src: PreciseType) -> Self {
+        let mut tgt = [0u8; 8];
+        match src {
+            PreciseType::Unknown => (),
+            PreciseType::Null => tgt[0] = 1,
+            PreciseType::Int(bytes, neg) => {
+                tgt[0] = 2;
+                tgt[1] = bytes;
+                tgt[2] = if neg { 1 } else { 0 };
+            }
+            PreciseType::Decimal(prec, frac) => {
+                tgt[0] = 3;
+                tgt[1] = prec;
+                tgt[2] = frac;
+            }
+            PreciseType::Float(bytes) => {
+                tgt[0] = 4;
+                tgt[1] = bytes;
+            }
+            PreciseType::Bool => tgt[0] = 5,
+            PreciseType::Date => tgt[0] = 6,
+            PreciseType::Time(frac) => {
+                tgt[0] = 7;
+                tgt[1] = frac;
+            }
+            PreciseType::Datetime(frac) => {
+                tgt[0] = 8;
+                tgt[1] = frac;
+            }
+            PreciseType::Interval => tgt[0] = 9,
+            PreciseType::Char(len, collation) => {
+                tgt[0] = 10;
+                // little endian
+                tgt[1] = (len & 0xff) as u8;
+                tgt[2] = (len >> 8) as u8;
+                tgt[3] = collation as u8;
+            }
+            PreciseType::Varchar(len, collation) => {
+                tgt[0] = 11;
+                // little endian
+                tgt[1] = (len & 0xff) as u8;
+                tgt[2] = (len >> 8) as u8;
+                tgt[3] = collation as u8;
+            }
+            PreciseType::Compound => tgt[0] = 12,
+        }
+        tgt
+    }
+}
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub enum RuntimeType {
@@ -287,9 +411,23 @@ impl TimeUnit {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Collation {
-    Ascii,
-    Utf8mb4,
-    Binary,
+    Ascii = 1,
+    Utf8mb4 = 2,
+    Binary = 3,
+}
+
+impl TryFrom<u8> for Collation {
+    type Error = Error;
+    #[inline]
+    fn try_from(src: u8) -> Result<Self> {
+        let res = match src {
+            1 => Collation::Ascii,
+            2 => Collation::Utf8mb4,
+            3 => Collation::Binary,
+            _ => return Err(Error::InvalidFormat),
+        };
+        Ok(res)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -310,5 +448,49 @@ mod tests {
     fn test_size_of_precise_type() {
         use std::mem::size_of;
         println!("size of PreciseType is {}", size_of::<PreciseType>());
+    }
+
+    #[test]
+    fn test_serde_precise_type() {
+        for (ty, bytes) in vec![
+            (PreciseType::Unknown, [0u8; 8]),
+            (PreciseType::Null, [1u8, 0, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Int(4, false), [2u8, 4, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Int(4, true), [2u8, 4, 1, 0, 0, 0, 0, 0]),
+            (PreciseType::Int(8, false), [2u8, 8, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Decimal(10, 0), [3u8, 10, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Decimal(18, 2), [3u8, 18, 2, 0, 0, 0, 0, 0]),
+            (PreciseType::Float(4), [4u8, 4, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Float(8), [4u8, 8, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Bool, [5u8, 0, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Date, [6u8, 0, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Time(0), [7u8, 0, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Time(6), [7u8, 6, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Datetime(0), [8u8, 0, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Datetime(3), [8u8, 3, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Interval, [9u8, 0, 0, 0, 0, 0, 0, 0]),
+            (
+                PreciseType::Char(1, Collation::Ascii),
+                [10u8, 1, 0, 1, 0, 0, 0, 0],
+            ),
+            (
+                PreciseType::Char(1024, Collation::Utf8mb4),
+                [10u8, 0, 4, 2, 0, 0, 0, 0],
+            ),
+            (
+                PreciseType::Varchar(4096, Collation::Binary),
+                [11u8, 0, 16, 3, 0, 0, 0, 0],
+            ),
+            (
+                PreciseType::Varchar(16, Collation::Ascii),
+                [11u8, 16, 0, 1, 0, 0, 0, 0],
+            ),
+            (PreciseType::Compound, [12u8, 0, 0, 0, 0, 0, 0, 0]),
+        ] {
+            let new_bs = <[u8; 8]>::from(ty);
+            assert_eq!(bytes, new_bs);
+            let new_ty = PreciseType::try_from(bytes).unwrap();
+            assert_eq!(ty, new_ty);
+        }
     }
 }

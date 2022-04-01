@@ -1,6 +1,6 @@
 use smallvec::{smallvec, SmallVec};
 
-pub trait ByteRepr: Default {
+pub trait ByteRepr: Default + Copy {
     fn to_bytes(&self) -> SmallVec<[u8; 16]>;
 
     fn from_bytes(bs: &[u8]) -> Self;
@@ -63,6 +63,7 @@ macro_rules! impl_num {
 
 impl_num!(i32);
 impl_num!(i64);
+impl_num!(u64);
 
 impl ByteRepr for u8 {
     #[inline]

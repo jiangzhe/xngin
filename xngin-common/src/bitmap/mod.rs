@@ -14,7 +14,7 @@ pub trait ReadBitmap {
     /// the map could be seen from the returned slice.
     /// In most cases, it is used for fast aligned operations, like
     /// merge, shift and extend.
-    fn aligned_u64(&self) -> (&[u8], usize);
+    fn aligned_u64s(&self) -> (&[u64], usize);
 
     /// Returns the length of this map.
     fn len(&self) -> usize;
@@ -28,7 +28,7 @@ pub trait ReadBitmap {
     /// Get single value at given position.
     #[inline]
     fn get(&self, idx: usize) -> Result<bool> {
-        let (bm, len) = self.aligned_u64();
+        let (bm, len) = self.aligned_u64s();
         if idx >= len {
             return Err(Error::IndexOutOfBound(format!(
                 "{} > bitmap length {}",
@@ -40,14 +40,14 @@ pub trait ReadBitmap {
 
     #[inline]
     fn bools(&self) -> BoolIter<'_> {
-        let (bm, len) = self.aligned_u64();
+        let (bm, len) = self.aligned_u64s();
         bitmap_bools(bm, len)
     }
 
     /// Returns value count of true.
     #[inline]
     fn true_count(&self) -> usize {
-        let (bm, len) = self.aligned_u64();
+        let (bm, len) = self.aligned_u64s();
         bitmap_true_count(bm, len)
     }
 
@@ -56,81 +56,55 @@ pub trait ReadBitmap {
     /// shows u64 is best.
     #[inline]
     fn false_count(&self) -> usize {
-        let (bm, len) = self.aligned_u64();
+        let (bm, len) = self.aligned_u64s();
         bitmap_false_count(bm, len)
     }
 
     #[inline]
     fn range_iter(&self) -> RangeIter<'_> {
-        let (bm, len) = self.aligned_u64();
+        let (bm, len) = self.aligned_u64s();
         bitmap_range_iter(bm, len)
     }
 }
 
 #[inline]
-pub fn bitmap_get(bm: &[u8], idx: usize) -> bool {
-    bm[idx >> 3] & (1 << (idx & 7)) != 0
+pub fn bitmap_get(bm: &[u64], idx: usize) -> bool {
+    bm[idx / 64] & (1 << (idx & 63)) != 0
 }
 
 #[inline]
-pub fn bitmap_bools(bm: &[u8], len: usize) -> BoolIter<'_> {
+pub fn bitmap_bools(bm: &[u64], len: usize) -> BoolIter<'_> {
     BoolIter { bm, len, idx: 0 }
 }
 
 #[inline]
-pub fn bitmap_true_count(bm: &[u8], len: usize) -> usize {
-    let mut bytes = len >> 3;
-    let u64bytes = (bytes >> 3) << 3;
-    bytes -= u64bytes;
-    let bits = len & 7;
+pub fn bitmap_true_count(bm: &[u64], len: usize) -> usize {
+    let len_u64 = len / 64;
+    let len_remained = len & 63;
     // sum of u64s
-    let mut sum0: usize = bytemuck::cast_slice::<_, u64>(&bm[..u64bytes])
-        .iter()
-        .map(|v| v.count_ones() as usize)
-        .sum();
-    // sum of bytes
-    if bytes > 0 {
-        sum0 += bm[u64bytes..u64bytes + bytes]
-            .iter()
-            .map(|v| v.count_ones() as usize)
-            .sum::<usize>();
+    let sum0: usize = bm[..len_u64].iter().map(|v| v.count_ones() as usize).sum();
+    if len_remained == 0 {
+        sum0
+    } else {
+        sum0 + (bm[len_u64] & ((1 << len_remained) - 1)).count_ones() as usize
     }
-    if bits > 0 {
-        // mask higher bits before counting
-        sum0 += (bm[u64bytes + bytes] & ((1 << bits) - 1)).count_ones() as usize;
-    }
-    sum0
 }
 
 #[inline]
-pub fn bitmap_false_count(bm: &[u8], len: usize) -> usize {
-    let mut bytes = len >> 3;
-    let u64bytes = (bytes >> 3) << 3;
-    bytes -= u64bytes;
-    let bits = len & 7;
+pub fn bitmap_false_count(bm: &[u64], len: usize) -> usize {
+    let len_u64 = len / 64;
+    let len_remained = len & 63;
     // sum of u64s
-    let mut sum0: usize = bytemuck::cast_slice::<_, u64>(&bm[..u64bytes])
-        .iter()
-        .map(|v| v.count_zeros() as usize)
-        .sum();
-    // sum of bytes
-    if bytes > 0 {
-        sum0 += bm[u64bytes..u64bytes + bytes]
-            .iter()
-            .map(|v| v.count_zeros() as usize)
-            .sum::<usize>();
+    let sum0 = bm[..len_u64].iter().map(|v| v.count_zeros() as usize).sum();
+    if len_remained == 0 {
+        sum0
+    } else {
+        sum0 + (bm[len_u64] | !((1 << len_remained) - 1)).count_zeros() as usize
     }
-    if bits > 0 {
-        // mask higher bits before counting
-        sum0 += (bm[u64bytes + bytes] | !((1 << bits) - 1)).count_zeros() as usize;
-    }
-    sum0
 }
 
 #[inline]
-pub fn bitmap_range_iter(bm: &[u8], len: usize) -> RangeIter<'_> {
-    // validate given bitmap is aligned per 8 bytes.
-    assert!(bm.len() & 7 == 0);
+pub fn bitmap_range_iter(bm: &[u64], len: usize) -> RangeIter<'_> {
     if len == 0 {
         // empty iterator
         return RangeIter {
@@ -143,10 +117,9 @@ pub fn bitmap_range_iter(bm: &[u8], len: usize) -> RangeIter<'_> {
         };
     }
     let prev = bm[0] & 1 != 1; // pre-read first value
-    let u64s = bytemuck::cast_slice::<_, u64>(bm);
     let last_word_len = if len & 63 == 0 { 64 } else { len & 63 };
     RangeIter {
-        u64s,
+        u64s: bm,
         last_word_len,
         word: 0,
         word_bits: 0,
@@ -156,7 +129,7 @@ pub fn bitmap_range_iter(bm: &[u8], len: usize) -> RangeIter<'_> {
 }
 
 #[inline]
-pub fn bitmap_first_true(bm: &[u8], len: usize) -> Option<usize> {
+pub fn bitmap_first_true(bm: &[u64], len: usize) -> Option<usize> {
     let mut idx = 0;
     for (f, n) in bitmap_range_iter(bm, len) {
         if f {
@@ -169,66 +142,43 @@ pub fn bitmap_first_true(bm: &[u8], len: usize) -> Option<usize> {
 }
 
 #[inline]
-pub fn bitmap_merge(this: &mut [u8], this_len: usize, that: &[u8], that_len: usize) {
+pub fn bitmap_merge(this: &mut [u64], this_len: usize, that: &[u64], that_len: usize) {
     assert!(this_len == that_len);
     this.iter_mut().zip(that.iter()).for_each(|(a, b)| *a &= b);
 }
 
 #[inline]
-pub fn bitmap_for_each<F: FnMut(bool)>(bm: &[u8], len: usize, mut f: F) {
+pub fn bitmap_for_each<F: FnMut(bool)>(bm: &[u64], len: usize, mut f: F) {
     if len == 0 {
         return;
     }
-    bm[..len >> 3].iter().for_each(|b| {
-        f(b & 1 == 1);
-        f(b & 2 == 2);
-        f(b & 4 == 4);
-        f(b & 8 == 8);
-        f(b & 16 == 16);
-        f(b & 32 == 32);
-        f(b & 64 == 64);
-        f(b & 128 == 128);
+    let len_u64 = len / 64;
+    let len_remained = len & 63;
+    bm[..len_u64].iter().for_each(|b| {
+        for i in 0..64 {
+            f(*b & (1u64 << i) != 0);
+        }
     });
-    if len & 7 == 0 {
+    if len_remained == 0 {
         return;
     }
-    let b = bm[len >> 3];
-    let idx = len & 7;
-    f(b & 1 == 1);
-    if idx == 1 {
-        return;
+    let last = bm[len_u64];
+    for i in 0..len_remained {
+        f(last & (1u64 << i) != 0);
     }
-    f(b & 2 == 2);
-    if idx == 2 {
-        return;
-    }
-    f(b & 4 == 4);
-    if idx == 3 {
-        return;
-    }
-    f(b & 8 == 8);
-    if idx == 4 {
-        return;
-    }
-    f(b & 16 == 16);
-    if idx == 5 {
-        return;
-    }
-    f(b & 32 == 32);
-    if idx == 6 {
-        return;
-    }
-    f(b & 64 == 64);
 }
 
 #[inline]
-pub fn bitmap_for_each_range<F: FnMut(bool, usize)>(bm: &[u8], len: usize, mut f: F) {
+pub fn bitmap_for_each_range<F: FnMut(bool, usize)>(bm: &[u64], len: usize, mut f: F) {
     if len == 0 {
         return;
     }
     let mut prev = bm[0] & 1 == 1; // pre-read first value
     let mut n: usize = 0;
-    let traverse_u64s = |i: &u64| {
+    let len_u64 = len / 64;
+    let mut len_remained = len & 63;
+
+    bm[..len_u64].iter().for_each(|i| {
         let mut i = *i;
         match i {
             0 => {
@@ -282,55 +232,47 @@ pub fn bitmap_for_each_range<F: FnMut(bool, usize)>(bm: &[u8], len: usize, mut f
                 }
             }
         }
-    };
-
-    if len & 63 == 0 {
-        let u64s = bytemuck::cast_slice::<_, u64>(bm);
-        u64s.iter().for_each(traverse_u64s);
+    });
+    if len_remained == 0 {
         f(prev, n);
         return;
     }
-    let mut last_word_len = len & 63;
-    let u64s = bytemuck::cast_slice::<_, u64>(bm);
-    let (last, head) = u64s.split_last().unwrap();
-    head.iter().for_each(traverse_u64s);
-    // handle last word
-    let mut last = *last;
+    let mut last = bm[len_u64];
     if prev {
         let true_bits = last.trailing_ones() as usize;
-        if true_bits >= last_word_len {
-            f(prev, n + last_word_len);
+        if true_bits >= len_remained {
+            f(prev, n + len_remained);
             return;
         } else if true_bits > 0 {
             n += true_bits;
             last >>= true_bits;
-            last_word_len -= true_bits;
+            len_remained -= true_bits;
         }
     } else {
         let false_bits = last.trailing_zeros() as usize;
-        if false_bits >= last_word_len {
-            f(prev, n + last_word_len);
+        if false_bits >= len_remained {
+            f(prev, n + len_remained);
             return;
         } else if false_bits > 0 {
             n += false_bits;
             last >>= false_bits;
-            last_word_len -= false_bits;
+            len_remained -= false_bits;
         }
     }
     loop {
-        if last_word_len == 0 {
+        if len_remained == 0 {
             f(prev, n);
             return;
         }
         f(prev, n);
         prev = !prev; // flip the flag
         if prev {
-            n = last_word_len.min(last.trailing_ones() as usize);
+            n = len_remained.min(last.trailing_ones() as usize);
         } else {
-            n = last_word_len.min(last.trailing_zeros() as usize);
+            n = len_remained.min(last.trailing_zeros() as usize);
         }
         last >>= n;
-        last_word_len -= n;
+        len_remained -= n;
     }
 }
 
@@ -496,12 +438,12 @@ impl<'a> Iterator for RangeIter<'a> {
 
 pub trait ReadBitmapExt: ReadBitmap {
     fn for_each<F: FnMut(bool)>(&self, f: F) {
-        let (bm, len) = self.aligned_u64();
+        let (bm, len) = self.aligned_u64s();
         bitmap_for_each(bm, len, f)
     }
 
     fn for_each_range<F: FnMut(bool, usize)>(&self, f: F) {
-        let (bm, len) = self.aligned_u64();
+        let (bm, len) = self.aligned_u64s();
         bitmap_for_each_range(bm, len, f)
     }
 }
@@ -510,7 +452,7 @@ impl<T: ReadBitmap> ReadBitmapExt for T {}
 
 pub trait WriteBitmap: ReadBitmap {
     /// Returns mutable ref to a bitmap.
-    fn aligned_u64_mut(&mut self) -> (&mut [u8], usize);
+    fn aligned_u64s_mut(&mut self) -> (&mut [u64], usize);
 
     /// Clear this map.
     fn clear(&mut self);
@@ -524,7 +466,7 @@ pub trait WriteBitmap: ReadBitmap {
     /// Set single value to the bitmap at given position.
     #[inline]
     fn set(&mut self, idx: usize, val: bool) -> Result<()> {
-        let (bm, len) = self.aligned_u64_mut();
+        let (bm, len) = self.aligned_u64s_mut();
         if idx >= len {
             return Err(Error::IndexOutOfBound(format!(
                 "{} >= bitmap length {}",
@@ -538,7 +480,7 @@ pub trait WriteBitmap: ReadBitmap {
     /// Shift bitmap to left with give length.
     #[inline]
     fn shift(&mut self, bits: usize) -> Result<()> {
-        let (bm, len) = self.aligned_u64_mut();
+        let (bm, len) = self.aligned_u64s_mut();
         bitmap_shift(bm, len, bits);
         self.set_len(len - bits)
     }
@@ -551,8 +493,8 @@ pub trait WriteBitmap: ReadBitmap {
     where
         T: ReadBitmap,
     {
-        let (this, this_len) = self.aligned_u64_mut();
-        let (that, that_len) = that.aligned_u64();
+        let (this, this_len) = self.aligned_u64s_mut();
+        let (that, that_len) = that.aligned_u64s();
         if this_len != that_len {
             return Err(Error::InvalidArgument(format!(
                 "lengths of merging bitmaps mismatch {} != {}",
@@ -566,18 +508,18 @@ pub trait WriteBitmap: ReadBitmap {
     /// Inverse all values in this bitmap
     #[inline]
     fn inverse(&mut self) {
-        let (bm, _) = self.aligned_u64_mut();
+        let (bm, _) = self.aligned_u64s_mut();
         bm.iter_mut().for_each(|x| *x = !*x)
     }
 }
 
 #[inline]
-pub fn bitmap_set(bm: &mut [u8], idx: usize, val: bool) {
-    let bidx = idx >> 3;
+pub fn bitmap_set(bm: &mut [u64], idx: usize, val: bool) {
+    let bidx = idx / 64;
     if val {
-        bm[bidx] |= 1 << (idx & 7);
+        bm[bidx] |= 1 << (idx & 63);
     } else {
-        bm[bidx] &= !(1 << (idx & 7));
+        bm[bidx] &= !(1 << (idx & 63));
     }
 }
 
@@ -618,40 +560,64 @@ pub trait AppendBitmap: WriteBitmap {
     }
 }
 
-// input bs must have length of multiple of 8.
 #[inline]
-fn bitmap_shift(bs: &mut [u8], len: usize, mut bits: usize) {
+fn bitmap_shift(bs: &mut [u64], len: usize, bits: usize) {
     if bits >= len || bits == 0 {
         return;
     }
-    if bits & 7 == 0 {
+    let offset_u64 = bits / 64;
+    let offset_remained = bits & 63;
+    if offset_remained == 0 {
         // move bytes
-        bs.copy_within((bits >> 3).., 0);
+        bs.copy_within(offset_u64.., 0);
         return;
     }
-    // shift as u64
-    let orig_u64s = bs.len() >> 3;
-    let offset_u64s = bits >> 6;
-    let u64bs = bytemuck::cast_slice_mut::<_, u64>(&mut bs[..orig_u64s * 8]);
-    bits &= 63;
-    if offset_u64s == 0 {
-        let rbits = 64 - bits;
-        u64bs.for_each_offset_pair(1, |(a, b)| {
-            *a >>= bits;
-            *a |= *b << rbits;
-        });
-        *u64bs.last_mut().unwrap() >>= bits;
-    } else {
+    let orig_len_u64 = (len + 63) / 64;
+    let bits = bits & 63;
+    if offset_u64 == 0 {
+        let bs = &mut bs[..orig_len_u64];
         // Use macro to unroll below expression for better performance.
         //
-        // u64bs.for_each_offset_triple(offset_u64s, offset_u64s+1, |(a, b, c)| {
+        // bs[..orig_len_u64].for_each_offset_pair(1, |(a, b)| {
+        //     *a >>= bits;
+        //     *a |= *b << rbits;
+        // });
+        macro_rules! shift_with_pair {
+            ($bits:literal) => {
+                bs[..orig_len_u64].for_each_offset_pair(1, |(a, b)| {
+                    *a >>= $bits;
+                    *a |= *b << (64 - $bits);
+                })
+            };
+        }
+        macro_rules! shift_branched_pairs {
+            ($bits:expr, $($branch:literal),+) => {
+                match $bits {
+                    $(
+                        $branch => shift_with_pair!($branch),
+                    )+
+                    _ => unreachable!(),
+                }
+            }
+        }
+        shift_branched_pairs!(
+            bits, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+            23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+            45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+        );
+        bs[orig_len_u64 - 1] >>= bits;
+    } else {
+        let bs = &mut bs[..orig_len_u64];
+        // Use macro to unroll below expression for better performance.
+        //
+        // bs.for_each_offset_triple(offset_u64, offset_u64+1, |(a, b, c)| {
         //     *a = (*b >> bits) | (*c << rbits);
         // });
         macro_rules! shift_with_triple {
             ($bits:literal) => {
-                u64bs.for_each_offset_triple(
-                    offset_u64s,
-                    offset_u64s + 1,
+                bs.for_each_offset_triple(
+                    offset_u64,
+                    offset_u64 + 1,
                     |(a, b, c): (&mut u64, &u64, &u64)| {
                         *a = (*b >> $bits) | (*c << (64 - $bits));
                     },
@@ -673,83 +639,79 @@ fn bitmap_shift(bs: &mut [u8], len: usize, mut bits: usize) {
             23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
             45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
         );
-        u64bs[u64bs.len() - offset_u64s - 1] = u64bs[u64bs.len() - 1] >> bits;
+        bs[orig_len_u64 - offset_u64 - 1] = bs[orig_len_u64 - 1] >> bits;
+        bs[orig_len_u64 - 1] = 0;
     }
 }
 
-// dst and src must be 64-bit aligned.
 #[inline]
-fn copy_bits(dst: &mut [u8], dst_len: usize, src: &[u8], src_len: usize) {
-    debug_assert!(src.len() * 8 >= src_len);
-    debug_assert!(dst.len() * 8 >= dst_len + src_len);
-    debug_assert!(dst.len() & 7 == 0); // always multiply of 8
-    debug_assert!(src.len() & 7 == 0); // always multiply of 8
+fn copy_bits(dst: &mut [u64], dst_len: usize, src: &[u64], src_len: usize) {
+    debug_assert!(src.len() * 64 >= src_len);
+    debug_assert!(dst.len() * 64 >= dst_len + src_len);
     if src_len == 0 {
         // nothing to do
         return;
     }
-    if dst_len & 7 == 0 {
+    if dst_len & 63 == 0 {
         // copy bytes
-        let src_bytes = (src_len + 7) / 8;
-        let dst_bytes = dst_len / 8;
-        dst[dst_bytes..dst_bytes + src_bytes].copy_from_slice(&src[..src_bytes]);
+        let src_len_u64 = (src_len + 63) / 64;
+        let dst_len_u64 = dst_len / 64;
+        dst[dst_len_u64..src_len_u64 + dst_len_u64].copy_from_slice(&src[..src_len_u64]);
         return;
     }
     let rbits = dst_len & 63;
     let bits = 64 - rbits;
     let tgt_len = dst_len + src_len;
-    let tgt_u64s_bytes = ((tgt_len + 63) >> 6) << 3;
-    let src_u64s_bytes = ((src_len + 63) >> 6) << 3;
-    let orig_dst_u64s_bytes = (dst_len >> 6) << 3; // last u64 in original bitmap is treated as new.
-    let u64dst = bytemuck::cast_slice_mut::<_, u64>(&mut dst[orig_dst_u64s_bytes..tgt_u64s_bytes]);
-    let u64src = bytemuck::cast_slice::<_, u64>(&src[..src_u64s_bytes]);
-    // update first u64 of destination
-    let first_u64 = &mut u64dst[0];
+    let tgt_len_u64 = (tgt_len + 63) / 64;
+    let src_len_u64 = (src_len + 63) / 64;
+    let orig_dst_len_u64 = dst_len / 64;
+    let tgt = &mut dst[orig_dst_len_u64..tgt_len_u64];
+    let src = &src[..src_len_u64];
+    // update first u64 of target
+    let first_u64 = &mut tgt[0];
     *first_u64 &= (1 << rbits) - 1;
-    *first_u64 |= u64src[0] << rbits;
+    *first_u64 |= src[0] << rbits;
     // update with src pairs
     // benchmark shows unrolling the bits literal with macros decrease
     // performance a bit(15~20%), so keep it as is.
-    u64dst[1..]
+    tgt[1..]
         .iter_mut()
-        .zip(u64src.pairs())
+        .zip(src.pairs())
         .for_each(|(a, (b, c))| {
             *a = *b >> bits;
             *a |= *c << rbits;
         });
     if src_len & 63 > bits || src_len & 63 == 0 {
         // addtional u64 to store the rest of bits
-        *u64dst.last_mut().unwrap() = *u64src.last().unwrap() >> bits;
+        tgt[tgt.len() - 1] = src[src_len_u64 - 1] >> bits;
     }
 }
 
 #[inline]
-fn copy_bits_range(dst: &mut [u8], dst_len: usize, src: &[u8], range: Range<usize>) {
-    debug_assert!(src.len() * 8 >= range.end);
+fn copy_bits_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Range<usize>) {
+    debug_assert!(src.len() * 64 >= range.end);
     let tgt_len = dst_len + range.end - range.start;
-    debug_assert!(dst.len() * 8 >= tgt_len);
-    debug_assert!(dst.len() & 7 == 0); // always multiply of 8
-    debug_assert!(src.len() & 7 == 0); // always multiply of 8
-    if range.start & 7 == 0 {
+    debug_assert!(dst.len() * 64 >= tgt_len);
+    if range.start & 63 == 0 {
         // start aligned to byte bound, reuse copy_bits
         copy_bits(
             dst,
             dst_len,
-            &src[range.start / 8..],
+            &src[range.start / 64..(range.end + 63) / 64],
             range.end - range.start,
         );
         return;
     }
-    if dst_len & 7 == range.start & 7 {
+    if dst_len & 63 == range.start & 63 {
         // last few dst bits and first src bits just compose one byte
-        let rbits = dst_len & 7;
-        let dst_last_idx = dst_len / 8;
+        let rbits = dst_len & 63;
+        let dst_last_idx = dst_len / 64;
         let dst_last_byte = &mut dst[dst_last_idx];
         *dst_last_byte &= (1 << rbits) - 1;
-        let src_first_byte = src[range.start / 8];
+        let src_first_byte = src[range.start / 64];
         *dst_last_byte |= src_first_byte & !((1 << rbits) - 1);
-        let src_start = range.start / 8;
-        let src_end = (range.end + 7) / 8;
+        let src_start = range.start / 64;
+        let src_end = (range.end + 63) / 64;
         dst[dst_last_idx + 1..dst_last_idx + src_end - src_start]
             .copy_from_slice(&src[src_start + 1..src_end]);
         return;
@@ -761,47 +723,46 @@ fn copy_bits_range(dst: &mut [u8], dst_len: usize, src: &[u8], range: Range<usiz
         // shift right to fill dst
         let shr_bits = src_start_bits - rbits;
         let shl_bits = 64 - shr_bits;
-        let orig_dst_u64s_bytes = (dst_len >> 6) << 3;
-        let tgt_u64s_bytes = ((tgt_len + 63) >> 6) << 3;
-        let u64dst =
-            bytemuck::cast_slice_mut::<_, u64>(&mut dst[orig_dst_u64s_bytes..tgt_u64s_bytes]);
-        let src_u64s_start = (range.start >> 6) << 3;
-        let src_u64s_end = ((range.end + 63) >> 6) << 3;
-        let u64src = bytemuck::cast_slice::<_, u64>(&src[src_u64s_start..src_u64s_end]);
+        let orig_dst_len_u64 = dst_len / 64;
+        let tgt_len_u64 = (tgt_len + 63) / 64;
+        // let u64dst =
+        //     bytemuck::cast_slice_mut::<_, u64>(&mut dst[orig_dst_u64s_bytes..tgt_u64s_bytes]);
+        let tgt = &mut dst[orig_dst_len_u64..tgt_len_u64];
+        // let src_u64s_start = (range.start >> 6) << 3;
+        let src_start_u64 = range.start / 64;
+        // let src_u64s_end = ((range.end + 63) >> 6) << 3;
+        let src_end_u64 = (range.end + 63) / 64;
         // save first u64, handling it after pair updates
-        let u64dst_first = u64dst[0] & ((1 << rbits) - 1);
+        let first_u64 = tgt[0] & ((1 << rbits) - 1);
         // pair update
-        u64dst
-            .iter_mut()
-            .zip(u64src.pairs())
+        tgt.iter_mut()
+            .zip(src[src_start_u64..src_end_u64].pairs())
             .for_each(|(a, (b, c))| {
                 *a = (*b >> shr_bits) | (*c << shl_bits);
             });
         // update first u64
-        u64dst[0] &= !((1 << rbits) - 1); // clear original bits
-        u64dst[0] |= u64dst_first; // update original value back
-                                   // update last u64
+        tgt[0] &= !((1 << rbits) - 1); // clear original bits
+        tgt[0] |= first_u64; // update original value back
+                             // update last u64
         if (range.end & 63) > shr_bits {
             // additional u64 to update last few bits from src
-            *u64dst.last_mut().unwrap() = *u64src.last().unwrap() >> shr_bits;
+            tgt[tgt.len() - 1] = src[src_end_u64 - 1] >> shr_bits;
+            // *u64dst.last_mut().unwrap() = *u64src.last().unwrap() >> shr_bits;
         }
     } else {
         // shift left to fill dst
         let shl_bits = rbits - src_start_bits;
         let shr_bits = 64 - shl_bits;
-        let orig_dst_u64s_bytes = (dst_len >> 6) << 3;
-        let tgt_u64s_bytes = ((tgt_len + 63) >> 6) << 3;
-        let u64dst =
-            bytemuck::cast_slice_mut::<_, u64>(&mut dst[orig_dst_u64s_bytes..tgt_u64s_bytes]);
-        let src_u64s_start = (range.start >> 6) << 3;
-        let src_u64s_end = ((range.end + 63) >> 6) << 3;
-        let u64src = bytemuck::cast_slice::<_, u64>(&src[src_u64s_start..src_u64s_end]);
+        let orig_dst_len_u64 = dst_len / 64;
+        let tgt_len_u64 = (tgt_len + 63) / 64;
+        let tgt = &mut dst[orig_dst_len_u64..tgt_len_u64];
+        let src_start_u64 = range.start / 64;
+        let src_end_u64 = (range.end + 63) / 64;
         // update first u64
-        u64dst[0] &= (1 << rbits) - 1;
-        u64dst[0] |= (u64src[0] << shl_bits) & !((1 << rbits) - 1);
-        u64dst[1..]
-            .iter_mut()
-            .zip(u64src.pairs())
+        tgt[0] &= (1 << rbits) - 1;
+        tgt[0] |= (src[src_start_u64] << shl_bits) & !((1 << rbits) - 1);
+        tgt.iter_mut()
+            .zip(src[src_start_u64..src_end_u64].pairs())
             .for_each(|(a, (b, c))| {
                 *a = b >> shr_bits;
                 *a |= c << shl_bits;
@@ -809,7 +770,7 @@ fn copy_bits_range(dst: &mut [u8], dst_len: usize, src: &[u8], range: Range<usiz
         // update last u64
         if (range.end & 63) > shr_bits {
             // additional u64 to update last few bits from src
-            *u64dst.last_mut().unwrap() = *u64src.last().unwrap() >> shr_bits;
+            tgt[tgt.len() - 1] = src[src_end_u64 - 1] >> shr_bits;
         }
     }
 }
@@ -851,7 +812,7 @@ fn copy_const_bits(dst: &mut [u8], dst_len: usize, src_val: bool, src_len: usize
 
 #[derive(Debug, Clone)]
 pub struct BoolIter<'a> {
-    bm: &'a [u8],
+    bm: &'a [u64],
     len: usize,
     idx: usize,
 }
@@ -864,7 +825,7 @@ impl<'a> Iterator for BoolIter<'a> {
         if self.idx == self.len {
             None
         } else {
-            let b = self.bm[self.idx >> 3] & (1 << (self.idx & 7)) != 0;
+            let b = bitmap_get(self.bm, self.idx);
             self.idx += 1;
             Some(b)
         }

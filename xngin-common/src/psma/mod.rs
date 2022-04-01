@@ -31,7 +31,7 @@ impl PSMA {
     }
 
     #[inline]
-    pub fn build_from_i32s(bm: Option<&[u8]>, data: &[i32]) -> Option<Self> {
+    pub fn build_from_i32s(bm: Option<&[u64]>, data: &[i32]) -> Option<Self> {
         if let Some(bm) = bm {
             let (mut min, mut max) = if let Some(idx) = bitmap_first_true(bm, data.len()) {
                 (data[idx], data[idx])

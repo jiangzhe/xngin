@@ -43,12 +43,12 @@ impl ViewBitmap {
 
 impl ReadBitmap for ViewBitmap {
     #[inline]
-    fn aligned_u64(&self) -> (&[u8], usize) {
-        let aligned_len = ((self.bits + 63) >> 6) << 3;
-        assert!(aligned_len * 8 <= self.max_bits);
+    fn aligned_u64s(&self) -> (&[u64], usize) {
+        let aligned_len = (self.bits + 63) / 64;
+        assert!(aligned_len * 64 <= self.max_bits);
         // # SAFETY
         // aligned length is guaranteed to be no more than max bits
-        let bm = unsafe { std::slice::from_raw_parts(self.ptr, aligned_len) };
+        let bm = unsafe { std::slice::from_raw_parts(self.ptr as *const u64, aligned_len) };
         (bm, self.bits)
     }
 

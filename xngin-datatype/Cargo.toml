@@ -11,3 +11,4 @@ repository = "https://github.com/jiangzhe/xngin/xngin-datatype/"
 time = { version = "0.3", features = ["parsing", "formatting"] } 
 fxd = "0.1"
 static_init = "1.0"
+thiserror = "1.0"

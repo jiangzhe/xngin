@@ -50,16 +50,6 @@ impl Codec {
     }
 
     #[inline]
-    pub fn into_owned(self) -> Self {
-        match self {
-            c @ Codec::Single(_) | c @ Codec::Flat(FlatCodec::Owned(_)) => c,
-            Codec::Flat(FlatCodec::Borrowed(bf)) => {
-                Codec::Flat(FlatCodec::Owned(Arc::new(OwnFlat::from_view(&bf))))
-            }
-        }
-    }
-
-    #[inline]
     pub fn as_flat(&self) -> Option<&FlatCodec> {
         match self {
             Codec::Flat(f) => Some(f),
@@ -128,6 +118,39 @@ impl SingleCodec {
     }
 
     #[inline]
+    pub fn raw_from_bytes(data: SmallVec<[u8; 16]>, len: usize) -> Self {
+        SingleCodec {
+            valid: true,
+            data,
+            len,
+        }
+    }
+
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+
+    #[inline]
+    pub fn persist_len(&self) -> usize {
+        if self.is_valid() {
+            8 + self.data_len()
+        } else {
+            8
+        }
+    }
+
+    #[inline]
+    pub fn data_len(&self) -> usize {
+        self.data.len()
+    }
+
+    #[inline]
+    pub fn raw_data(&self) -> &[u8] {
+        &self.data
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
@@ -142,7 +165,7 @@ pub enum FlatCodec {
 #[allow(clippy::len_without_is_empty)]
 impl FlatCodec {
     #[inline]
-    pub fn view<T: ByteRepr>(&self) -> (Option<&[u8]>, &[T]) {
+    pub fn view<T: ByteRepr>(&self) -> (Option<&[u64]>, &[T]) {
         match self {
             FlatCodec::Borrowed(bf) => bf.view(),
             FlatCodec::Owned(of) => of.view(),
@@ -196,8 +219,8 @@ pub struct BorrowFlat {
 #[allow(clippy::len_without_is_empty)]
 impl BorrowFlat {
     #[inline]
-    pub fn view<T: ByteRepr>(&self) -> (Option<&[u8]>, &[T]) {
-        let valid_map = self.validity.as_ref().map(|vm| vm.aligned_u64().0);
+    pub fn view<T: ByteRepr>(&self) -> (Option<&[u64]>, &[T]) {
+        let valid_map = self.validity.as_ref().map(|vm| vm.aligned_u64s().0);
         let data = self.data.cast();
         (valid_map, data)
     }
@@ -225,8 +248,8 @@ impl OwnFlat {
     }
 
     #[inline]
-    pub fn view<T: ByteRepr>(&self) -> (Option<&[u8]>, &[T]) {
-        let valid_map = self.validity.as_ref().map(|vm| vm.aligned_u64().0);
+    pub fn view<T: ByteRepr>(&self) -> (Option<&[u64]>, &[T]) {
+        let valid_map = self.validity.as_ref().map(|vm| vm.aligned_u64s().0);
         let data = self.data.cast();
         (valid_map, data)
     }

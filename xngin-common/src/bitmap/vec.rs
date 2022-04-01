@@ -1,4 +1,4 @@
-use crate::align::{AlignedVec, ALIGN64B};
+use crate::alloc::RawArray;
 use crate::bitmap::view::ViewBitmap;
 use crate::bitmap::{AppendBitmap, ReadBitmap, WriteBitmap};
 use crate::error::{Error, Result};
@@ -7,7 +7,7 @@ use std::ops::Range;
 
 #[derive(Debug)]
 pub struct VecBitmap {
-    inner: AlignedVec,
+    inner: RawArray,
     len_u1: usize,
 }
 
@@ -17,7 +17,7 @@ impl Clone for VecBitmap {
     fn clone(&self) -> Self {
         // identical capacity to original Vec
         let cap_u8 = self.inner.cap_u8();
-        let mut inner = AlignedVec::with_capacity(cap_u8);
+        let mut inner = RawArray::with_capacity(cap_u8);
         // inner.extend_from_slice(&self.inner);
         inner.as_slice_mut()[..cap_u8].copy_from_slice(self.inner.as_slice());
         Self {
@@ -38,14 +38,26 @@ impl From<(&[u8], usize)> for VecBitmap {
     }
 }
 
+impl From<(&[u64], usize)> for VecBitmap {
+    #[inline]
+    fn from((src_bm, n_bits): (&[u64], usize)) -> Self {
+        assert!(n_bits <= src_bm.len() * 64);
+        let mut res = VecBitmap::with_capacity(n_bits);
+        unsafe {
+            res.inner
+                .cast_slice_mut::<u64>(src_bm.len())
+                .copy_from_slice(src_bm);
+        }
+        res.len_u1 = n_bits;
+        res
+    }
+}
+
 impl From<Vec<bool>> for VecBitmap {
     #[inline]
     fn from(src: Vec<bool>) -> Self {
-        let mut bm = Self::with_capacity(if src.len() < ALIGN64B {
-            ALIGN64B
-        } else {
-            src.len()
-        });
+        let mut bm = Self::with_capacity(src.len());
+
         bm.len_u1 = src.len();
         let chunks = src.chunks_exact(8);
         if !chunks.remainder().is_empty() {
@@ -87,44 +99,41 @@ impl Default for VecBitmap {
 }
 
 impl VecBitmap {
+    /// Create a new bitmap
     #[inline]
     pub fn new() -> Self {
-        Self::with_capacity(ALIGN64B * 8)
+        Self::with_capacity(64)
     }
 
     #[inline]
     pub fn with_capacity(cap_u1: usize) -> Self {
-        // always make sure capacity is multiple of 8, so we can
-        // easily bytemuck as u64.
-        let cap_u512 = (cap_u1 + ALIGN64B * 8 - 1) / (ALIGN64B * 8);
+        let cap_u8 = if cap_u1 == 0 { 1 } else { (cap_u1 + 7) / 8 };
         VecBitmap {
-            inner: AlignedVec::with_capacity(cap_u512 * 64),
+            inner: RawArray::with_capacity(cap_u8),
             len_u1: 0,
         }
     }
 
     #[inline]
     pub fn from_view(view: &ViewBitmap) -> Self {
-        let (bm, len) = view.aligned_u64();
+        let (bm, len) = view.aligned_u64s();
         VecBitmap::from((bm, len))
     }
 
     #[inline]
     pub fn reserve(&mut self, cap_u1: usize) {
-        if self.inner.cap_u8() * 8 < cap_u1 {
-            let mut new_inner = AlignedVec::with_capacity(self.inner.cap_u8() * 2);
-            let raw = self.inner.as_slice();
-            new_inner.as_slice_mut()[..raw.len()].copy_from_slice(raw);
-            self.inner = new_inner;
-        }
+        self.inner.reserve((cap_u1 + 7) / 8);
     }
 }
 
 impl ReadBitmap for VecBitmap {
     #[inline]
-    fn aligned_u64(&self) -> (&[u8], usize) {
+    fn aligned_u64s(&self) -> (&[u64], usize) {
         let len_u64 = (self.len_u1 + 63) / 64;
-        (&self.inner.as_slice()[..len_u64 * 8], self.len_u1)
+        (
+            unsafe { self.inner.cast_slice::<u64>(len_u64) },
+            self.len_u1,
+        )
     }
 
     #[inline]
@@ -135,9 +144,12 @@ impl ReadBitmap for VecBitmap {
 
 impl WriteBitmap for VecBitmap {
     #[inline]
-    fn aligned_u64_mut(&mut self) -> (&mut [u8], usize) {
+    fn aligned_u64s_mut(&mut self) -> (&mut [u64], usize) {
         let len_u64 = (self.len_u1 + 63) / 64;
-        (&mut self.inner.as_slice_mut()[..len_u64 * 8], self.len_u1)
+        (
+            unsafe { self.inner.cast_slice_mut::<u64>(len_u64) },
+            self.len_u1,
+        )
     }
 
     #[inline]
@@ -176,12 +188,14 @@ impl AppendBitmap for VecBitmap {
 
     #[inline]
     fn extend<T: ReadBitmap + ?Sized>(&mut self, that: &T) -> Result<()> {
-        let (tbm, tlen) = that.aligned_u64();
+        let (tbm, tlen) = that.aligned_u64s();
         // reserve space to make sure capacity is still multiple of 8
         let orig_len = self.len();
         let tgt_len = orig_len + tlen;
         self.reserve(tgt_len);
-        super::copy_bits(self.inner.as_slice_mut(), orig_len, tbm, tlen);
+        let tgt_len_u64 = (tgt_len + 63) / 64;
+        let dst = unsafe { self.inner.cast_slice_mut::<u64>(tgt_len_u64) };
+        super::copy_bits(dst, orig_len, tbm, tlen);
         self.set_len(tgt_len)
     }
 
@@ -191,7 +205,7 @@ impl AppendBitmap for VecBitmap {
         that: &T,
         range: Range<usize>,
     ) -> Result<()> {
-        let (tbm, tlen) = that.aligned_u64();
+        let (tbm, tlen) = that.aligned_u64s();
         if range.end > tlen {
             return Err(Error::IndexOutOfBound(format!(
                 "extend range {:?} larger than column length {}",
@@ -202,7 +216,9 @@ impl AppendBitmap for VecBitmap {
         let orig_len = self.len();
         let tgt_len = orig_len + range_len;
         self.reserve(tgt_len);
-        super::copy_bits_range(self.inner.as_slice_mut(), orig_len, tbm, range);
+        let tgt_len_u64 = (tgt_len + 63) / 64;
+        let dst = unsafe { self.inner.cast_slice_mut::<u64>(tgt_len_u64) };
+        super::copy_bits_range(dst, orig_len, tbm, range);
         self.set_len(tgt_len)
     }
 
