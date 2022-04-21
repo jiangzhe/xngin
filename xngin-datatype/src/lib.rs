@@ -244,6 +244,25 @@ impl PreciseType {
             PreciseType::Compound => Cow::Borrowed("compound"),
         }
     }
+
+    #[inline]
+    pub fn val_len(&self) -> Option<u64> {
+        match self {
+            PreciseType::Unknown => None,
+            PreciseType::Null => None,
+            PreciseType::Int(bytes, _) => Some(*bytes as u64),
+            PreciseType::Decimal(..) => {
+                todo!("decimal not supported")
+            }
+            PreciseType::Float(bytes) => Some(*bytes as u64),
+            PreciseType::Bool => None, // bool does not have own length, but be compacted as bitmap
+            PreciseType::Date => Some(4),
+            PreciseType::Time(_) | PreciseType::Datetime(_) => Some(12),
+            PreciseType::Interval => None,
+            PreciseType::Char(..) | PreciseType::Varchar(..) => None,
+            PreciseType::Compound => None,
+        }
+    }
 }
 
 impl TryFrom<[u8; 8]> for PreciseType {
@@ -371,6 +390,26 @@ pub enum RuntimeType {
     Null,
     Unknown,
 }
+
+pub trait StaticTyped {
+    /// Returns static precise type
+    fn static_pty() -> PreciseType;
+}
+
+macro_rules! impl_static_typed {
+    ($ty:ty, $expr:expr) => {
+        impl StaticTyped for $ty {
+            #[inline]
+            fn static_pty() -> PreciseType {
+                $expr
+            }
+        }
+    };
+}
+
+impl_static_typed!(i32, PreciseType::i32());
+impl_static_typed!(i64, PreciseType::i64());
+impl_static_typed!(u64, PreciseType::u64());
 
 pub trait Typed {
     /// Returns precise type

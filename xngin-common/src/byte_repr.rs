@@ -1,4 +1,5 @@
 use smallvec::{smallvec, SmallVec};
+use std::io;
 
 pub trait ByteRepr: Default + Copy {
     fn to_bytes(&self) -> SmallVec<[u8; 16]>;
@@ -7,15 +8,9 @@ pub trait ByteRepr: Default + Copy {
 
     fn write_bytes(&self, buf: &mut [u8]);
 
-    #[inline]
-    fn allow_memcpy() -> bool {
-        false
-    }
+    fn memcpy(src: &[Self], tgt: &mut [u8]);
 
-    #[inline]
-    fn memcpy(_src: &[Self], _tgt: &mut [u8]) {
-        panic!("memcpy not allowed")
-    }
+    fn write_all<W: io::Write>(writer: &mut W, src: &[Self]) -> io::Result<usize>;
 }
 
 macro_rules! impl_num {
@@ -38,11 +33,6 @@ macro_rules! impl_num {
             }
 
             #[inline]
-            fn allow_memcpy() -> bool {
-                true
-            }
-
-            #[inline]
             fn memcpy(src: &[Self], tgt: &mut [u8]) {
                 use std::mem::size_of;
                 assert_eq!(tgt.len(), src.len() * size_of::<$ty>());
@@ -56,6 +46,15 @@ macro_rules! impl_num {
                     );
                     tgt.copy_from_slice(src);
                 }
+            }
+
+            #[inline]
+            fn write_all<W: io::Write>(writer: &mut W, src: &[Self]) -> io::Result<usize> {
+                use std::mem::size_of;
+                let n_bytes = src.len() * size_of::<$ty>();
+                let src = unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u8, n_bytes) };
+                writer.write_all(src)?;
+                Ok(n_bytes)
             }
         }
     };
@@ -82,13 +81,14 @@ impl ByteRepr for u8 {
     }
 
     #[inline]
-    fn allow_memcpy() -> bool {
-        true
-    }
-
-    #[inline]
     fn memcpy(src: &[u8], tgt: &mut [u8]) {
         assert_eq!(tgt.len(), src.len());
         tgt.copy_from_slice(src);
+    }
+
+    #[inline]
+    fn write_all<W: io::Write>(writer: &mut W, src: &[u8]) -> io::Result<usize> {
+        writer.write_all(src)?;
+        Ok(src.len())
     }
 }

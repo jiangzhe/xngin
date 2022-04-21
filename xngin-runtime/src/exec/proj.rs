@@ -71,10 +71,7 @@ impl Work for ProjWork {
     async fn run(self) -> Result<Block> {
         self.eval_plan
             .eval(&self.block)
-            .map(|attrs| Block {
-                len: self.block.len,
-                attrs,
-            })
+            .map(Block::new)
             .map_err(Into::into)
     }
 }

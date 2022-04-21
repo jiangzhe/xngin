@@ -5,9 +5,9 @@ use std::mem;
 use xngin_catalog::TableID;
 use xngin_datatype::{PreciseType, Typed};
 use xngin_expr::{Const, DataSourceID, Expr, ExprKind, FuncKind, QueryID};
-use xngin_storage::block::Attr;
+use xngin_storage::attr::Attr;
 use xngin_storage::block::Block;
-use xngin_storage::codec::{Codec, SingleCodec};
+use xngin_storage::codec::Single;
 
 /// Eval is similar to [`xngin_expr::Expr`], but only for evaluation.
 /// It supports deterministic scalar expressions and is restricted to
@@ -205,7 +205,7 @@ impl<T: DataSourceID> EvalPlan<T> {
 
     #[inline]
     pub fn eval(&self, block: &Block) -> Result<Vec<Attr>> {
-        assert!(block.attrs.len() >= self.input.len());
+        assert!(block.data.len() >= self.input.len());
         let mut cache: EvalCache = (0..self.evals.len())
             .map(|_| CacheEntry::default())
             .collect();
@@ -230,14 +230,9 @@ impl<T: DataSourceID> EvalPlan<T> {
                     let ent = cache.get_mut(*idx).ok_or(Error::FailToFetchEvalCache)?;
                     match mem::take(ent) {
                         CacheEntry::Empty => return Err(Error::FailToFetchEvalCache),
-                        CacheEntry::Some(codec, ty) => {
-                            let ext = Attr {
-                                ty,
-                                codec,
-                                psma: None,
-                            };
+                        CacheEntry::Some(attr) => {
                             let idx = output.len();
-                            output.push(ext);
+                            output.push(attr);
                             *ent = CacheEntry::Taken(idx); // update output index back
                         }
                         CacheEntry::Taken(out_idx) => {
@@ -263,16 +258,19 @@ impl<T: DataSourceID> EvalPlan<T> {
                         self.eval_arith(input, cache, *kind, &args[0], &args[1])
                     }
                 }?;
-                self.store(cache, *idx, res, e.ty);
+                debug_assert_eq!(e.ty, res.ty);
+                self.store(cache, *idx, res);
                 Ok(EvalRef::Cache(*idx))
             }
         }
     }
 
     #[inline]
-    fn eval_const(&self, input: &Block, c: &Const) -> Result<Codec> {
+    fn eval_const(&self, input: &Block, c: &Const) -> Result<Attr> {
         let res = match c {
-            Const::I64(i) => Codec::Single(SingleCodec::new(*i, input.len)),
+            Const::I64(i) => {
+                Attr::new_single(PreciseType::i64(), Single::new(*i, input.n_records()))
+            }
             _ => todo!(),
         };
         Ok(res)
@@ -286,40 +284,35 @@ impl<T: DataSourceID> EvalPlan<T> {
         kind: ArithKind,
         lhs: &Eval,
         rhs: &Eval,
-    ) -> Result<Codec> {
+    ) -> Result<Attr> {
         let l_idx = self.eval_single(input, cache, lhs)?;
         let r_idx = self.eval_single(input, cache, rhs)?;
-        let (l, _) = self.load_res(input, cache, l_idx)?;
-        let (r, _) = self.load_res(input, cache, r_idx)?;
-        kind.eval(l, lhs.ty, r, rhs.ty)
+        let l = self.load_res(input, cache, l_idx)?;
+        let r = self.load_res(input, cache, r_idx)?;
+        kind.eval(l, r)
     }
 
     #[inline]
-    fn store(&self, cache: &mut EvalCache, idx: usize, codec: Codec, ty: PreciseType) {
+    fn store(&self, cache: &mut EvalCache, idx: usize, attr: Attr) {
         assert!(idx < cache.len());
-        cache[idx] = CacheEntry::Some(codec, ty);
+        cache[idx] = CacheEntry::Some(attr);
     }
 
     #[inline]
-    fn load<'a>(&self, cache: &'a EvalCache, idx: usize) -> Option<(&'a Codec, PreciseType)> {
+    fn load<'a>(&self, cache: &'a EvalCache, idx: usize) -> Option<&'a Attr> {
         cache.get(idx).and_then(|v| match v {
-            CacheEntry::Some(c, ty) => Some((c, *ty)),
+            CacheEntry::Some(attr) => Some(attr),
             _ => None,
         })
     }
 
     #[inline]
-    fn load_res<'a>(
-        &self,
-        input: &'a Block,
-        cache: &'a EvalCache,
-        r: EvalRef,
-    ) -> Result<(&'a Codec, PreciseType)> {
+    fn load_res<'a>(&self, input: &'a Block, cache: &'a EvalCache, r: EvalRef) -> Result<&'a Attr> {
         let res = match r {
-            EvalRef::Input(in_idx) => input.attrs.get(in_idx).map(|attr| (&attr.codec, attr.ty)),
+            EvalRef::Input(in_idx) => input.data.get(in_idx),
             EvalRef::Cache(eval_idx) => self.load(cache, eval_idx),
         };
-        res.ok_or(Error::MissingCodec)
+        res.ok_or(Error::MissingAttr)
     }
 }
 
@@ -333,7 +326,7 @@ pub type EvalCache = Vec<CacheEntry>;
 #[derive(Debug)]
 pub enum CacheEntry {
     Empty,
-    Some(Codec, PreciseType),
+    Some(Attr),
     /// Taken is a special cases that the value is taken
     /// for output, but maybe other outputs also require
     /// it, so we leave the index and let latter to copy it
@@ -353,7 +346,6 @@ mod tests {
     use super::*;
     use xngin_expr::infer::fix_rec;
     use xngin_expr::QueryID;
-    use xngin_storage::codec::FlatCodec;
 
     #[test]
     fn test_build_eval() {
@@ -415,17 +407,9 @@ mod tests {
     #[test]
     fn test_run_eval() {
         let size = 1024i32;
-        let codec1 = Codec::Flat(FlatCodec::from((0..size).into_iter().map(|i| i as i64)));
-        let attr1 = Attr {
-            ty: PreciseType::i64(),
-            codec: codec1,
-            psma: None,
-        };
+        let attr1 = Attr::from((0..size).into_iter().map(|i| i as i64));
         let attr2 = attr1.to_owned();
-        let block = Block {
-            len: size as usize,
-            attrs: vec![attr1, attr2],
-        };
+        let block = Block::new(vec![attr1, attr2]);
         let col1 = Expr::query_col(QueryID::from(0), 0);
         let col2 = Expr::query_col(QueryID::from(0), 1);
         // select c1
@@ -434,9 +418,8 @@ mod tests {
         let res = plan.eval(&block).unwrap();
         assert_eq!(1, res.len());
         assert_eq!(PreciseType::i64(), res[0].ty);
-        let f = res[0].codec.as_flat().unwrap();
-        let (bm, data) = f.view::<i64>();
-        assert!(bm.is_none());
+        let data: &[i64] = res[0].codec.as_array().unwrap().cast_slice();
+        assert!(res[0].validity.is_none());
         let expected: Vec<_> = (0..1024).into_iter().map(|i| i as i64).collect();
         assert_eq!(&expected, data);
         // select c1 + 1
@@ -448,9 +431,8 @@ mod tests {
         let res = plan.eval(&block).unwrap();
         assert_eq!(1, res.len());
         assert_eq!(PreciseType::i64(), res[0].ty);
-        let f = res[0].codec.as_flat().unwrap();
-        let (bm, data) = f.view::<i64>();
-        assert!(bm.is_none());
+        let data: &[i64] = res[0].codec.as_array().unwrap().cast_slice();
+        assert!(res[0].validity.is_none());
         let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + 1) as i64).collect();
         assert_eq!(&expected, data);
         // select c1 + 1, c1 + 1
@@ -470,13 +452,11 @@ mod tests {
         assert_eq!(PreciseType::i64(), res[0].ty);
         assert_eq!(PreciseType::i64(), res[1].ty);
         let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + 1) as i64).collect();
-        let f = res[0].codec.as_flat().unwrap();
-        let (bm, data) = f.view::<i64>();
-        assert!(bm.is_none());
+        let data: &[i64] = res[0].codec.as_array().unwrap().cast_slice();
+        assert!(res[0].validity.is_none());
         assert_eq!(&expected, data);
-        let f = res[1].codec.as_flat().unwrap();
-        let (bm, data) = f.view::<i64>();
-        assert!(bm.is_none());
+        let data: &[i64] = res[1].codec.as_array().unwrap().cast_slice();
+        assert!(res[1].validity.is_none());
         assert_eq!(&expected, data);
         // select c1 + c2
         let es = vec![Expr::func(FuncKind::Add, vec![col1.clone(), col2.clone()])];
@@ -484,9 +464,8 @@ mod tests {
         let res = plan.eval(&block).unwrap();
         assert_eq!(1, res.len());
         assert_eq!(PreciseType::i64(), res[0].ty);
-        let f = res[0].codec.as_flat().unwrap();
-        let (bm, data) = f.view::<i64>();
-        assert!(bm.is_none());
+        let data: &[i64] = res[0].codec.as_array().unwrap().cast_slice();
+        assert!(res[0].validity.is_none());
         let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + i) as i64).collect();
         assert_eq!(&expected, data);
         // select c1 + 1, c1 + c2
@@ -502,14 +481,12 @@ mod tests {
         assert_eq!(2, res.len());
         assert_eq!(PreciseType::i64(), res[0].ty);
         assert_eq!(PreciseType::i64(), res[1].ty);
-        let f = res[0].codec.as_flat().unwrap();
-        let (bm, data) = f.view::<i64>();
-        assert!(bm.is_none());
+        let data: &[i64] = res[0].codec.as_array().unwrap().cast_slice();
+        assert!(res[0].validity.is_none());
         let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + 1) as i64).collect();
         assert_eq!(&expected, data);
-        let f = res[1].codec.as_flat().unwrap();
-        let (bm, data) = f.view::<i64>();
-        assert!(bm.is_none());
+        let data: &[i64] = res[1].codec.as_array().unwrap().cast_slice();
+        assert!(res[1].validity.is_none());
         let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + i) as i64).collect();
         assert_eq!(&expected, data);
     }

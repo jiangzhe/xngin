@@ -114,23 +114,14 @@ mod tests {
     use xngin_datatype::PreciseType;
     use xngin_expr::infer::fix_rec;
     use xngin_expr::{Const, Expr, FuncKind, QueryID};
-    use xngin_storage::block::Attr;
-    use xngin_storage::codec::{Codec, FlatCodec};
+    use xngin_storage::attr::Attr;
 
     #[test]
     fn test_proj_exec() {
         let size = 1024i32;
-        let codec1 = Codec::Flat(FlatCodec::from((0..size).into_iter().map(|i| i as i64)));
-        let attr1 = Attr {
-            ty: PreciseType::i64(),
-            codec: codec1,
-            psma: None,
-        };
+        let attr1 = Attr::from((0..size).into_iter().map(|i| i as i64));
         let attr2 = attr1.to_owned();
-        let block = Block {
-            len: size as usize,
-            attrs: vec![attr1, attr2],
-        };
+        let block = Block::new(vec![attr1, attr2]);
         let col1 = Expr::query_col(QueryID::from(0), 0);
         // select c1 + 1
         let es = vec![Expr::func(
@@ -153,13 +144,12 @@ mod tests {
             let mut stream = downstream_in.to_stream(&ctx.cancel).unwrap();
             let res = stream.next().await.unwrap();
             if let Cancellable::Ready(res) = res {
-                assert_eq!(1024, res.len);
-                let res = res.attrs;
+                assert_eq!(1024, res.n_records());
+                let res = res.data;
                 assert_eq!(1, res.len());
                 assert_eq!(PreciseType::i64(), res[0].ty);
-                let f = res[0].codec.as_flat().unwrap();
-                let (bm, data) = f.view::<i64>();
-                assert!(bm.is_none());
+                let data: &[i64] = res[0].codec.as_array().unwrap().cast_slice();
+                assert!(res[0].validity.is_none());
                 let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + 1) as i64).collect();
                 assert_eq!(&expected, data);
             } else {

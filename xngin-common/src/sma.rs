@@ -1,17 +1,16 @@
-mod lookup;
-
 use crate::bitmap::{bitmap_first_true, bitmap_range_iter};
-use lookup::{VecLookup, ViewLookup};
 use smallvec::SmallVec;
 use std::ops::Index;
+use std::sync::Arc;
 
-pub struct PSMA {
+#[derive(Debug)]
+pub struct SMA {
     pub min: SmallVec<[u8; 16]>,
     pub max: SmallVec<[u8; 16]>,
     pub pos: PosTbl,
 }
 
-impl PSMA {
+impl SMA {
     #[inline]
     pub fn range_i32(&self, val: i32) -> (u16, u16) {
         let min = i32::from_ne_bytes(self.min[..4].try_into().unwrap());
@@ -64,20 +63,20 @@ impl PSMA {
                     }
                     idx += n;
                 }
-                PosTbl::Owned(VecLookup::new(lookup.into_boxed_slice()))
+                PosTbl::new_owned(lookup.into_boxed_slice())
             } else {
                 todo!()
             };
             let min = min.to_ne_bytes().iter().cloned().collect();
             let max = max.to_ne_bytes().iter().cloned().collect();
-            Some(PSMA { min, max, pos })
+            Some(SMA { min, max, pos })
         } else {
-            Some(PSMA::from(data))
+            Some(SMA::from(data))
         }
     }
 }
 
-impl From<&[i32]> for PSMA {
+impl From<&[i32]> for SMA {
     #[inline]
     fn from(src: &[i32]) -> Self {
         assert!(!src.is_empty() && src.len() < u16::MAX as usize);
@@ -98,7 +97,7 @@ impl From<&[i32]> for PSMA {
                     slot.1 = i + 1;
                 }
             }
-            PosTbl::Owned(VecLookup::new(lookup.into_boxed_slice()))
+            PosTbl::new_owned(lookup.into_boxed_slice())
         } else if dom_size <= u16::MAX as u32 {
             // build with 2-byte delta lookup
             todo!()
@@ -108,7 +107,7 @@ impl From<&[i32]> for PSMA {
         };
         let min = min.to_ne_bytes().iter().cloned().collect();
         let max = max.to_ne_bytes().iter().cloned().collect();
-        PSMA { min, max, pos }
+        SMA { min, max, pos }
     }
 }
 
@@ -118,19 +117,82 @@ fn min_max_i32s(min: i32, max: i32, src: &[i32]) -> (i32, i32) {
         .fold((min, max), |acc, item| (acc.0.min(*item), acc.1.max(*item)))
 }
 
+/// PSMA lookup table.
+/// The general idea is to split each value into bytes,
+/// and store the index range based on first non-zero byte
+/// of each value.
+/// If we lookup for specific value, we can lookup the
+/// range in this table. then perform range scan over
+/// the real data.
+///
+/// The index range is always two 160bit integer, indicating
+/// the start and end(exclusive) of such value with identical
+/// prefix.
+#[derive(Debug)]
 pub enum PosTbl {
-    Borrowed(ViewLookup),
-    Owned(VecLookup),
+    Borrowed {
+        ptr: Arc<[u8]>,
+        len: usize,
+        start_bytes: usize,
+    },
+    Owned {
+        inner: Box<[(u16, u16)]>,
+    },
+}
+
+impl PosTbl {
+    /// Create an owned lookup table.
+    #[inline]
+    pub fn new_owned(data: Box<[(u16, u16)]>) -> Self {
+        PosTbl::Owned { inner: data }
+    }
+
+    #[inline]
+    pub fn new_borrowed(ptr: Arc<[u8]>, len: usize, start_bytes: usize) -> Self {
+        assert!(start_bytes + std::mem::size_of::<(u16, u16)>() * len <= ptr.len());
+        PosTbl::Borrowed {
+            ptr,
+            len,
+            start_bytes,
+        }
+    }
+
+    /// Returns length of lookup table.
+    #[inline]
+    pub fn n_slots(&self) -> usize {
+        match self {
+            PosTbl::Borrowed { len, .. } => *len,
+            PosTbl::Owned { inner } => inner.len(),
+        }
+    }
+
+    /// Returns the range lookup table.
+    #[inline]
+    pub fn table(&self) -> &[(u16, u16)] {
+        match self {
+            PosTbl::Owned { inner } => inner,
+            PosTbl::Borrowed {
+                ptr,
+                len,
+                start_bytes,
+            } => {
+                // SAFETY
+                //
+                // Borrowed lookup table is immutable and all invariants are guaranteed.
+                unsafe {
+                    let ptr = ptr.as_ptr().add(*start_bytes);
+                    std::slice::from_raw_parts(ptr as *const (u16, u16), *len)
+                }
+            }
+        }
+    }
 }
 
 impl Index<usize> for PosTbl {
     type Output = (u16, u16);
     #[inline]
     fn index(&self, index: usize) -> &Self::Output {
-        match self {
-            PosTbl::Borrowed(view) => &view[index],
-            PosTbl::Owned(own) => &own[index],
-        }
+        &self.table()[index]
     }
 }
 

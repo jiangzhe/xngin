@@ -10,6 +10,7 @@ categories = ["database"]
 repository = "https://github.com/jiangzhe/xngin/xngin-bench/"
 
 [dependencies]
+xngin-datatype = {version = "0.1.0", path = "../xngin-datatype"}
 xngin-common = {version = "0.1.0", path = "../xngin-common"}
 xngin-compute = {version = "0.1.0", path = "../xngin-compute"}
 xngin-storage = {version = "0.1.0", path = "../xngin-storage"}
@@ -19,10 +20,6 @@ pprof = {version = "0.4", features = ["flamegraph", "criterion"]}
 
 [dev-dependencies]
 bytemuck = "1.7"
-
-[[bench]]
-name = "bitmap_foreach"
-harness = false
 
 [[bench]]
 name = "bitmap_shift"
