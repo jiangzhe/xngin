@@ -5,8 +5,8 @@ use thiserror::Error;
 pub enum Error {
     #[error("Row number mismtach")]
     RowNumberMismatch,
-    #[error("Missing codec")]
-    MissingCodec,
+    #[error("Missing attribute")]
+    MissingAttr,
     #[error("Unsupported arithmetic operation")]
     UnsupportedArithOp,
     #[error("Invalid attribute to evaluate")]

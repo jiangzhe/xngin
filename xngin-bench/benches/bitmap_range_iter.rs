@@ -1,25 +1,25 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::{thread_rng, Rng};
-use xngin_common::bitmap::{AppendBitmap, ReadBitmap, VecBitmap};
+use xngin_common::bitmap::Bitmap;
 
 fn bench_range_iter(c: &mut Criterion) {
     const N: usize = 10240;
     const PART_N: usize = 256;
-    let mut bm0 = VecBitmap::with_capacity(N);
-    let mut bm1 = VecBitmap::with_capacity(N);
-    let mut bm2 = VecBitmap::with_capacity(N);
-    let mut bm3 = VecBitmap::with_capacity(N); // continuous bitmap
+    let mut bm0 = Bitmap::with_capacity(N);
+    let mut bm1 = Bitmap::with_capacity(N);
+    let mut bm2 = Bitmap::with_capacity(N);
+    let mut bm3 = Bitmap::with_capacity(N); // continuous bitmap
     let mut thd_rng = thread_rng();
     let mut part = (thd_rng.gen::<bool>(), 0);
     for _ in 0..N {
-        bm0.add(thd_rng.gen()).unwrap();
-        bm1.add(true).unwrap();
-        bm2.add(false).unwrap();
+        bm0.add(thd_rng.gen());
+        bm1.add(true);
+        bm2.add(false);
         if part.1 == 0 {
             part.0 = !part.0;
             part.1 = thd_rng.gen_range(0..PART_N);
         }
-        bm3.add(part.0).unwrap();
+        bm3.add(part.0);
         if part.1 > 0 {
             part.1 -= 1;
         }
@@ -38,7 +38,7 @@ fn bench_range_iter(c: &mut Criterion) {
     });
 }
 
-fn consume_range_iter(bm: &VecBitmap) {
+fn consume_range_iter(bm: &Bitmap) {
     let mut nt = 0;
     let mut nf = 0;
     for (b, n) in bm.range_iter() {

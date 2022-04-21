@@ -8,6 +8,12 @@ use std::ptr::NonNull;
 struct U128(u128);
 const ALIGNMENT: usize = 16;
 
+/// align length to 16 bytes.
+#[inline]
+pub fn align_u128(v: u64) -> u64 {
+    (v + 15) & !15
+}
+
 /// This method allocate memory area with alignment of 16 bytes.
 /// The unit of input capacity is byte.
 /// If it's not multiple of 16, it will be rounded up to.
@@ -39,7 +45,7 @@ pub(crate) unsafe fn free_aligned(ptr: *mut u8, cap: usize) {
 }
 
 /// RawArray is a safe abstraction of an aligned byte array.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct RawArray {
     ptr: NonNull<u8>,
     cap_u8: usize,
@@ -47,6 +53,15 @@ pub struct RawArray {
 
 unsafe impl Send for RawArray {}
 unsafe impl Sync for RawArray {}
+
+impl Clone for RawArray {
+    #[inline]
+    fn clone(&self) -> Self {
+        let mut res = RawArray::with_capacity(self.cap_u8);
+        res.as_slice_mut().copy_from_slice(self.as_slice());
+        res
+    }
+}
 
 impl Drop for RawArray {
     #[inline]
@@ -81,7 +96,7 @@ impl RawArray {
     pub fn as_slice(&self) -> &[u8] {
         // # SAFETY
         //
-        // AlignedVec is not allowed to realloc, so capacity is always valid.
+        // RawArray is not allowed to realloc, so capacity is always valid.
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const u8, self.cap_u8) }
     }
 
@@ -90,7 +105,7 @@ impl RawArray {
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
         // # SAFETY
         //
-        // AlignedVec is not allowed to realloc, so capacity is always valid.
+        // RawArray is not allowed to realloc, so capacity is always valid.
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_mut(), self.cap_u8) }
     }
 
