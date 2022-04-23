@@ -11,6 +11,18 @@ pub struct SMA {
 }
 
 impl SMA {
+    /// Returns total bytes of min/max values.
+    #[inline]
+    pub fn val_bytes(&self) -> usize {
+        self.min.len() + self.max.len()
+    }
+
+    /// Returns total bytes of position lookup table.
+    #[inline]
+    pub fn pos_bytes(&self) -> usize {
+        self.pos.total_bytes()
+    }
+
     #[inline]
     pub fn range_i32(&self, val: i32) -> (u16, u16) {
         let min = i32::from_ne_bytes(self.min[..4].try_into().unwrap());
@@ -147,6 +159,7 @@ impl PosTbl {
         PosTbl::Owned { inner: data }
     }
 
+    /// Create a borrowed lookup table.
     #[inline]
     pub fn new_borrowed(ptr: Arc<[u8]>, len: usize, start_bytes: usize) -> Self {
         assert!(start_bytes + std::mem::size_of::<(u16, u16)>() * len <= ptr.len());
@@ -164,6 +177,12 @@ impl PosTbl {
             PosTbl::Borrowed { len, .. } => *len,
             PosTbl::Owned { inner } => inner.len(),
         }
+    }
+
+    /// Returns total bytes of lookup table
+    #[inline]
+    pub fn total_bytes(&self) -> usize {
+        self.n_slots() * std::mem::size_of::<(u16, u16)>()
     }
 
     /// Returns the range lookup table.
@@ -184,6 +203,30 @@ impl PosTbl {
                     std::slice::from_raw_parts(ptr as *const (u16, u16), *len)
                 }
             }
+        }
+    }
+
+    /// Returns raw byte slice.
+    #[inline]
+    pub fn raw(&self) -> &[u8] {
+        match self {
+            PosTbl::Owned { inner } => {
+                let len = inner.len();
+                unsafe {
+                    std::slice::from_raw_parts(
+                        inner.as_ptr() as *const u8,
+                        len * std::mem::size_of::<(u16, u16)>(),
+                    )
+                }
+            }
+            PosTbl::Borrowed {
+                ptr,
+                len,
+                start_bytes,
+            } => unsafe {
+                let ptr = ptr.as_ptr().add(*start_bytes);
+                std::slice::from_raw_parts(ptr, *len * std::mem::size_of::<(u16, u16)>())
+            },
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::alloc::RawArray;
+use crate::alloc::{align_u128, RawArray};
 use crate::byte_repr::ByteRepr;
 use std::mem::size_of;
 use std::slice::from_raw_parts;
@@ -40,7 +40,7 @@ impl Array {
     #[inline]
     pub fn new_borrowed<T: ByteRepr>(ptr: Arc<[u8]>, len: usize, start_bytes: usize) -> Self {
         debug_assert!((ptr.as_ptr() as usize + start_bytes) % std::mem::align_of::<T>() == 0); // check alignement
-        let end_bytes = start_bytes + std::mem::size_of::<T>() * len;
+        let end_bytes = align_u128(start_bytes + std::mem::size_of::<T>() * len);
         debug_assert!(end_bytes <= ptr.len());
         Array::Borrowed {
             ptr,
@@ -242,19 +242,20 @@ mod tests {
 
     #[test]
     fn test_borrowed_array() {
-        let mut bytes = vec![0; 12];
+        let mut bytes = vec![0; 16];
         bytes[0..4].copy_from_slice(&1i32.to_ne_bytes());
         bytes[4..8].copy_from_slice(&2i32.to_ne_bytes());
         bytes[8..12].copy_from_slice(&3i32.to_ne_bytes());
+        bytes[12..16].copy_from_slice(&4i32.to_ne_bytes());
         let input = bytes.clone();
         let raw: Arc<[u8]> = Arc::from(input.into_boxed_slice());
-        let array = Array::new_borrowed::<i32>(raw, 3, 0);
-        assert_eq!(12, array.total_bytes());
+        let array = Array::new_borrowed::<i32>(raw, 4, 0);
+        assert_eq!(16, array.total_bytes());
         assert!(!array.is_empty());
         assert_eq!(&bytes[..], array.raw());
         let mut a2 = array.clone();
         let a2 = a2.to_mut();
-        assert_eq!(array.raw()[..12], a2.raw()[..12]);
+        assert_eq!(array.raw()[..16], a2.raw()[..16]);
         let a3 = Arc::new(array.clone());
         let a4 = Array::clone_to_owned(&a3);
         assert_eq!(a3.cast_slice::<i32>(), a4.cast_slice::<i32>());
@@ -303,9 +304,10 @@ mod tests {
         vec.extend(1i32.to_ne_bytes());
         vec.extend(2i32.to_ne_bytes());
         vec.extend(3i32.to_ne_bytes());
+        vec.extend(4i32.to_ne_bytes());
         let ptr: Arc<[u8]> = Arc::from(vec);
-        let arr = Array::new_borrowed::<i32>(ptr, 3, 0);
+        let arr = Array::new_borrowed::<i32>(ptr, 4, 0);
         let i32s = arr.cast_slice::<i32>();
-        assert_eq!(vec![1, 2, 3], i32s);
+        assert_eq!(vec![1, 2, 3, 4], i32s);
     }
 }

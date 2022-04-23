@@ -6,4 +6,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("invalid format")]
     InvalidFormat,
+    #[error("IO error")]
+    IOError,
 }

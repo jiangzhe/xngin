@@ -52,6 +52,15 @@ impl Codec {
             _ => None,
         }
     }
+
+    /// Returns single codec if match
+    #[inline]
+    pub fn as_single(&self) -> Option<&Single> {
+        match self {
+            Codec::Single(s) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

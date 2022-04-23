@@ -14,6 +14,7 @@ pub use time::{Date, Time};
 
 use static_init::dynamic;
 use std::borrow::Cow;
+use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PreciseType {
@@ -245,17 +246,18 @@ impl PreciseType {
         }
     }
 
+    /// Returns value length.
     #[inline]
-    pub fn val_len(&self) -> Option<u64> {
+    pub fn val_len(&self) -> Option<usize> {
         match self {
             PreciseType::Unknown => None,
             PreciseType::Null => None,
-            PreciseType::Int(bytes, _) => Some(*bytes as u64),
+            PreciseType::Int(bytes, _) => Some(*bytes as usize),
             PreciseType::Decimal(..) => {
                 todo!("decimal not supported")
             }
-            PreciseType::Float(bytes) => Some(*bytes as u64),
-            PreciseType::Bool => None, // bool does not have own length, but be compacted as bitmap
+            PreciseType::Float(bytes) => Some(*bytes as usize),
+            PreciseType::Bool => todo!("bool length"), // todo: bool does not have own length, but be compacted as bitmap
             PreciseType::Date => Some(4),
             PreciseType::Time(_) | PreciseType::Datetime(_) => Some(12),
             PreciseType::Interval => None,
@@ -263,12 +265,23 @@ impl PreciseType {
             PreciseType::Compound => None,
         }
     }
+
+    /// Write the type in byte format.
+    #[inline]
+    pub fn write_to<W: io::Write>(self, writer: &mut W) -> Result<usize> {
+        let buf: [u8; 4] = self.into();
+        writer.write_all(&buf).map_err(|_| Error::IOError)?;
+        Ok(4)
+    }
 }
 
-impl TryFrom<[u8; 8]> for PreciseType {
+impl<'a> TryFrom<&'a [u8]> for PreciseType {
     type Error = Error;
     #[inline]
-    fn try_from(src: [u8; 8]) -> Result<Self> {
+    fn try_from(src: &[u8]) -> Result<Self> {
+        if src.len() < 4 {
+            return Err(Error::InvalidFormat);
+        }
         let res = match src[0] {
             0 => PreciseType::Unknown,
             1 => PreciseType::Null,
@@ -318,10 +331,10 @@ impl TryFrom<[u8; 8]> for PreciseType {
     }
 }
 
-impl From<PreciseType> for [u8; 8] {
+impl From<PreciseType> for [u8; 4] {
     #[inline]
     fn from(src: PreciseType) -> Self {
-        let mut tgt = [0u8; 8];
+        let mut tgt = [0u8; 4];
         match src {
             PreciseType::Unknown => (),
             PreciseType::Null => tgt[0] = 1,
@@ -492,43 +505,34 @@ mod tests {
     #[test]
     fn test_serde_precise_type() {
         for (ty, bytes) in vec![
-            (PreciseType::Unknown, [0u8; 8]),
-            (PreciseType::Null, [1u8, 0, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Int(4, false), [2u8, 4, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Int(4, true), [2u8, 4, 1, 0, 0, 0, 0, 0]),
-            (PreciseType::Int(8, false), [2u8, 8, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Decimal(10, 0), [3u8, 10, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Decimal(18, 2), [3u8, 18, 2, 0, 0, 0, 0, 0]),
-            (PreciseType::Float(4), [4u8, 4, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Float(8), [4u8, 8, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Bool, [5u8, 0, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Date, [6u8, 0, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Time(0), [7u8, 0, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Time(6), [7u8, 6, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Datetime(0), [8u8, 0, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Datetime(3), [8u8, 3, 0, 0, 0, 0, 0, 0]),
-            (PreciseType::Interval, [9u8, 0, 0, 0, 0, 0, 0, 0]),
-            (
-                PreciseType::Char(1, Collation::Ascii),
-                [10u8, 1, 0, 1, 0, 0, 0, 0],
-            ),
-            (
-                PreciseType::Char(1024, Collation::Utf8mb4),
-                [10u8, 0, 4, 2, 0, 0, 0, 0],
-            ),
+            (PreciseType::Unknown, [0u8; 4]),
+            (PreciseType::Null, [1u8, 0, 0, 0]),
+            (PreciseType::Int(4, false), [2u8, 4, 0, 0]),
+            (PreciseType::Int(4, true), [2u8, 4, 1, 0]),
+            (PreciseType::Int(8, false), [2u8, 8, 0, 0]),
+            (PreciseType::Decimal(10, 0), [3u8, 10, 0, 0]),
+            (PreciseType::Decimal(18, 2), [3u8, 18, 2, 0]),
+            (PreciseType::Float(4), [4u8, 4, 0, 0]),
+            (PreciseType::Float(8), [4u8, 8, 0, 0]),
+            (PreciseType::Bool, [5u8, 0, 0, 0]),
+            (PreciseType::Date, [6u8, 0, 0, 0]),
+            (PreciseType::Time(0), [7u8, 0, 0, 0]),
+            (PreciseType::Time(6), [7u8, 6, 0, 0]),
+            (PreciseType::Datetime(0), [8u8, 0, 0, 0]),
+            (PreciseType::Datetime(3), [8u8, 3, 0, 0]),
+            (PreciseType::Interval, [9u8, 0, 0, 0]),
+            (PreciseType::Char(1, Collation::Ascii), [10u8, 1, 0, 1]),
+            (PreciseType::Char(1024, Collation::Utf8mb4), [10u8, 0, 4, 2]),
             (
                 PreciseType::Varchar(4096, Collation::Binary),
-                [11u8, 0, 16, 3, 0, 0, 0, 0],
+                [11u8, 0, 16, 3],
             ),
-            (
-                PreciseType::Varchar(16, Collation::Ascii),
-                [11u8, 16, 0, 1, 0, 0, 0, 0],
-            ),
-            (PreciseType::Compound, [12u8, 0, 0, 0, 0, 0, 0, 0]),
+            (PreciseType::Varchar(16, Collation::Ascii), [11u8, 16, 0, 1]),
+            (PreciseType::Compound, [12u8, 0, 0, 0]),
         ] {
-            let new_bs = <[u8; 8]>::from(ty);
+            let new_bs = <[u8; 4]>::from(ty);
             assert_eq!(bytes, new_bs);
-            let new_ty = PreciseType::try_from(bytes).unwrap();
+            let new_ty = PreciseType::try_from(&bytes[..]).unwrap();
             assert_eq!(ty, new_ty);
         }
     }
