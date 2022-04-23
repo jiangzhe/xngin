@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use std::sync::Arc;
 use xngin_common::array::Array;
 use xngin_common::bitmap::{bitmap_merge, Bitmap};
-use xngin_common::byte_repr::ByteRepr;
+use xngin_common::repr::ByteRepr;
 use xngin_datatype::PreciseType;
 use xngin_storage::attr::Attr;
 use xngin_storage::codec::{Codec, Single};

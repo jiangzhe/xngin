@@ -7,8 +7,8 @@ use std::sync::Arc;
 use xngin_common::alloc::align_u128;
 use xngin_common::array::Array;
 use xngin_common::bitmap::Bitmap;
-use xngin_common::byte_repr::ByteRepr;
-use xngin_common::sma::{PosTbl, SMA};
+use xngin_common::repr::ByteRepr;
+use xngin_common::sma::{PosKind, PosTbl, SMA};
 use xngin_datatype::{PreciseType, StaticTyped};
 
 // attribute header level offset
@@ -56,7 +56,7 @@ pub struct Attr {
     pub ty: PreciseType,
     pub validity: Option<Arc<Bitmap>>,
     pub codec: Codec,
-    pub sma: Option<SMA>,
+    pub sma: Option<Arc<SMA>>,
 }
 
 impl Attr {
@@ -143,7 +143,8 @@ impl Attr {
                     fields.insert(SerFields::SMA);
                     // array codec does not allow varlen values, so sma values must be fixed length.
                     // encoded as length + sma
-                    let sma_bytes = align_u128(sma.val_bytes()) + align_u128(sma.pos_bytes());
+                    let sma_bytes = align_u128(sma.val_bytes() + sma.kind_bytes())
+                        + align_u128(sma.pos_bytes());
                     (offset, align_u128(offset + sma_bytes))
                 } else {
                     (offset, offset)
@@ -188,7 +189,7 @@ impl Attr {
                         // fill gap
                         buf.extend(std::iter::repeat(0u8).take(total_bytes - buf.len()));
                     }
-                    writer.write_all(&buf)?;
+                    writer.write_all(buf)?;
                     Ok(buf.len())
                 } else {
                     Ok(0)
@@ -205,22 +206,19 @@ impl Attr {
                 if let Some(sma) = self.sma.as_ref() {
                     buf.clear();
                     // array codec does not support var length values.
-                    // min value
+                    // min value, max value and kind
                     buf.extend_from_slice(&sma.min);
-                    let padding = align_u128(buf.len()) - buf.len();
-                    if padding > 0 {
-                        buf.extend(std::iter::repeat(0u8).take(padding));
-                    }
-                    // max value
                     buf.extend_from_slice(&sma.max);
+                    buf.push(sma.kind as u8);
                     let padding = align_u128(buf.len()) - buf.len();
                     if padding > 0 {
                         buf.extend(std::iter::repeat(0u8).take(padding));
                     }
-                    writer.write_all(&buf)?;
+                    // kind
+                    writer.write_all(buf)?;
                     n += buf.len();
                     // position lookup
-                    n += write_align_u128(sma.pos.raw(), writer, buf)?;
+                    n += write_align_u128(sma.raw_pos_tbl(), writer, buf)?;
                 }
                 Ok(n)
             }
@@ -267,7 +265,7 @@ impl Attr {
                 };
                 let sma = if header.format_desc.fields.contains(SerFields::SMA) {
                     let sma = load_fixed_len_sma(raw, header.format_desc.ty, header.offset_sma)?;
-                    Some(sma)
+                    Some(Arc::new(sma))
                 } else {
                     None
                 };
@@ -277,6 +275,39 @@ impl Attr {
                     codec,
                     sma,
                 })
+            }
+        }
+    }
+
+    /// Setup SMA based on array codec.
+    /// If all values are null, this method will convert
+    /// array codec to single codec.
+    #[inline]
+    pub fn setup_sma(&mut self) {
+        if self.sma.is_some() {
+            return; // do not compute agian
+        }
+        // Currently SMA is only available for array codec.
+        if let Codec::Array(a) = &self.codec {
+            let sma = match self.ty {
+                PreciseType::Int(4, false) => {
+                    let data = a.cast_slice::<i32>();
+                    // let sma = SMA::build(data);
+                    if let Some(validity) = self.validity.as_ref() {
+                        SMA::with_validity(data, validity).map(Arc::new)
+                    } else {
+                        Some(Arc::new(SMA::build(data)))
+                    }
+                }
+                _ => todo!(),
+            };
+            if sma.is_none() {
+                // SMA is not available because all values are null.
+                // Update codec to single.
+                self.codec = Codec::Single(Single::new_null(self.n_records()));
+                self.validity = None;
+            } else {
+                self.sma = sma;
             }
         }
     }
@@ -301,20 +332,21 @@ fn load_array(
 #[inline]
 fn load_fixed_len_sma(raw: &Arc<[u8]>, ty: PreciseType, start_bytes: usize) -> Result<SMA> {
     let val_len = ty.val_len().unwrap(); // won't fail
+                                         // read min value
     let mut min = SmallVec::with_capacity(val_len);
     let start = start_bytes;
     let end = start + val_len;
     min.extend_from_slice(&raw[start..end]);
+    // read max value
     let mut max = SmallVec::with_capacity(val_len);
     let (start, end) = (end, end + val_len);
     max.extend_from_slice(&raw[start..end]);
-    let start = align_u128(end);
-    let sma_len = match ty {
-        PreciseType::Int(4, _) => 4 * 256,
-        _ => return Err(Error::DataTypeNotSupported),
-    };
-    let pos = PosTbl::new_borrowed(raw.clone(), sma_len, start);
-    Ok(SMA { min, max, pos })
+    // read kind
+    let kind = PosKind::try_from(raw[end])?;
+    // align and read sma lookup table
+    let start = align_u128(end + 1);
+    let pos = PosTbl::new_borrowed(raw.clone(), kind.n_slots(), start);
+    Ok(SMA::new(min, max, kind, pos))
 }
 
 #[inline]
@@ -324,7 +356,7 @@ fn write_align_u128<W: io::Write>(bs: &[u8], writer: &mut W, buf: &mut Vec<u8>) 
     if total_bytes > bs.len() {
         buf.clear();
         buf.extend(std::iter::repeat(0u8).take(total_bytes - bs.len()));
-        writer.write_all(&buf)?;
+        writer.write_all(buf)?;
     }
     Ok(total_bytes)
 }
@@ -560,18 +592,6 @@ bitflags! {
     }
 }
 
-impl From<SerFormatDesc> for [u8; 8] {
-    #[inline]
-    fn from(src: SerFormatDesc) -> Self {
-        let mut res = [0u8; 8];
-        let ty_bs: [u8; 4] = src.ty.into();
-        res[..4].copy_from_slice(&ty_bs);
-        res[4] = src.method as u8;
-        res[5] = src.fields.bits();
-        res
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,7 +690,8 @@ mod tests {
     fn test_attr_single_store_and_load() {
         use std::io::Cursor;
         let single = Single::new(1i32, 1024);
-        let attr = Attr::new_single(PreciseType::i32(), single);
+        let mut attr = Attr::new_single(PreciseType::i32(), single);
+        attr.setup_sma(); // no-op
         let mut bs: Vec<u8> = Vec::with_capacity(1024);
         let mut cursor = Cursor::new(&mut bs);
         let mut buf = vec![];
@@ -702,5 +723,32 @@ mod tests {
         assert!(new_attr.validity.is_none());
         let vals = new_attr.codec.as_array().unwrap().cast_slice::<i32>();
         assert_eq!(&nums, vals);
+    }
+
+    #[test]
+    fn test_attr_sma_store_and_load() {
+        use std::io::Cursor;
+        let nums: Vec<i32> = (0i32..1024).collect();
+        let mut attr = Attr::from(nums.clone().into_iter());
+        // setup sma
+        attr.setup_sma();
+        assert!(attr.sma.is_some());
+        let mut bs: Vec<u8> = Vec::with_capacity(1024);
+        let mut cursor = Cursor::new(&mut bs);
+        let mut buf = vec![];
+        let (header, total_bytes) = attr.ser_header(0);
+        let written = attr.store(&mut cursor, &mut buf, total_bytes).unwrap();
+        assert_eq!(written, total_bytes);
+        let raw: Arc<[u8]> = Arc::from(bs.into_boxed_slice());
+        let new_attr = Attr::load(&raw, 1024, &header).unwrap();
+        assert_eq!(attr.ty, new_attr.ty);
+        assert!(new_attr.validity.is_none());
+        assert!(new_attr.sma.is_some());
+        let vals = new_attr.codec.as_array().unwrap().cast_slice::<i32>();
+        assert_eq!(&nums, vals);
+        // compare sma tables
+        let sma_tbl = attr.sma.as_ref().map(|sma| sma.pos_tbl()).unwrap();
+        let new_sma_tbl = new_attr.sma.as_ref().map(|sma| sma.pos_tbl()).unwrap();
+        assert_eq!(sma_tbl, new_sma_tbl);
     }
 }

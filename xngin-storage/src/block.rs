@@ -142,9 +142,9 @@ impl RawBlock {
         Self { inner: bytes }
     }
 
-    /// Returns bytes of underlying byte array.
+    /// Returns number of bytes of underlying byte array.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub fn n_bytes(&self) -> usize {
         self.inner.len()
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let written = ser_block.store(&mut cursor, &mut buf).unwrap();
         assert_eq!(total_bytes, written);
         let raw_block = RawBlock::new(Arc::from(bs.into_boxed_slice()));
-        assert_eq!(written, raw_block.len());
+        assert_eq!(written, raw_block.n_bytes());
         assert_eq!(1024, raw_block.n_records());
         assert_eq!(2, raw_block.n_attrs());
         let new_block = raw_block.load_all().unwrap();
@@ -258,7 +258,7 @@ mod tests {
         let written = ser_block.store(&mut cursor, &mut buf).unwrap();
         assert_eq!(total_bytes, written);
         let raw_block = RawBlock::new(Arc::from(bs.into_boxed_slice()));
-        assert_eq!(written, raw_block.len());
+        assert_eq!(written, raw_block.n_bytes());
         assert_eq!(1024, raw_block.n_records());
         assert_eq!(2, raw_block.n_attrs());
         let new_block = raw_block.load_all().unwrap();

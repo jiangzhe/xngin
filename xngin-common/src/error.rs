@@ -10,4 +10,6 @@ pub enum Error {
     InvalidArgument(String),
     #[error("internal error: {0}")]
     InternalError(String),
+    #[error("Invalid format")]
+    InvalidFormat,
 }
