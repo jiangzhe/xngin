@@ -69,9 +69,10 @@ impl Work for ProjWork {
 
     #[inline]
     async fn run(self) -> Result<Block> {
+        let n_records = self.block.n_records;
         self.eval_plan
             .eval(&self.block)
-            .map(Block::new)
+            .map(|data| Block::new(n_records, data))
             .map_err(Into::into)
     }
 }

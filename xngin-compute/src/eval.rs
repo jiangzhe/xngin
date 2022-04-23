@@ -268,9 +268,10 @@ impl<T: DataSourceID> EvalPlan<T> {
     #[inline]
     fn eval_const(&self, input: &Block, c: &Const) -> Result<Attr> {
         let res = match c {
-            Const::I64(i) => {
-                Attr::new_single(PreciseType::i64(), Single::new(*i, input.n_records()))
-            }
+            Const::I64(i) => Attr::new_single(
+                PreciseType::i64(),
+                Single::new(*i, input.n_records as usize),
+            ),
             _ => todo!(),
         };
         Ok(res)
@@ -409,7 +410,7 @@ mod tests {
         let size = 1024i32;
         let attr1 = Attr::from((0..size).into_iter().map(|i| i as i64));
         let attr2 = attr1.to_owned();
-        let block = Block::new(vec![attr1, attr2]);
+        let block = Block::new(1024, vec![attr1, attr2]);
         let col1 = Expr::query_col(QueryID::from(0), 0);
         let col2 = Expr::query_col(QueryID::from(0), 1);
         // select c1

@@ -10,7 +10,7 @@ const ALIGNMENT: usize = 16;
 
 /// align length to 16 bytes.
 #[inline]
-pub fn align_u128(v: u64) -> u64 {
+pub fn align_u128(v: usize) -> usize {
     (v + 15) & !15
 }
 

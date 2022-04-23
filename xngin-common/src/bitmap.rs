@@ -1,7 +1,4 @@
-// mod vec;
-// mod view;
-
-use crate::alloc::RawArray;
+use crate::alloc::{align_u128, RawArray};
 use crate::error::{Error, Result};
 use crate::slice_ext::{OffsetPairMut, OffsetTripleMut, PairSliceExt};
 use std::ops::Range;
@@ -32,6 +29,19 @@ impl Bitmap {
         }
     }
 
+    /// Create a new borrowed bitmap.
+    #[inline]
+    pub fn new_borrowed(ptr: Arc<[u8]>, len_u1: usize, start_bytes: usize) -> Self {
+        let end_bytes = align_u128(start_bytes + (len_u1 + 7) / 8);
+        debug_assert!(end_bytes <= ptr.len());
+        Bitmap::Borrowed {
+            ptr,
+            len_u1,
+            start_bytes,
+            end_bytes,
+        }
+    }
+
     /// Returns number of bit in this bitmap.
     #[inline]
     pub fn len(&self) -> usize {
@@ -56,6 +66,20 @@ impl Bitmap {
                 end_bytes,
                 ..
             } => *end_bytes - *start_bytes,
+        }
+    }
+
+    /// Returns raw byte slice.
+    #[inline]
+    pub fn raw(&self) -> &[u8] {
+        match self {
+            Bitmap::Owned { inner, .. } => inner.as_slice(),
+            Bitmap::Borrowed {
+                ptr,
+                start_bytes,
+                end_bytes,
+                ..
+            } => &ptr[*start_bytes..*end_bytes],
         }
     }
 

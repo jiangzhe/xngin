@@ -14,6 +14,4 @@ xngin-common = { version = "0.1.0", path = "../xngin-common" }
 xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 smallvec = {version = "1.8", features = ["union"]}
 thiserror = "1.0"
-
-[dev-dependencies]
-tempfile = "3"
+bitflags = "1.3"
