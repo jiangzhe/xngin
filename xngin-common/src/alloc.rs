@@ -1,4 +1,4 @@
-use crate::byte_repr::ByteRepr;
+use crate::repr::ByteRepr;
 use std::mem::size_of;
 use std::ptr::NonNull;
 

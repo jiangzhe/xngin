@@ -130,7 +130,7 @@ impl Bitmap {
 
     /// Returns aligned 8-byte integers and its bit number.
     ///
-    /// # SAFETY
+    /// # Safety
     ///
     /// Caller must ensure length is within bound.
     #[inline]
@@ -166,7 +166,7 @@ impl Bitmap {
     /// Returns aligned mutable 8-byte integers and its bit number.
     /// This method will allocate new memory if it's borrowed.
     ///
-    /// # SAFETY
+    /// # Safety
     ///
     /// Caller must ensure length is within bound.
     #[inline]
@@ -380,7 +380,7 @@ impl Bitmap {
 
     /// Set length of this bitmap.
     ///
-    /// # SAFETY
+    /// # Safety
     ///
     /// Caller must ensure the given length is valid.
     #[inline]
@@ -461,6 +461,20 @@ impl Bitmap {
             self.add(b)
         }
     }
+
+    /// Returns index of first true value.
+    #[inline]
+    pub fn first_true(&self) -> Option<usize> {
+        let mut idx = 0;
+        for (f, n) in self.range_iter() {
+            if f {
+                return Some(idx);
+            } else {
+                idx += n;
+            }
+        }
+        None
+    }
 }
 
 impl FromIterator<bool> for Bitmap {
@@ -475,10 +489,8 @@ impl FromIterator<bool> for Bitmap {
             (_, None) => 64,
         };
         let mut bm = Bitmap::with_capacity(cap);
-        let mut packed = PackBoolsToU64(Some(iter));
         let (mut u64s, mut len) = bm.u64s_mut();
-        let mut idx = 0usize;
-        while let Some((v, l)) = packed.next() {
+        for (idx, (v, l)) in PackBoolsToU64(Some(iter)).enumerate() {
             if idx < u64s.len() {
                 u64s[idx] = v;
             } else {
@@ -487,7 +499,6 @@ impl FromIterator<bool> for Bitmap {
                 u64s[idx] = v;
             }
             len += l;
-            idx += 1;
         }
         // iterator exhausted
         unsafe { bm.set_len(len) };
@@ -504,10 +515,10 @@ where
     type Item = (u64, usize);
     #[inline]
     fn next(&mut self) -> Option<(u64, usize)> {
-        if let Some(i) = self.0.as_mut() {
+        if let Some(it) = self.0.as_mut() {
             let mut word = 0u64;
             let mut idx = 0;
-            while let Some(v) = i.next() {
+            for v in it {
                 word |= if v { 1 } else { 0 } << (idx & 63);
                 idx += 1;
                 if idx == 64 {
@@ -620,19 +631,6 @@ pub fn bitmap_range_iter(bm: &[u64], len: usize) -> RangeIter<'_> {
         prev,
         n: 0,
     }
-}
-
-#[inline]
-pub fn bitmap_first_true(bm: &[u64], len: usize) -> Option<usize> {
-    let mut idx = 0;
-    for (f, n) in bitmap_range_iter(bm, len) {
-        if f {
-            return Some(idx);
-        } else {
-            idx += n;
-        }
-    }
-    None
 }
 
 #[inline]
@@ -799,7 +797,11 @@ impl<'a> RangeIter<'a> {
     fn continue_falses_in_word(&mut self) {
         debug_assert!(!self.prev);
         let bits = self.word_bits.min(self.word.trailing_zeros() as usize);
-        self.word >>= bits;
+        if bits == 64 {
+            self.word = 0;
+        } else {
+            self.word >>= bits;
+        }
         self.word_bits -= bits;
         self.n += bits;
     }
@@ -822,7 +824,11 @@ impl<'a> RangeIter<'a> {
     fn continue_trues_in_word(&mut self) {
         debug_assert!(self.prev);
         let bits = self.word_bits.min(self.word.trailing_ones() as usize);
-        self.word >>= bits;
+        if bits == 64 {
+            self.word = 0;
+        } else {
+            self.word >>= bits;
+        }
         self.word_bits -= bits;
         self.n += bits;
     }

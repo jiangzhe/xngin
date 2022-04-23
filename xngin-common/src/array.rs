@@ -1,5 +1,5 @@
 use crate::alloc::{align_u128, RawArray};
-use crate::byte_repr::ByteRepr;
+use crate::repr::ByteRepr;
 use std::mem::size_of;
 use std::slice::from_raw_parts;
 use std::sync::Arc;
@@ -60,7 +60,7 @@ impl Array {
 
     /// Set length of this array.
     ///
-    /// # SAFETY
+    /// # Safety
     ///
     /// Caller must guarantee length is valid.
     #[inline]

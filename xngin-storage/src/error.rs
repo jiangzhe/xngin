@@ -1,5 +1,6 @@
 use std::array::TryFromSliceError;
 use thiserror::Error;
+use xngin_common::error::Error as CommonError;
 use xngin_datatype::error::Error as DataTypeError;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -14,6 +15,8 @@ pub enum Error {
     IOError,
     #[error("Data type not supported")]
     DataTypeNotSupported,
+    #[error("Internal error")]
+    InternalError,
 }
 
 impl From<TryFromSliceError> for Error {
@@ -37,5 +40,15 @@ impl From<std::io::Error> for Error {
     #[inline]
     fn from(_src: std::io::Error) -> Self {
         Error::IOError
+    }
+}
+
+impl From<CommonError> for Error {
+    #[inline]
+    fn from(src: CommonError) -> Self {
+        match src {
+            CommonError::InvalidFormat => Error::InvalidFormat,
+            _ => Error::InternalError,
+        }
     }
 }

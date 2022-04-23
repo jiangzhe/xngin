@@ -1,5 +1,5 @@
 use smallvec::{smallvec, SmallVec};
-use xngin_common::byte_repr::ByteRepr;
+use xngin_common::repr::ByteRepr;
 
 /// Single codec encodes single value as bytes in case all
 /// values of that attribute are identical.
