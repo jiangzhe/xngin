@@ -414,7 +414,7 @@ impl Bitmap {
         let orig_len = self.len();
         let tgt_len = orig_len + tlen;
         let dst = self.reserve_u64s(tgt_len);
-        copy_bits(dst, orig_len, tbm, tlen);
+        bitmap_extend(dst, orig_len, tbm, tlen);
         unsafe { self.set_len(tgt_len) }
     }
 
@@ -432,7 +432,7 @@ impl Bitmap {
         let orig_len = self.len();
         let tgt_len = orig_len + range_len;
         let dst = self.reserve_u64s(tgt_len);
-        copy_bits_range(dst, orig_len, tbm, range);
+        bitmap_extend_range(dst, orig_len, tbm, range);
         unsafe { self.set_len(tgt_len) }
         Ok(())
     }
@@ -445,9 +445,9 @@ impl Bitmap {
         self.reserve(tgt_len);
         let (bm, _) = self.u8s_mut(tgt_len);
         if val {
-            copy_const_bits(bm, orig_len, true, len);
+            bitmap_extend_const(bm, orig_len, true, len);
         } else {
-            copy_const_bits(bm, orig_len, false, len);
+            bitmap_extend_const(bm, orig_len, false, len);
         }
         unsafe { self.set_len(tgt_len) }
     }
@@ -639,135 +639,6 @@ pub fn bitmap_merge(this: &mut [u64], this_len: usize, that: &[u64], that_len: u
     this.iter_mut().zip(that.iter()).for_each(|(a, b)| *a &= b);
 }
 
-#[inline]
-pub fn bitmap_for_each<F: FnMut(bool)>(bm: &[u64], len: usize, mut f: F) {
-    if len == 0 {
-        return;
-    }
-    let len_u64 = len / 64;
-    let len_remained = len & 63;
-    bm[..len_u64].iter().for_each(|b| {
-        for i in 0..64 {
-            f(*b & (1u64 << i) != 0);
-        }
-    });
-    if len_remained == 0 {
-        return;
-    }
-    let last = bm[len_u64];
-    for i in 0..len_remained {
-        f(last & (1u64 << i) != 0);
-    }
-}
-
-#[inline]
-pub fn bitmap_for_each_range<F: FnMut(bool, usize)>(bm: &[u64], len: usize, mut f: F) {
-    if len == 0 {
-        return;
-    }
-    let mut prev = bm[0] & 1 == 1; // pre-read first value
-    let mut n: usize = 0;
-    let len_u64 = len / 64;
-    let mut len_remained = len & 63;
-
-    bm[..len_u64].iter().for_each(|i| {
-        let mut i = *i;
-        match i {
-            0 => {
-                // all falses
-                if !prev {
-                    n += 64;
-                } else {
-                    f(prev, n);
-                    prev = false;
-                    n = 64;
-                }
-            }
-            0xffff_ffff_ffff_ffff => {
-                // all trues
-                if prev {
-                    n += 64;
-                } else {
-                    f(prev, n);
-                    prev = true;
-                    n = 64;
-                }
-            }
-            _ => {
-                let mut word_bits: usize = 64;
-                if prev {
-                    let true_bits = i.trailing_ones() as usize;
-                    if true_bits > 0 {
-                        n += true_bits;
-                        i >>= true_bits;
-                        word_bits -= true_bits;
-                    }
-                } else {
-                    let false_bits = i.trailing_zeros() as usize;
-                    if false_bits > 0 {
-                        n += false_bits;
-                        i >>= false_bits;
-                        word_bits -= false_bits;
-                    }
-                }
-                while word_bits > 0 {
-                    f(prev, n);
-                    if prev {
-                        prev = false;
-                        n = word_bits.min(i.trailing_zeros() as usize);
-                    } else {
-                        prev = true;
-                        n = word_bits.min(i.trailing_ones() as usize);
-                    }
-                    i >>= n;
-                    word_bits -= n;
-                }
-            }
-        }
-    });
-    if len_remained == 0 {
-        f(prev, n);
-        return;
-    }
-    let mut last = bm[len_u64];
-    if prev {
-        let true_bits = last.trailing_ones() as usize;
-        if true_bits >= len_remained {
-            f(prev, n + len_remained);
-            return;
-        } else if true_bits > 0 {
-            n += true_bits;
-            last >>= true_bits;
-            len_remained -= true_bits;
-        }
-    } else {
-        let false_bits = last.trailing_zeros() as usize;
-        if false_bits >= len_remained {
-            f(prev, n + len_remained);
-            return;
-        } else if false_bits > 0 {
-            n += false_bits;
-            last >>= false_bits;
-            len_remained -= false_bits;
-        }
-    }
-    loop {
-        if len_remained == 0 {
-            f(prev, n);
-            return;
-        }
-        f(prev, n);
-        prev = !prev; // flip the flag
-        if prev {
-            n = len_remained.min(last.trailing_ones() as usize);
-        } else {
-            n = len_remained.min(last.trailing_zeros() as usize);
-        }
-        last >>= n;
-        len_remained -= n;
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct RangeIter<'a> {
     u64s: &'a [u64],      // slice of u64
@@ -937,16 +808,6 @@ impl<'a> Iterator for RangeIter<'a> {
 }
 
 #[inline]
-pub fn bitmap_u64s_set(bm: &mut [u64], idx: usize, val: bool) {
-    let bidx = idx / 64;
-    if val {
-        bm[bidx] |= 1 << (idx & 63);
-    } else {
-        bm[bidx] &= !(1 << (idx & 63));
-    }
-}
-
-#[inline]
 pub fn bitmap_u8s_set(bm: &mut [u8], idx: usize, val: bool) {
     let bidx = idx / 8;
     if val {
@@ -1042,7 +903,7 @@ fn bitmap_u64s_shift(bs: &mut [u64], len: usize, shift_bits: usize) {
 }
 
 #[inline]
-fn copy_bits(dst: &mut [u64], dst_len: usize, src: &[u64], src_len: usize) {
+fn bitmap_extend(dst: &mut [u64], dst_len: usize, src: &[u64], src_len: usize) {
     debug_assert!(src.len() * 64 >= src_len);
     debug_assert!(dst.len() * 64 >= dst_len + src_len);
     if src_len == 0 {
@@ -1086,13 +947,13 @@ fn copy_bits(dst: &mut [u64], dst_len: usize, src: &[u64], src_len: usize) {
 }
 
 #[inline]
-fn copy_bits_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Range<usize>) {
+fn bitmap_extend_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Range<usize>) {
     debug_assert!(src.len() * 64 >= range.end);
     let tgt_len = dst_len + range.end - range.start;
     debug_assert!(dst.len() * 64 >= tgt_len);
     if range.start & 63 == 0 {
         // start aligned to byte bound, reuse copy_bits
-        copy_bits(
+        bitmap_extend(
             dst,
             dst_len,
             &src[range.start / 64..(range.end + 63) / 64],
@@ -1128,9 +989,18 @@ fn copy_bits_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Range<us
         let tgt_len_u64 = (tgt_len + 63) / 64;
         let tgt = &mut dst[orig_dst_len_u64..tgt_len_u64];
         let src_start_u64 = range.start / 64;
+        if range.end / 64 == src_start_u64 {
+            // within u64 boundary
+            // only require shift within single word
+            tgt[0] &= (1 << rbits) - 1;
+            let extra = (src[src_start_u64] >> shr_bits) & !((1 << rbits) - 1);
+            tgt[0] |= extra;
+            return
+        }
         let src_end_u64 = (range.end + 63) / 64;
-        // save first u64, handling it after pair updates
+        // save first u64 and then clear it, handling it after pair updates
         let first_u64 = tgt[0] & ((1 << rbits) - 1);
+        tgt[0] = 0;
         // pair update
         tgt.iter_mut()
             .zip(src[src_start_u64..src_end_u64].pairs())
@@ -1140,7 +1010,6 @@ fn copy_bits_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Range<us
         // update first u64
         tgt[0] &= !((1 << rbits) - 1); // clear original bits
         tgt[0] |= first_u64; // update original value back
-                             // update last u64
         if (range.end & 63) > shr_bits {
             // additional u64 to update last few bits from src
             tgt[tgt.len() - 1] = src[src_end_u64 - 1] >> shr_bits;
@@ -1157,7 +1026,10 @@ fn copy_bits_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Range<us
         // update first u64
         tgt[0] &= (1 << rbits) - 1;
         tgt[0] |= (src[src_start_u64] << shl_bits) & !((1 << rbits) - 1);
-        tgt.iter_mut()
+        if tgt.len() == 1 {
+            return
+        }
+        tgt[1..].iter_mut()
             .zip(src[src_start_u64..src_end_u64].pairs())
             .for_each(|(a, (b, c))| {
                 *a = b >> shr_bits;
@@ -1172,7 +1044,7 @@ fn copy_bits_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Range<us
 }
 
 #[inline]
-fn copy_const_bits(dst: &mut [u8], dst_len: usize, src_val: bool, src_len: usize) {
+fn bitmap_extend_const(dst: &mut [u8], dst_len: usize, src_val: bool, src_len: usize) {
     debug_assert!(dst.len() * 8 >= dst_len + src_len);
     if src_len == 0 {
         // nothing to do
@@ -1226,16 +1098,6 @@ mod tests {
         assert_eq!(0, bm.len());
         Ok(())
     }
-
-    // #[test]
-    // fn test_bitmap_from_u8s_and_len() {
-    //     let bm = Bitmap::from((&[5u8][..], 4usize));
-    //     assert_eq!(4, bm.len());
-    //     assert!(bm.get(0).unwrap());
-    //     assert!(!bm.get(1).unwrap());
-    //     assert!(bm.get(2).unwrap());
-    //     assert!(!bm.get(3).unwrap());
-    // }
 
     fn custom_bools(shift_n: usize) -> (Vec<bool>, Vec<bool>) {
         let bools = vec![
@@ -1412,6 +1274,34 @@ mod tests {
                 .collect::<Vec<_>>(),
             bm1.bools().collect::<Vec<_>>(),
         );
+        // case 4
+        let mut bm1 = Bitmap::with_capacity(1024);
+        let bm2 = Bitmap::from_iter(vec![true, true, true, false, true, true, true, true, true]);
+        bm1.extend_range(&bm2, 3..4)?;
+        assert_eq!(vec![false], bm1.bools().collect::<Vec<_>>());
+        bm1.extend_range(&bm2, 5..7)?;
+        assert_eq!(vec![false, true, true], bm1.bools().collect::<Vec<_>>());
+        // case 5
+        let mut bm1 = Bitmap::from_iter(vec![false, true, false, false, true]);
+        let bm2 = Bitmap::from_iter(vec![true, true, false, false, true, false, false, true]);
+        bm1.extend_range(&bm2, 2..5)?;
+        assert_eq!(vec![false, true, false, false, true, false, false, true], bm1.bools().collect::<Vec<_>>());
+        // case 6
+        let mut bm1 = Bitmap::from_iter(vec![false, true, false, false, true]);
+        let bm2 = Bitmap::from_iter(vec![true; 128]);
+        bm1.extend_range(&bm2, 2..68)?;
+        let mut expected = vec![true; 71];
+        expected[0] = false;
+        expected[2] = false;
+        expected[3] = false;
+        assert_eq!(expected, bm1.bools().collect::<Vec<_>>());
+        // case 7
+        let mut bm1 = Bitmap::from_iter(vec![true; 40]);
+        let bm2 = Bitmap::from_iter(vec![false; 128]);
+        bm1.extend_range(&bm2, 35..75)?;
+        assert_eq!(80, bm1.len());
+        let expected: Vec<_> = std::iter::repeat(true).take(40).chain(std::iter::repeat(false).take(40)).collect();
+        assert_eq!(expected, bm1.bools().collect::<Vec<_>>());
         Ok(())
     }
 

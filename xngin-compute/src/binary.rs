@@ -1,11 +1,12 @@
 use crate::error::{Error, Result};
 use std::sync::Arc;
 use xngin_common::array::Array;
-use xngin_common::bitmap::{bitmap_merge, Bitmap};
+use xngin_common::bitmap::Bitmap;
 use xngin_common::repr::ByteRepr;
 use xngin_datatype::PreciseType;
 use xngin_storage::attr::Attr;
 use xngin_storage::codec::{Codec, Single};
+
 /// Evaluation of binary expression.
 pub trait BinaryEval {
     fn binary_eval(&self, res_ty: PreciseType, lhs: &Attr, rhs: &Attr) -> Result<Attr>;
@@ -65,20 +66,9 @@ pub trait ArithEval {
         let (r_valid, r_val) = r.view();
         if l_valid && r_valid {
             let res = self.apply(l_val, r_val);
-            let codec = Codec::Single(Single::new(res, l.len));
-            Ok(Attr {
-                ty: res_ty,
-                validity: None,
-                sma: None,
-                codec,
-            })
+            Ok(Attr::new_single(res_ty, Single::new(res, l.len)))
         } else {
-            Ok(Attr {
-                ty: res_ty,
-                validity: None,
-                sma: None,
-                codec: Codec::Single(Single::new_null(l.len)),
-            })
+            Ok(Attr::new_single(res_ty, Single::new_null(l.len)))
         }
     }
 
@@ -99,13 +89,7 @@ pub trait ArithEval {
                 *res = self.apply(*lhs, r_val);
             }
             let validity = l_vmap.map(Bitmap::clone_to_owned);
-            let codec = Codec::new_array(arr);
-            Ok(Attr {
-                ty: res_ty,
-                validity,
-                sma: None,
-                codec,
-            })
+            Ok(Attr::new_array(res_ty, arr, validity, None))
         } else {
             Ok(Attr::new_single(res_ty, Single::new_null(l_vals.len())))
         }
@@ -162,9 +146,7 @@ pub trait ArithEval {
             (None, Some(r_bm)) => Some(Bitmap::clone_to_owned(r_bm)),
             (Some(l_bm), Some(r_bm)) => {
                 let mut res = Bitmap::to_owned(l_bm.as_ref());
-                let (res_bm, res_len) = res.u64s_mut();
-                let (r_bm, _) = r_bm.u64s();
-                bitmap_merge(res_bm, res_len, r_bm, r_vals.len());
+                res.merge(r_bm)?;
                 Some(Arc::new(res))
             }
         };
@@ -199,6 +181,9 @@ impl<F: ArithEval> BinaryEval for F {
                 rhs.validity.as_ref(),
                 r.cast_slice(),
             ),
+            (Codec::Empty, _) | (_, Codec::Empty) => Ok(Attr::empty(res_ty)),
+            // Binary expression does not support bitmap codec.
+            (Codec::Bitmap(_), _) | (_, Codec::Bitmap(_)) => unreachable!(),
         }
     }
 }

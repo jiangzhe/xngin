@@ -12,6 +12,8 @@ pub struct Single {
 
 #[allow(clippy::len_without_is_empty)]
 impl Single {
+    /// View value as given type.
+    /// Bool is specially handled as u8(true=0x01, false=0x00).
     #[inline]
     pub fn view<T: ByteRepr>(&self) -> (bool, T) {
         if self.valid {

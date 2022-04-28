@@ -311,6 +311,15 @@ impl SMA {
     pub fn pos_tbl(&self) -> &[(u16, u16)] {
         self.pos.table()
     }
+
+    /// Clone self to owned with atomic reference.
+    #[inline]
+    pub fn clone_to_owned(this: &Arc<Self>) -> Arc<Self> {
+        match &this.pos {
+            PosTbl::Owned{..} => Arc::clone(this),
+            PosTbl::Borrowed{..} => Arc::new(SMA{min: this.min.clone(), max: this.max.clone(), kind: this.kind, pos: this.pos.to_owned()})
+        }
+    }
 }
 
 #[inline]
@@ -402,6 +411,9 @@ impl PosTbl {
         match self {
             PosTbl::Owned { inner } => {
                 let len = inner.len();
+                // SAFETY
+                //
+                // pointer and length are valid.
                 unsafe {
                     std::slice::from_raw_parts(
                         inner.as_ptr() as *const u8,
@@ -417,6 +429,19 @@ impl PosTbl {
                 let ptr = ptr.as_ptr().add(*start_bytes);
                 std::slice::from_raw_parts(ptr, *len * std::mem::size_of::<(u16, u16)>())
             },
+        }
+    }
+
+    /// Returns an owned table.
+    #[inline]
+    pub fn to_owned(&self) -> Self {
+        match self {
+            PosTbl::Owned {inner} => PosTbl::Owned{inner: inner.clone()},
+            PosTbl::Borrowed{len, ..} => {
+                let mut inner = Vec::with_capacity(*len);
+                inner.extend_from_slice(self.table());
+                PosTbl::Owned{inner: inner.into_boxed_slice()}
+            }
         }
     }
 }

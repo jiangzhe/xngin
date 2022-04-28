@@ -54,8 +54,8 @@ pub(crate) const LEN_ATTR_HDR: usize = 48;
 #[derive(Debug)]
 pub struct Attr {
     pub ty: PreciseType,
-    pub validity: Option<Arc<Bitmap>>,
     pub codec: Codec,
+    pub validity: Option<Arc<Bitmap>>,
     pub sma: Option<Arc<SMA>>,
 }
 
@@ -71,6 +71,33 @@ impl Attr {
         }
     }
 
+    /// Create a bitmap attribute.
+    #[inline]
+    pub fn new_bitmap(bitmap: Bitmap, validity: Option<Arc<Bitmap>>) -> Attr {
+        Attr {
+            ty: PreciseType::bool(),
+            codec: Codec::new_bitmap(bitmap),
+            validity,
+            sma: None,
+        }
+    }
+
+    #[inline]
+    pub fn new_array(ty: PreciseType, array: Array, validity: Option<Arc<Bitmap>>, sma: Option<Arc<SMA>>) -> Attr {
+        Attr {
+            ty,
+            codec: Codec::new_array(array),
+            validity,
+            sma,
+        }
+    }
+
+    /// Create an empty attribute
+    #[inline]
+    pub fn empty(ty: PreciseType) -> Attr {
+        Attr{ty, validity: None, codec: Codec::Empty, sma: None}
+    }
+
     /// Convert self to owned.
     #[inline]
     pub fn to_owned(&self) -> Self {
@@ -78,7 +105,44 @@ impl Attr {
             ty: self.ty,
             validity: self.validity.as_ref().map(Bitmap::clone_to_owned),
             codec: Codec::to_owned(&self.codec),
-            sma: None,
+            sma: self.sma.as_ref().map(SMA::clone_to_owned),
+        }
+    }
+
+    /// Returns validity and raw bytes at given index.
+    /// If it's null, length of returned byte slice is zero.
+    #[inline]
+    pub fn raw_val(&self, idx: usize) -> Result<(bool, &[u8])> {
+        let valid = self.is_valid(idx)?;
+        if !valid {
+            return Ok((false, &[]))
+        }
+        let bs = match &self.codec {
+            Codec::Empty => return Err(Error::IndexOutOfBound),
+            Codec::Single(s) => &s.data[..],
+            Codec::Bitmap(b) => if b.get(idx)? { &[0x01] } else { &[0x00] },
+            Codec::Array(a) => {
+                let val_len = self.ty.val_len().unwrap();
+                let byte_idx = idx * val_len;
+                &a.raw()[byte_idx..byte_idx+val_len]
+            }
+        };
+        Ok((true, bs))
+    }
+
+    /// Returns whether the value at given index is valid.
+    #[inline]
+    pub fn is_valid(&self, idx: usize) -> Result<bool> {
+        if idx >= self.n_records() {
+            Err(Error::IndexOutOfBound)
+        } else {
+            if let Codec::Single(s) = &self.codec {
+                return Ok(s.valid)
+            }
+            if let Some(validity) = self.validity.as_ref() {
+                return validity.get(idx).map_err(Into::into)
+            }
+            Ok(true)
         }
     }
 
@@ -166,6 +230,8 @@ impl Attr {
                     offset,
                 )
             }
+            Codec::Bitmap(_) => todo!(),
+            Codec::Empty => todo!(),
         }
     }
 
@@ -222,6 +288,8 @@ impl Attr {
                 }
                 Ok(n)
             }
+            Codec::Bitmap(_) => todo!(),
+            Codec::Empty => todo!(),
         }
     }
 
@@ -255,7 +323,6 @@ impl Attr {
             }
             SerMethod::Array => {
                 let arr = load_array(raw, n_records, header.format_desc.ty, header.offset_data)?;
-                let codec = Codec::new_array(arr);
                 let validity = if header.format_desc.fields.contains(SerFields::VALID) {
                     let validity =
                         Bitmap::new_borrowed(raw.clone(), n_records as usize, header.offset_valid);
@@ -269,12 +336,7 @@ impl Attr {
                 } else {
                     None
                 };
-                Ok(Attr {
-                    ty: header.format_desc.ty,
-                    validity,
-                    codec,
-                    sma,
-                })
+                Ok(Attr::new_array(header.format_desc.ty, arr, validity, sma))
             }
         }
     }
@@ -424,13 +486,7 @@ impl<T: ByteRepr + StaticTyped + Default> FromIterator<Option<T>> for Attr {
         // update length
         unsafe { data.set_len(len) };
         unsafe { validity.set_len(len) };
-        let codec = Codec::new_array(data);
-        Attr {
-            ty: T::static_pty(),
-            validity: Some(Arc::new(validity)),
-            sma: None,
-            codec,
-        }
+        Attr::new_array(T::static_pty(), data, Some(Arc::new(validity)), None)
     }
 }
 
@@ -448,13 +504,7 @@ where
             *t = s;
         }
         unsafe { data.set_len(len) };
-        let codec = Codec::new_array(data);
-        Attr {
-            ty: T::static_pty(),
-            validity: None,
-            sma: None,
-            codec,
-        }
+        Attr::new_array(T::static_pty(), data, None, None)
     }
 }
 

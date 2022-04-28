@@ -1,4 +1,4 @@
-//! The storage of Xngin.
+//! The storage of X-Engine.
 //!
 //! Data are organized by data blocks.
 //! Each block contains positional index, synopses and
@@ -6,5 +6,4 @@
 pub mod block;
 pub mod codec;
 pub mod error;
-// pub mod ser;
 pub mod attr;
