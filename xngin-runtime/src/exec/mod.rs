@@ -8,8 +8,8 @@ use async_executor::Executor;
 use async_trait::async_trait;
 use flume::{Receiver, Sender};
 pub use proj::ProjExec;
-pub use table_scan::TableScanExec;
 use std::sync::Arc;
+pub use table_scan::TableScanExec;
 use xngin_storage::block::Block;
 
 pub enum Exec {

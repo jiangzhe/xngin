@@ -83,7 +83,12 @@ impl Attr {
     }
 
     #[inline]
-    pub fn new_array(ty: PreciseType, array: Array, validity: Option<Arc<Bitmap>>, sma: Option<Arc<SMA>>) -> Attr {
+    pub fn new_array(
+        ty: PreciseType,
+        array: Array,
+        validity: Option<Arc<Bitmap>>,
+        sma: Option<Arc<SMA>>,
+    ) -> Attr {
         Attr {
             ty,
             codec: Codec::new_array(array),
@@ -95,7 +100,12 @@ impl Attr {
     /// Create an empty attribute
     #[inline]
     pub fn empty(ty: PreciseType) -> Attr {
-        Attr{ty, validity: None, codec: Codec::Empty, sma: None}
+        Attr {
+            ty,
+            validity: None,
+            codec: Codec::Empty,
+            sma: None,
+        }
     }
 
     /// Convert self to owned.
@@ -115,16 +125,22 @@ impl Attr {
     pub fn raw_val(&self, idx: usize) -> Result<(bool, &[u8])> {
         let valid = self.is_valid(idx)?;
         if !valid {
-            return Ok((false, &[]))
+            return Ok((false, &[]));
         }
         let bs = match &self.codec {
             Codec::Empty => return Err(Error::IndexOutOfBound),
             Codec::Single(s) => &s.data[..],
-            Codec::Bitmap(b) => if b.get(idx)? { &[0x01] } else { &[0x00] },
+            Codec::Bitmap(b) => {
+                if b.get(idx)? {
+                    &[0x01]
+                } else {
+                    &[0x00]
+                }
+            }
             Codec::Array(a) => {
                 let val_len = self.ty.val_len().unwrap();
                 let byte_idx = idx * val_len;
-                &a.raw()[byte_idx..byte_idx+val_len]
+                &a.raw()[byte_idx..byte_idx + val_len]
             }
         };
         Ok((true, bs))
@@ -137,10 +153,10 @@ impl Attr {
             Err(Error::IndexOutOfBound)
         } else {
             if let Codec::Single(s) = &self.codec {
-                return Ok(s.valid)
+                return Ok(s.valid);
             }
             if let Some(validity) = self.validity.as_ref() {
-                return validity.get(idx).map_err(Into::into)
+                return validity.get(idx).map_err(Into::into);
             }
             Ok(true)
         }
@@ -315,7 +331,7 @@ impl Attr {
                         );
                         data
                     };
-                    Single::raw_from_bytes(data, n_records as usize)
+                    Single::new_raw(data, n_records as usize)
                 } else {
                     Single::new_null(n_records as usize)
                 };
@@ -431,8 +447,8 @@ impl<T: ByteRepr + StaticTyped + Default> FromIterator<Option<T>> for Attr {
             (_, Some(hb)) => hb.max(64),
             _ => 64,
         };
-        let mut validity = Bitmap::with_capacity(iter_size);
-        let mut validity_u64s = validity.reserve_u64s(iter_size);
+        let mut validity = Bitmap::with_len(iter_size);
+        let (mut validity_u64s, _) = validity.u64s_mut();
         let mut data = Array::new_owned::<T>(iter_size);
         let mut data_slice = data.cast_slice_mut::<T>(iter_size).unwrap();
 

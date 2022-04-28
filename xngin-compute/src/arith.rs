@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::BinaryEval;
 use std::sync::Arc;
 use xngin_common::array::Array;
 use xngin_common::bitmap::Bitmap;
@@ -6,11 +7,6 @@ use xngin_common::repr::ByteRepr;
 use xngin_datatype::PreciseType;
 use xngin_storage::attr::Attr;
 use xngin_storage::codec::{Codec, Single};
-
-/// Evaluation of binary expression.
-pub trait BinaryEval {
-    fn binary_eval(&self, res_ty: PreciseType, lhs: &Attr, rhs: &Attr) -> Result<Attr>;
-}
 
 /// Kinds of arithmetic expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,27 +22,12 @@ impl ArithKind {
     pub fn eval(&self, lhs: &Attr, rhs: &Attr) -> Result<Attr> {
         match (self, lhs.ty, rhs.ty) {
             (ArithKind::Add, PreciseType::Int(4, l_unsigned), PreciseType::Int(4, r_unsigned)) => {
-                AddI32.binary_eval(PreciseType::Int(4, l_unsigned | r_unsigned), lhs, rhs)
+                Impl(AddI32).binary_eval(PreciseType::Int(4, l_unsigned | r_unsigned), lhs, rhs)
             }
             (ArithKind::Add, PreciseType::Int(8, l_unsigned), PreciseType::Int(8, r_unsigned)) => {
-                AddI64.binary_eval(PreciseType::Int(8, l_unsigned | r_unsigned), lhs, rhs)
+                Impl(AddI64).binary_eval(PreciseType::Int(8, l_unsigned | r_unsigned), lhs, rhs)
             }
             _ => Err(Error::UnsupportedArithOp),
-        }
-    }
-}
-
-macro_rules! impl_arith_eval {
-    ($id:ident, $l:ty, $r:ty, $o:ty, $op:tt) => {
-        pub struct $id;
-        impl ArithEval for $id {
-            type L = $l;
-            type R = $r;
-            type O = $o;
-            #[inline]
-            fn apply(&self, lhs: Self::L, rhs: Self::R) -> Self::O {
-                lhs $op rhs
-            }
         }
     }
 }
@@ -160,21 +141,25 @@ pub trait ArithEval {
     }
 }
 
-impl<F: ArithEval> BinaryEval for F {
+pub struct Impl<T>(T);
+
+impl<T: ArithEval> BinaryEval for Impl<T> {
     #[inline]
     fn binary_eval(&self, res_ty: PreciseType, lhs: &Attr, rhs: &Attr) -> Result<Attr> {
         if lhs.n_records() != rhs.n_records() {
             return Err(Error::RowNumberMismatch);
         }
         match (&lhs.codec, &rhs.codec) {
-            (Codec::Single(l), Codec::Single(r)) => self.apply_both_single(res_ty, l, r),
+            (Codec::Single(l), Codec::Single(r)) => self.0.apply_both_single(res_ty, l, r),
             (Codec::Array(l), Codec::Single(r)) => {
-                self.apply_array_single(res_ty, lhs.validity.as_ref(), l.cast_slice(), r)
+                self.0
+                    .apply_array_single(res_ty, lhs.validity.as_ref(), l.cast_slice(), r)
             }
             (Codec::Single(l), Codec::Array(r)) => {
-                self.apply_single_array(res_ty, l, rhs.validity.as_ref(), r.cast_slice())
+                self.0
+                    .apply_single_array(res_ty, l, rhs.validity.as_ref(), r.cast_slice())
             }
-            (Codec::Array(l), Codec::Array(r)) => self.apply_both_array(
+            (Codec::Array(l), Codec::Array(r)) => self.0.apply_both_array(
                 res_ty,
                 lhs.validity.as_ref(),
                 l.cast_slice(),
@@ -182,14 +167,29 @@ impl<F: ArithEval> BinaryEval for F {
                 r.cast_slice(),
             ),
             (Codec::Empty, _) | (_, Codec::Empty) => Ok(Attr::empty(res_ty)),
-            // Binary expression does not support bitmap codec.
-            (Codec::Bitmap(_), _) | (_, Codec::Bitmap(_)) => unreachable!(),
+            // Arithmetic expression does not support bitmap codec.
+            (Codec::Bitmap(_), _) | (_, Codec::Bitmap(_)) => Err(Error::UnsupportedArithOp),
         }
     }
 }
 
-impl_arith_eval!(AddI32, i32, i32, i32, +);
-impl_arith_eval!(AddI64, i64, i64, i64, +);
+macro_rules! impl_arith_eval_for_num {
+    ($id:ident, $l:ty, $r:ty, $o:ty, $op:tt) => {
+        pub struct $id;
+        impl ArithEval for $id {
+            type L = $l;
+            type R = $r;
+            type O = $o;
+            #[inline]
+            fn apply(&self, lhs: Self::L, rhs: Self::R) -> Self::O {
+                lhs $op rhs
+            }
+        }
+    }
+}
+
+impl_arith_eval_for_num!(AddI32, i32, i32, i32, +);
+impl_arith_eval_for_num!(AddI64, i64, i64, i64, +);
 // impl_arith_eval!(SubI32, i32, i32, i32, -);
 // impl_arith_eval!(SubI64, i64, i64, i64, -);
 
@@ -203,87 +203,58 @@ mod tests {
         const SIZE: i32 = 4096;
         let c1 = Attr::from((0..SIZE as i32).into_iter());
         let c2 = Attr::from((0..SIZE as i32).into_iter());
-        let add = AddI32;
+        let add = Impl(AddI32);
         let res = add.binary_eval(PreciseType::i32(), &c1, &c2).unwrap();
         assert_eq!(4096, res.n_records());
     }
 
     #[test]
-    fn test_vec_eval_add_i32() {
+    fn test_arith_eval_add_i32() {
         let size = 10i32;
         let c1 = Attr::from((0..size).into_iter());
         let c2 = Attr::from((0..size).into_iter());
-        let add = AddI32;
-        let res = add.binary_eval(PreciseType::i32(), &c1, &c2).unwrap();
-        match &res.codec {
-            Codec::Array(array) => {
-                let i32s = array.cast_slice::<i32>();
-                let expected: Vec<_> = (0..size).map(|i| i + i).collect();
-                assert_eq!(&expected, i32s);
-            }
-            _ => panic!("failed"),
-        }
         let c3 = Attr::new_single(PreciseType::i32(), Single::new(1i32, size as usize));
         let c4 = Attr::new_single(PreciseType::i32(), Single::new(1i32, size as usize));
-        let res = add.binary_eval(PreciseType::i32(), &c3, &c4).unwrap();
-        match &res.codec {
-            Codec::Single(single) => {
-                let (valid, value) = single.view::<i32>();
-                assert!(valid);
-                assert!(value == 2);
-            }
-            _ => panic!("failed"),
-        }
-        let res = add.binary_eval(PreciseType::i32(), &c1, &c3).unwrap();
-        match &res.codec {
-            Codec::Array(array) => {
-                let i32s = array.cast_slice::<i32>();
-                let expected: Vec<_> = (0..size).map(|i| i + 1).collect();
-                assert_eq!(&expected, i32s);
-            }
-            _ => panic!("failed"),
-        }
-        let res = add.binary_eval(PreciseType::i32(), &c4, &c2).unwrap();
-        match &res.codec {
-            Codec::Array(array) => {
-                let i32s = array.cast_slice::<i32>();
-                let expected: Vec<_> = (0..size).map(|i| i + 1).collect();
-                assert_eq!(&expected, i32s);
-            }
-            _ => panic!("failed"),
-        }
         let c5 = Attr::new_single(PreciseType::i32(), Single::new_null(size as usize));
+        let add = Impl(AddI32);
+        // array vs array
+        let res = add.binary_eval(PreciseType::i32(), &c1, &c2).unwrap();
+        let array = res.codec.as_array().unwrap();
+        let i32s = array.cast_slice::<i32>();
+        let expected: Vec<_> = (0..size).map(|i| i + i).collect();
+        assert_eq!(&expected, i32s);
+        // single vs single
+        let res = add.binary_eval(PreciseType::i32(), &c3, &c4).unwrap();
+        let single = res.codec.as_single().unwrap();
+        let (valid, value) = single.view::<i32>();
+        assert!(valid);
+        assert!(value == 2);
+        // array vs single
+        let res = add.binary_eval(PreciseType::i32(), &c1, &c3).unwrap();
+        let array = res.codec.as_array().unwrap();
+        let i32s = array.cast_slice::<i32>();
+        let expected: Vec<_> = (0..size).map(|i| i + 1).collect();
+        assert_eq!(&expected, i32s);
+        // single vs array
+        let res = add.binary_eval(PreciseType::i32(), &c4, &c2).unwrap();
+        let array = res.codec.as_array().unwrap();
+        let i32s = array.cast_slice::<i32>();
+        let expected: Vec<_> = (0..size).map(|i| i + 1).collect();
+        assert_eq!(&expected, i32s);
+        // array vs null
         let res = add.binary_eval(PreciseType::i32(), &c1, &c5).unwrap();
-        match &res.codec {
-            Codec::Single(single) => {
-                let (valid, _) = single.view::<i32>();
-                assert!(!valid);
-            }
-            _ => panic!("failed"),
-        }
-        let res = add.binary_eval(PreciseType::i32(), &c2, &c5).unwrap();
-        match &res.codec {
-            Codec::Single(single) => {
-                let (valid, _) = single.view::<i32>();
-                assert!(!valid);
-            }
-            _ => panic!("failed"),
-        }
-        let res = add.binary_eval(PreciseType::i32(), &c5, &c2).unwrap();
-        match &res.codec {
-            Codec::Single(single) => {
-                let (valid, _) = single.view::<i32>();
-                assert!(!valid);
-            }
-            _ => panic!("failed"),
-        }
+        let single = res.codec.as_single().unwrap();
+        let (valid, _) = single.view::<i32>();
+        assert!(!valid);
+        // null vs array
         let res = add.binary_eval(PreciseType::i32(), &c5, &c1).unwrap();
-        match &res.codec {
-            Codec::Single(single) => {
-                let (valid, _) = single.view::<i32>();
-                assert!(!valid);
-            }
-            _ => panic!("failed"),
-        }
+        let single = res.codec.as_single().unwrap();
+        let (valid, _) = single.view::<i32>();
+        assert!(!valid);
+        // single vs null
+        let res = add.binary_eval(PreciseType::i32(), &c3, &c5).unwrap();
+        let single = res.codec.as_single().unwrap();
+        let (valid, _) = single.view::<i32>();
+        assert!(!valid);
     }
 }

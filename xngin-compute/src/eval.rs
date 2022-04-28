@@ -1,4 +1,4 @@
-use crate::binary::ArithKind;
+use crate::arith::ArithKind;
 use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::mem;
@@ -114,7 +114,11 @@ impl<'a, T: DataSourceID> Builder<'a, T> {
     }
 
     #[inline]
-    pub fn with_filter<I: IntoIterator<Item = &'a Expr>>(mut self, exprs: I, filter_expr: &'a Expr) -> Result<EvalPlan<T>> {
+    pub fn with_filter<I: IntoIterator<Item = &'a Expr>>(
+        mut self,
+        exprs: I,
+        filter_expr: &'a Expr,
+    ) -> Result<EvalPlan<T>> {
         let mut output = vec![];
         let (filter, _) = self.find_ref_or_gen(filter_expr)?;
         output.push(filter);
@@ -199,12 +203,12 @@ pub type QueryEvalPlan = EvalPlan<QueryID>;
 /// Evaluation Plan.
 ///
 /// It is designed to support scalar expression evaluation within block.
-/// The plan evaluates all expressions in order, ensuring any common expression 
+/// The plan evaluates all expressions in order, ensuring any common expression
 /// be evaluated only once.
 /// For example, if we have expressions: `abs(c0)`, `abs(c0)+1`, `abs(c0)+2`,
 /// the common expression `abs(c0)` will be evaluated only once, and be reused
 /// by others.
-/// 
+///
 /// It also supports filter expression.
 /// The filter expression will be evaluated first.
 /// The result has two formats: Single, and Bitmap.
@@ -230,7 +234,10 @@ impl<T: DataSourceID> EvalPlan<T> {
 
     /// Create a new evaluation plan with filter expression.
     #[inline]
-    pub fn with_filter<'a, I: IntoIterator<Item = &'a Expr>>(exprs: I, filter_expr: &'a Expr) -> Result<Self> {
+    pub fn with_filter<'a, I: IntoIterator<Item = &'a Expr>>(
+        exprs: I,
+        filter_expr: &'a Expr,
+    ) -> Result<Self> {
         Builder::new().with_filter(exprs, filter_expr)
     }
 
