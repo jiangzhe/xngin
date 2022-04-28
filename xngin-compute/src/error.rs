@@ -1,5 +1,8 @@
-pub type Result<T> = std::result::Result<T, Error>;
 use thiserror::Error;
+use xngin_storage::error::Error as StorageError;
+use xngin_common::error::Error as CommonError;
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, Error)]
 pub enum Error {
@@ -19,4 +22,28 @@ pub enum Error {
     FailToFetchAttr,
     #[error("Failed to fetch eval cache")]
     FailToFetchEvalCache,
+    #[error("Invalid codec for selection")]
+    InvalidCodecForSel,
+    #[error("Index out of bound")]
+    IndexOutOfBound,
+}
+
+impl From<StorageError> for Error {
+    #[inline]
+    fn from(src: StorageError) -> Self {
+        match src {
+            StorageError::IndexOutOfBound => Error::IndexOutOfBound,
+            _ => todo!(),
+        }
+    }
+}
+
+impl From<CommonError> for Error {
+    #[inline]
+    fn from(src: CommonError) -> Self {
+        match src {
+            CommonError::IndexOutOfBound(_) => Error::IndexOutOfBound,
+            _ => todo!(),
+        }
+    }
 }

@@ -11,9 +11,6 @@ pub trait ByteRepr: Default + Copy {
     /// Write value into byte format.
     fn write_bytes(&self, buf: &mut [u8]);
 
-    /// Copy value slice to byte slice.
-    fn copy_slice(src: &[Self], tgt: &mut [u8]);
-
     /// Write out value slice in byte format.
     fn write_all<W: io::Write>(writer: &mut W, src: &[Self]) -> io::Result<usize>;
 }
@@ -35,22 +32,6 @@ macro_rules! impl_num_for_byte_repr {
             fn write_bytes(&self, buf: &mut [u8]) {
                 let bs = self.to_ne_bytes();
                 buf.copy_from_slice(&bs);
-            }
-
-            #[inline]
-            fn copy_slice(src: &[Self], tgt: &mut [u8]) {
-                use std::mem::size_of;
-                assert_eq!(tgt.len(), src.len() * size_of::<$ty>());
-                // SAFETY:
-                //
-                // pointer and length are guaranteed to be valid.
-                unsafe {
-                    let src = std::slice::from_raw_parts(
-                        src.as_ptr() as *const u8,
-                        src.len() * size_of::<$ty>(),
-                    );
-                    tgt.copy_from_slice(src);
-                }
             }
 
             #[inline]
@@ -86,12 +67,6 @@ impl ByteRepr for u8 {
     #[inline]
     fn write_bytes(&self, buf: &mut [u8]) {
         buf[0] = *self;
-    }
-
-    #[inline]
-    fn copy_slice(src: &[u8], tgt: &mut [u8]) {
-        assert_eq!(tgt.len(), src.len());
-        tgt.copy_from_slice(src);
     }
 
     #[inline]

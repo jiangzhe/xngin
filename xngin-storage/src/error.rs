@@ -17,6 +17,8 @@ pub enum Error {
     DataTypeNotSupported,
     #[error("Internal error")]
     InternalError,
+    #[error("Index out of bound")]
+    IndexOutOfBound,
 }
 
 impl From<TryFromSliceError> for Error {
@@ -48,6 +50,7 @@ impl From<CommonError> for Error {
     fn from(src: CommonError) -> Self {
         match src {
             CommonError::InvalidFormat => Error::InvalidFormat,
+            CommonError::IndexOutOfBound(_) => Error::IndexOutOfBound,
             _ => Error::InternalError,
         }
     }

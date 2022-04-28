@@ -198,27 +198,15 @@ impl RawBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::{Codec, Single};
+    use crate::codec::Single;
     use std::io::Cursor;
     use std::sync::Arc;
     use xngin_datatype::PreciseType;
 
     #[test]
     fn test_block_single_store_and_load() {
-        let codec1 = Codec::Single(Single::new_null(1024));
-        let attr1 = Attr {
-            ty: PreciseType::i32(),
-            validity: None,
-            codec: codec1,
-            sma: None,
-        };
-        let codec2 = Codec::Single(Single::new(1i32, 1024));
-        let attr2 = Attr {
-            ty: PreciseType::i32(),
-            validity: None,
-            codec: codec2,
-            sma: None,
-        };
+        let attr1 = Attr::new_single(PreciseType::i32(), Single::new_null(1024));
+        let attr2 = Attr::new_single(PreciseType::i32(), Single::new(1i32, 1024));
         let block = Block::new(1024, vec![attr1, attr2]);
         let mut bs: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut bs);

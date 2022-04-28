@@ -109,6 +109,24 @@ impl<'a, T: DataSourceID> Builder<'a, T> {
             input: self.input,
             output,
             evals: self.cache,
+            filter: None,
+        })
+    }
+
+    #[inline]
+    pub fn with_filter<I: IntoIterator<Item = &'a Expr>>(mut self, exprs: I, filter_expr: &'a Expr) -> Result<EvalPlan<T>> {
+        let mut output = vec![];
+        let (filter, _) = self.find_ref_or_gen(filter_expr)?;
+        output.push(filter);
+        for e in exprs {
+            let (out, _) = self.find_ref_or_gen(e)?;
+            output.push(out);
+        }
+        Ok(EvalPlan {
+            input: self.input,
+            output,
+            evals: self.cache,
+            filter: Some(filter),
         })
     }
 
@@ -180,11 +198,16 @@ pub type QueryEvalPlan = EvalPlan<QueryID>;
 
 /// Evaluation Plan.
 ///
-/// It is designed to evaluate all expressions in order,
-/// and make any common expression be evaluated only once.
-/// That means if we have expression, e.g. `abs(c0)`, `abs(c0)+1`, `abs(c0)+2`,
+/// It is designed to support scalar expression evaluation within block.
+/// The plan evaluates all expressions in order, ensuring any common expression 
+/// be evaluated only once.
+/// For example, if we have expressions: `abs(c0)`, `abs(c0)+1`, `abs(c0)+2`,
 /// the common expression `abs(c0)` will be evaluated only once, and be reused
-/// by following expressions.
+/// by others.
+/// 
+/// It also supports filter expression.
+/// The filter expression will be evaluated first.
+/// The result has two formats: Single, and Bitmap.
 ///
 /// The plan maintains the input columns, evaluation cache instructions, and
 /// output references to input and cache.
@@ -195,17 +218,29 @@ pub struct EvalPlan<T> {
     pub input: Vec<(T, u32)>,
     pub evals: Vec<Eval>,
     pub output: Vec<EvalRef>,
+    pub filter: Option<EvalRef>,
 }
 
 impl<T: DataSourceID> EvalPlan<T> {
+    /// Create a new evaluation plan.
     #[inline]
     pub fn new<'a, I: IntoIterator<Item = &'a Expr>>(exprs: I) -> Result<Self> {
         Builder::new().build(exprs)
     }
 
+    /// Create a new evaluation plan with filter expression.
+    #[inline]
+    pub fn with_filter<'a, I: IntoIterator<Item = &'a Expr>>(exprs: I, filter_expr: &'a Expr) -> Result<Self> {
+        Builder::new().with_filter(exprs, filter_expr)
+    }
+
+    /// Evaluate one block.
     #[inline]
     pub fn eval(&self, block: &Block) -> Result<Vec<Attr>> {
         assert!(block.data.len() >= self.input.len());
+        if self.filter.is_some() {
+            todo!()
+        }
         let mut cache: EvalCache = (0..self.evals.len())
             .map(|_| CacheEntry::default())
             .collect();
@@ -218,7 +253,7 @@ impl<T: DataSourceID> EvalPlan<T> {
     }
 
     #[inline]
-    pub fn fetch_output(&self, block: &Block, mut cache: EvalCache) -> Result<Vec<Attr>> {
+    fn fetch_output(&self, block: &Block, mut cache: EvalCache) -> Result<Vec<Attr>> {
         let mut output = Vec::with_capacity(self.output.len());
         for r in &self.output {
             match r {

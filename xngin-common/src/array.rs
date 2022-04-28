@@ -36,6 +36,13 @@ impl Array {
         Array::Owned { inner, len: 0 }
     }
 
+    /// Create a new array with given capacity.
+    #[inline]
+    pub fn with_capacity(cap: usize) -> Self {
+        let inner = RawArray::with_capacity(cap);
+        Array::Owned { inner, len: 0 }
+    }
+
     /// Create a borrowed array.
     #[inline]
     pub fn new_borrowed<T: ByteRepr>(ptr: Arc<[u8]>, len: usize, start_bytes: usize) -> Self {
@@ -100,6 +107,15 @@ impl Array {
                 end_bytes,
                 ..
             } => &ptr[*start_bytes..*end_bytes],
+        }
+    }
+
+    /// Returns mutable raw byte slice.
+    #[inline]
+    pub fn raw_mut(&mut self) -> Option<&mut [u8]> {
+        match self {
+            Array::Owned { inner, .. } => Some(inner.as_slice_mut()),
+            Array::Borrowed {..} => None,
         }
     }
 

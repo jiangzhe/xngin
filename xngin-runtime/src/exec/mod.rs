@@ -1,4 +1,5 @@
-pub mod proj;
+mod proj;
+mod table_scan;
 
 use crate::buf::OutputBuffer;
 use crate::cancel::Cancellation;
@@ -6,13 +7,14 @@ use crate::error::{Error, Result};
 use async_executor::Executor;
 use async_trait::async_trait;
 use flume::{Receiver, Sender};
-use proj::ProjExec;
+pub use proj::ProjExec;
+pub use table_scan::TableScanExec;
 use std::sync::Arc;
 use xngin_storage::block::Block;
 
 pub enum Exec {
     Proj(ProjExec),
-    // TableScan(TableScanExec),
+    TableScan(TableScanExec),
 }
 
 pub struct ExecContext {
