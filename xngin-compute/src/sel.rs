@@ -1,11 +1,11 @@
 use crate::error::{Error, Result};
-use xngin_common::bitmap::Bitmap;
-use xngin_common::array::Array;
-use xngin_storage::attr::Attr;
-use xngin_storage::codec::{Codec, Single};
-use xngin_datatype::PreciseType;
 use smallvec::SmallVec;
 use std::sync::Arc;
+use xngin_common::array::Array;
+use xngin_common::bitmap::Bitmap;
+use xngin_datatype::PreciseType;
+use xngin_storage::attr::Attr;
+use xngin_storage::codec::{Codec, Single};
 
 /// Sel encodes filter indexes into bitmap, single or none.
 #[derive(Debug, Clone)]
@@ -17,7 +17,9 @@ pub enum Sel {
         len: u16,
     },
     /// no value returned.
-    None { len: u16 },
+    None {
+        len: u16,
+    },
 }
 
 impl Sel {
@@ -26,7 +28,7 @@ impl Sel {
     pub fn n_records(&self) -> usize {
         match self {
             Sel::Bitmap(b) => b.len(),
-            Sel::Single{len, ..} | Sel::None{len} => *len as usize,
+            Sel::Single { len, .. } | Sel::None { len } => *len as usize,
         }
     }
 
@@ -35,8 +37,8 @@ impl Sel {
     pub fn n_filtered(&self) -> usize {
         match self {
             Sel::Bitmap(b) => b.true_count(),
-            Sel::Single{..} => 1,
-            Sel::None{..} => 0,
+            Sel::Single { .. } => 1,
+            Sel::None { .. } => 0,
         }
     }
 
@@ -56,7 +58,7 @@ impl Sel {
                         if valid {
                             let mut data: SmallVec<_> = SmallVec::with_capacity(raw_val.len());
                             data.extend_from_slice(raw_val);
-                            Attr::new_single(attr.ty, Single::raw_from_bytes(data, 1))
+                            Attr::new_single(attr.ty, Single::new_raw(data, 1))
                         } else {
                             Attr::new_single(attr.ty, Single::new_null(1))
                         }
@@ -69,12 +71,14 @@ impl Sel {
                         // apply data
                         match &attr.codec {
                             Codec::Empty => unreachable!(),
-                            Codec::Single(s) => if s.valid {
-                                let mut s = s.clone();
-                                s.len = n_filtered;
-                                Attr::new_single(attr.ty, s)
-                            } else {
-                                Attr::new_single(attr.ty, Single::new_null(n_filtered))
+                            Codec::Single(s) => {
+                                if s.valid {
+                                    let mut s = s.clone();
+                                    s.len = n_filtered;
+                                    Attr::new_single(attr.ty, s)
+                                } else {
+                                    Attr::new_single(attr.ty, Single::new_null(n_filtered))
+                                }
                             }
                             Codec::Bitmap(b) => {
                                 debug_assert_eq!(PreciseType::bool(), attr.ty);
@@ -83,7 +87,7 @@ impl Sel {
                                 let mut idx = 0;
                                 for (flag, n) in sel.range_iter() {
                                     if flag {
-                                        data.extend_range(b, idx..idx+n)?;
+                                        data.extend_range(b, idx..idx + n)?;
                                     }
                                     idx += n;
                                 }
@@ -94,7 +98,7 @@ impl Sel {
                                     idx = 0;
                                     for (flag, n) in sel.range_iter() {
                                         if flag {
-                                            tmp.extend_range(vm, idx..idx+n)?;
+                                            tmp.extend_range(vm, idx..idx + n)?;
                                         }
                                         idx += n;
                                     }
@@ -114,9 +118,11 @@ impl Sel {
                                 let mut tgt_offset = 0;
                                 for (flag, n) in sel.range_iter() {
                                     if flag {
-                                        let src_offset = src_idx*val_len;
+                                        let src_offset = src_idx * val_len;
                                         let raw_len = n * val_len;
-                                        data_raw[tgt_offset..tgt_offset+raw_len].copy_from_slice(&src_raw[src_offset..src_offset+raw_len]);
+                                        data_raw[tgt_offset..tgt_offset + raw_len].copy_from_slice(
+                                            &src_raw[src_offset..src_offset + raw_len],
+                                        );
                                         tgt_offset += raw_len;
                                     }
                                     src_idx += n;
@@ -132,7 +138,7 @@ impl Sel {
                                     let mut idx = 0;
                                     for (flag, n) in sel.range_iter() {
                                         if flag {
-                                            tmp.extend_range(vm, idx..idx+n)?;
+                                            tmp.extend_range(vm, idx..idx + n)?;
                                         }
                                         idx += n;
                                     }
@@ -147,18 +153,18 @@ impl Sel {
                     }
                 }
             }
-            Sel::Single{idx, ..} => {
+            Sel::Single { idx, .. } => {
                 let idx = *idx as usize;
                 let (valid, raw_val) = attr.raw_val(idx)?;
                 if valid {
                     let mut data: SmallVec<_> = SmallVec::with_capacity(raw_val.len());
                     data.extend_from_slice(raw_val);
-                    Attr::new_single(attr.ty, Single::raw_from_bytes(data, 1))
+                    Attr::new_single(attr.ty, Single::new_raw(data, 1))
                 } else {
                     Attr::new_single(attr.ty, Single::new_null(1))
                 }
             }
-            Sel::None{..} => Attr::empty(attr.ty),
+            Sel::None { .. } => Attr::empty(attr.ty),
         };
         Ok(res)
     }
@@ -169,15 +175,20 @@ impl<'a> TryFrom<&'a Codec> for Sel {
     #[inline]
     fn try_from(src: &Codec) -> Result<Self> {
         let res = match src {
-            Codec::Single(s) => if s.valid {
-                let (_, idx) = s.view::<u16>();
-                if idx as usize >= s.len {
-                    return Err(Error::IndexOutOfBound)
+            Codec::Single(s) => {
+                if s.valid {
+                    let (_, idx) = s.view::<u16>();
+                    if idx as usize >= s.len {
+                        return Err(Error::IndexOutOfBound);
+                    }
+                    Sel::Single {
+                        idx,
+                        len: s.len as u16,
+                    }
+                } else {
+                    Sel::None { len: s.len as u16 }
                 }
-                Sel::Single{idx, len: s.len as u16}
-            } else {
-                Sel::None{len: s.len as u16}
-            },
+            }
             Codec::Bitmap(b) => Sel::Bitmap(Arc::clone(b)),
             _ => return Err(Error::InvalidCodecForSel),
         };
@@ -220,24 +231,29 @@ mod tests {
         assert_eq!(3, res.n_records());
         assert!(!res.codec.as_single().unwrap().valid);
     }
-    
+
     #[test]
     fn test_sel_apply_array() {
         let attr = Attr::from(0i32..1024);
         // none
-        let sel = Sel::None{len: 1024};
+        let sel = Sel::None { len: 1024 };
         let res = sel.apply(&attr).unwrap();
         assert_eq!(0, res.n_records());
         // single
-        let sel = Sel::Single{idx: 1, len: 1024};
+        let sel = Sel::Single { idx: 1, len: 1024 };
         let res = sel.apply(&attr).unwrap();
         assert_eq!(1, res.n_records());
         assert_eq!((true, 1), res.codec.as_single().unwrap().view::<i32>());
         // single null
-        let sel = Sel::Single{idx: 1, len: 1024};
+        let sel = Sel::Single { idx: 1, len: 1024 };
         let mut bm = Bitmap::from_iter(vec![true; 1024]);
         bm.set(1, false).unwrap();
-        let attr2 = Attr::new_array(PreciseType::i32(), Array::from(0i32..1024), Some(Arc::new(bm)), None);
+        let attr2 = Attr::new_array(
+            PreciseType::i32(),
+            Array::from(0i32..1024),
+            Some(Arc::new(bm)),
+            None,
+        );
         let res = sel.apply(&attr2).unwrap();
         assert_eq!(1, res.n_records());
         assert_eq!((false, 0), res.codec.as_single().unwrap().view::<i32>());
@@ -260,7 +276,10 @@ mod tests {
         let sel = Sel::Bitmap(Arc::new(bm));
         let res = sel.apply(&attr).unwrap();
         assert_eq!(3, res.n_records());
-        assert_eq!(&[3i32, 5, 6], res.codec.as_array().unwrap().cast_slice::<i32>());
+        assert_eq!(
+            &[3i32, 5, 6],
+            res.codec.as_array().unwrap().cast_slice::<i32>()
+        );
         // array all
         let bm = Bitmap::from_iter(vec![true; 1024]);
         let sel = Sel::Bitmap(Arc::new(bm));
@@ -272,11 +291,11 @@ mod tests {
     fn test_sel_apply_bitmap() {
         let attr = Attr::new_bitmap(Bitmap::from_iter(vec![true; 1024]), None);
         // none
-        let sel = Sel::None{len: 1024};
+        let sel = Sel::None { len: 1024 };
         let res = sel.apply(&attr).unwrap();
         assert_eq!(0, res.n_records());
         // single
-        let sel = Sel::Single{idx: 1, len: 1024};
+        let sel = Sel::Single { idx: 1, len: 1024 };
         let res = sel.apply(&attr).unwrap();
         assert_eq!(1, res.n_records());
         assert_eq!((true, 1), res.codec.as_single().unwrap().view::<u8>());
@@ -299,7 +318,14 @@ mod tests {
         let sel = Sel::Bitmap(Arc::new(bm));
         let res = sel.apply(&attr).unwrap();
         assert_eq!(3, res.n_records());
-        assert_eq!(vec![true, true, true], res.codec.as_bitmap().unwrap().bools().collect::<Vec<bool>>());
+        assert_eq!(
+            vec![true, true, true],
+            res.codec
+                .as_bitmap()
+                .unwrap()
+                .bools()
+                .collect::<Vec<bool>>()
+        );
         // array with validity
         let mut bm = Bitmap::from_iter(vec![false; 1024]);
         bm.set(3, true).unwrap();
@@ -308,7 +334,7 @@ mod tests {
         let sel = Sel::Bitmap(Arc::new(bm));
         let mut vm = Bitmap::from_iter(vec![true; 1024]);
         vm.set(3, false).unwrap();
-        let attr2= Attr::new_bitmap(Bitmap::from_iter(vec![true; 1024]), Some(Arc::new(vm)));
+        let attr2 = Attr::new_bitmap(Bitmap::from_iter(vec![true; 1024]), Some(Arc::new(vm)));
         let res = sel.apply(&attr2).unwrap();
         assert_eq!(3, res.n_records());
         let (valid, _) = res.raw_val(0).unwrap();

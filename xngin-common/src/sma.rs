@@ -316,8 +316,13 @@ impl SMA {
     #[inline]
     pub fn clone_to_owned(this: &Arc<Self>) -> Arc<Self> {
         match &this.pos {
-            PosTbl::Owned{..} => Arc::clone(this),
-            PosTbl::Borrowed{..} => Arc::new(SMA{min: this.min.clone(), max: this.max.clone(), kind: this.kind, pos: this.pos.to_owned()})
+            PosTbl::Owned { .. } => Arc::clone(this),
+            PosTbl::Borrowed { .. } => Arc::new(SMA {
+                min: this.min.clone(),
+                max: this.max.clone(),
+                kind: this.kind,
+                pos: this.pos.to_owned(),
+            }),
         }
     }
 }
@@ -436,11 +441,15 @@ impl PosTbl {
     #[inline]
     pub fn to_owned(&self) -> Self {
         match self {
-            PosTbl::Owned {inner} => PosTbl::Owned{inner: inner.clone()},
-            PosTbl::Borrowed{len, ..} => {
+            PosTbl::Owned { inner } => PosTbl::Owned {
+                inner: inner.clone(),
+            },
+            PosTbl::Borrowed { len, .. } => {
                 let mut inner = Vec::with_capacity(*len);
                 inner.extend_from_slice(self.table());
-                PosTbl::Owned{inner: inner.into_boxed_slice()}
+                PosTbl::Owned {
+                    inner: inner.into_boxed_slice(),
+                }
             }
         }
     }

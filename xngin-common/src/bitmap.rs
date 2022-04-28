@@ -29,6 +29,19 @@ impl Bitmap {
         }
     }
 
+    /// Create a new owned bitmap with given length.
+    /// The returned bitmap already has length same as input.
+    /// The caller should guarantee the content should be correctly
+    /// initialized before any reads.
+    #[inline]
+    pub fn with_len(len_u1: usize) -> Self {
+        let cap_u8 = if len_u1 == 0 { 1 } else { (len_u1 + 7) / 8 };
+        Bitmap::Owned {
+            inner: RawArray::with_capacity(cap_u8),
+            len_u1,
+        }
+    }
+
     /// Create a new borrowed bitmap.
     #[inline]
     pub fn new_borrowed(ptr: Arc<[u8]>, len_u1: usize, start_bytes: usize) -> Self {
@@ -995,7 +1008,7 @@ fn bitmap_extend_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Rang
             tgt[0] &= (1 << rbits) - 1;
             let extra = (src[src_start_u64] >> shr_bits) & !((1 << rbits) - 1);
             tgt[0] |= extra;
-            return
+            return;
         }
         let src_end_u64 = (range.end + 63) / 64;
         // save first u64 and then clear it, handling it after pair updates
@@ -1027,9 +1040,10 @@ fn bitmap_extend_range(dst: &mut [u64], dst_len: usize, src: &[u64], range: Rang
         tgt[0] &= (1 << rbits) - 1;
         tgt[0] |= (src[src_start_u64] << shl_bits) & !((1 << rbits) - 1);
         if tgt.len() == 1 {
-            return
+            return;
         }
-        tgt[1..].iter_mut()
+        tgt[1..]
+            .iter_mut()
             .zip(src[src_start_u64..src_end_u64].pairs())
             .for_each(|(a, (b, c))| {
                 *a = b >> shr_bits;
@@ -1285,7 +1299,10 @@ mod tests {
         let mut bm1 = Bitmap::from_iter(vec![false, true, false, false, true]);
         let bm2 = Bitmap::from_iter(vec![true, true, false, false, true, false, false, true]);
         bm1.extend_range(&bm2, 2..5)?;
-        assert_eq!(vec![false, true, false, false, true, false, false, true], bm1.bools().collect::<Vec<_>>());
+        assert_eq!(
+            vec![false, true, false, false, true, false, false, true],
+            bm1.bools().collect::<Vec<_>>()
+        );
         // case 6
         let mut bm1 = Bitmap::from_iter(vec![false, true, false, false, true]);
         let bm2 = Bitmap::from_iter(vec![true; 128]);
@@ -1300,7 +1317,10 @@ mod tests {
         let bm2 = Bitmap::from_iter(vec![false; 128]);
         bm1.extend_range(&bm2, 35..75)?;
         assert_eq!(80, bm1.len());
-        let expected: Vec<_> = std::iter::repeat(true).take(40).chain(std::iter::repeat(false).take(40)).collect();
+        let expected: Vec<_> = std::iter::repeat(true)
+            .take(40)
+            .chain(std::iter::repeat(false).take(40))
+            .collect();
         assert_eq!(expected, bm1.bools().collect::<Vec<_>>());
         Ok(())
     }

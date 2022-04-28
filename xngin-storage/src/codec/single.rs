@@ -23,6 +23,7 @@ impl Single {
         }
     }
 
+    /// Create single codec with null value.
     #[inline]
     pub fn new_null(len: usize) -> Self {
         Single {
@@ -32,6 +33,7 @@ impl Single {
         }
     }
 
+    /// Create single codec with given value.
     #[inline]
     pub fn new<T: ByteRepr>(val: T, len: usize) -> Self {
         Single {
@@ -41,8 +43,19 @@ impl Single {
         }
     }
 
+    /// Create single codec with bool value.
     #[inline]
-    pub fn raw_from_bytes(data: SmallVec<[u8; 16]>, len: usize) -> Self {
+    pub fn new_bool(val: bool, len: usize) -> Self {
+        Single {
+            valid: true,
+            data: smallvec![if val { 1u8 } else { 0 }],
+            len,
+        }
+    }
+
+    /// Create single codec from raw bytes.
+    #[inline]
+    pub fn new_raw(data: SmallVec<[u8; 16]>, len: usize) -> Self {
         Single {
             valid: true,
             data,

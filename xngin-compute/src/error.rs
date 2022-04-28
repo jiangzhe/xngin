@@ -1,6 +1,6 @@
 use thiserror::Error;
-use xngin_storage::error::Error as StorageError;
 use xngin_common::error::Error as CommonError;
+use xngin_storage::error::Error as StorageError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

@@ -21,7 +21,7 @@ pub enum Codec {
     /// 1. All values in one block are same.
     /// 2. Only one value in intermediate block, which is common when
     ///    filter expression is evaluated to single row. e.g. primary key
-    ///    search in OLTP. 
+    ///    search in OLTP.
     Single(Single),
     /// Array codec stores values in contiguous memory area.
     /// It enables SIMD instructions upon such values.

@@ -115,7 +115,7 @@ impl Array {
     pub fn raw_mut(&mut self) -> Option<&mut [u8]> {
         match self {
             Array::Owned { inner, .. } => Some(inner.as_slice_mut()),
-            Array::Borrowed {..} => None,
+            Array::Borrowed { .. } => None,
         }
     }
 
@@ -170,28 +170,6 @@ impl Array {
                 Some(unsafe { inner.cast_slice_mut(len) })
             }
             Array::Borrowed { .. } => None,
-        }
-    }
-
-    /// Convert the array to owned.
-    /// If it's already owned, this call is no-op.
-    #[inline]
-    pub fn to_mut(&mut self) -> &mut Self {
-        match self {
-            Array::Owned { .. } => self,
-            Array::Borrowed {
-                ptr,
-                len,
-                start_bytes,
-                end_bytes,
-            } => {
-                let len = *len;
-                let raw = &ptr[*start_bytes..*end_bytes];
-                let mut inner = RawArray::with_capacity(raw.len());
-                inner.as_slice_mut()[..raw.len()].copy_from_slice(raw);
-                *self = Array::Owned { inner, len };
-                self
-            }
         }
     }
 
@@ -269,12 +247,9 @@ mod tests {
         assert_eq!(16, array.total_bytes());
         assert!(!array.is_empty());
         assert_eq!(&bytes[..], array.raw());
-        let mut a2 = array.clone();
-        let a2 = a2.to_mut();
-        assert_eq!(array.raw()[..16], a2.raw()[..16]);
-        let a3 = Arc::new(array.clone());
-        let a4 = Array::clone_to_owned(&a3);
-        assert_eq!(a3.cast_slice::<i32>(), a4.cast_slice::<i32>());
+        let a2 = Arc::new(array.clone());
+        let a3 = Array::clone_to_owned(&a2);
+        assert_eq!(a2.cast_slice::<i32>(), a3.cast_slice::<i32>());
     }
 
     #[test]
