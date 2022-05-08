@@ -2,9 +2,9 @@ mod single;
 
 use std::sync::Arc;
 
+use crate::array::Array;
+use crate::bitmap::Bitmap;
 pub use single::Single;
-use xngin_common::array::Array;
-use xngin_common::bitmap::Bitmap;
 
 /// Codec of attributes.
 /// The design of codec is heavily inspired by paper "Data Blocks: Hybrid OLTP
@@ -65,7 +65,7 @@ impl Codec {
     #[inline]
     pub fn n_records(&self) -> usize {
         match self {
-            Codec::Single(s) => s.len,
+            Codec::Single(s) => s.len as usize,
             Codec::Array(a) => a.len(),
             Codec::Bitmap(b) => b.len(),
             Codec::Empty => 0,

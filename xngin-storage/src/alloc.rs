@@ -5,12 +5,12 @@ use std::ptr::NonNull;
 /// Used internally to make sure all memory allocations
 /// are aligned to 16 bytes.
 #[repr(C, align(16))]
+#[derive(Clone, Copy)]
 struct U128(u128);
-const ALIGNMENT: usize = 16;
 
 /// align length to 16 bytes.
 #[inline]
-pub fn align_u128(v: usize) -> usize {
+pub const fn align_u128(v: usize) -> usize {
     (v + 15) & !15
 }
 
@@ -22,10 +22,30 @@ pub fn align_u128(v: usize) -> usize {
 /// Caller should always call free_aligned to release the memory.
 #[inline]
 pub(crate) fn alloc_aligned(cap: usize) -> (*mut u8, usize) {
-    let cap = usize::max(ALIGNMENT, cap);
-    let cap_u128 = (cap + ALIGNMENT - 1) / ALIGNMENT;
+    let cap = usize::max(16, cap);
+    let cap_u128 = (cap + 15) / 16;
     let vec: Vec<U128> = Vec::with_capacity(cap_u128);
-    let cap = vec.capacity() * ALIGNMENT;
+    let cap = vec.capacity() * 16;
+    let array = Vec::leak(vec);
+    (array.as_mut_ptr() as *mut u8, cap)
+}
+
+#[inline]
+pub(crate) fn alloc_aligned_zeroes(cap: usize) -> (*mut u8, usize) {
+    let cap = usize::max(16, cap);
+    let cap_u128 = (cap + 15) / 16;
+    let vec: Vec<U128> = vec![U128(0); cap_u128];
+    let cap = vec.capacity() * 16;
+    let array = Vec::leak(vec);
+    (array.as_mut_ptr() as *mut u8, cap)
+}
+
+#[inline]
+pub(crate) fn alloc_aligned_ones(cap: usize) -> (*mut u8, usize) {
+    let cap = usize::max(16, cap);
+    let cap_u128 = (cap + 15) / 16;
+    let vec: Vec<U128> = vec![U128(!0); cap_u128];
+    let cap = vec.capacity() * 16;
     let array = Vec::leak(vec);
     (array.as_mut_ptr() as *mut u8, cap)
 }
@@ -39,7 +59,7 @@ pub(crate) fn alloc_aligned(cap: usize) -> (*mut u8, usize) {
 /// once. After this call, the memory must not be used.
 #[inline]
 pub(crate) unsafe fn free_aligned(ptr: *mut u8, cap: usize) {
-    assert!(cap % ALIGNMENT == 0);
+    assert!(cap % 16 == 0);
     let cap_u128 = cap / 16;
     let _ = Vec::<U128>::from_raw_parts(ptr as *mut U128, cap_u128, cap_u128);
 }
@@ -79,6 +99,28 @@ impl RawArray {
     #[inline]
     pub fn with_capacity(cap_u8: usize) -> Self {
         let (ptr, cap_u8) = alloc_aligned(cap_u8);
+        RawArray {
+            ptr: NonNull::new(ptr).unwrap(),
+            cap_u8,
+        }
+    }
+
+    /// Create a new raw array with given capacity.
+    /// All bits are set to zero before returned.
+    #[inline]
+    pub fn zeroes(cap_u8: usize) -> Self {
+        let (ptr, cap_u8) = alloc_aligned_zeroes(cap_u8);
+        RawArray {
+            ptr: NonNull::new(ptr).unwrap(),
+            cap_u8,
+        }
+    }
+
+    /// Create a new raw array with given capacity.
+    /// All bits are set to one before returned.
+    #[inline]
+    pub fn ones(cap_u8: usize) -> Self {
+        let (ptr, cap_u8) = alloc_aligned_ones(cap_u8);
         RawArray {
             ptr: NonNull::new(ptr).unwrap(),
             cap_u8,

@@ -1,12 +1,11 @@
 use crate::error::{Error, Result};
 use crate::BinaryEval;
-use std::sync::Arc;
-use xngin_common::array::Array;
-use xngin_common::bitmap::Bitmap;
-use xngin_common::repr::ByteRepr;
 use xngin_datatype::PreciseType;
+use xngin_storage::array::Array;
 use xngin_storage::attr::Attr;
 use xngin_storage::codec::{Codec, Single};
+use xngin_storage::repr::ByteRepr;
+use xngin_storage::sel::Sel;
 
 /// Kinds of arithmetic expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -19,15 +18,25 @@ pub enum ArithKind {
 
 impl ArithKind {
     #[inline]
-    pub fn eval(&self, lhs: &Attr, rhs: &Attr) -> Result<Attr> {
+    pub fn eval(&self, lhs: &Attr, rhs: &Attr, sel: Option<&Sel>) -> Result<Attr> {
         match (self, lhs.ty, rhs.ty) {
             (ArithKind::Add, PreciseType::Int(4, l_unsigned), PreciseType::Int(4, r_unsigned)) => {
-                Impl(AddI32).binary_eval(PreciseType::Int(4, l_unsigned | r_unsigned), lhs, rhs)
+                Impl(AddI32).binary_eval(
+                    PreciseType::Int(4, l_unsigned | r_unsigned),
+                    lhs,
+                    rhs,
+                    sel,
+                )
             }
             (ArithKind::Add, PreciseType::Int(8, l_unsigned), PreciseType::Int(8, r_unsigned)) => {
-                Impl(AddI64).binary_eval(PreciseType::Int(8, l_unsigned | r_unsigned), lhs, rhs)
+                Impl(AddI64).binary_eval(
+                    PreciseType::Int(8, l_unsigned | r_unsigned),
+                    lhs,
+                    rhs,
+                    sel,
+                )
             }
-            _ => Err(Error::UnsupportedArithOp),
+            _ => Err(Error::UnsupportedEval),
         }
     }
 }
@@ -39,138 +48,212 @@ pub trait ArithEval {
     type O: ByteRepr + Copy;
 
     fn apply(&self, lhs: Self::L, rhs: Self::R) -> Self::O;
-
-    /// Apply calculation of single and single.
-    #[inline]
-    fn apply_both_single(&self, res_ty: PreciseType, l: &Single, r: &Single) -> Result<Attr> {
-        let (l_valid, l_val) = l.view();
-        let (r_valid, r_val) = r.view();
-        if l_valid && r_valid {
-            let res = self.apply(l_val, r_val);
-            Ok(Attr::new_single(res_ty, Single::new(res, l.len)))
-        } else {
-            Ok(Attr::new_single(res_ty, Single::new_null(l.len)))
-        }
-    }
-
-    /// Apply calculation of array and single.
-    #[inline]
-    fn apply_array_single(
-        &self,
-        res_ty: PreciseType,
-        l_vmap: Option<&Arc<Bitmap>>,
-        l_vals: &[Self::L],
-        r: &Single,
-    ) -> Result<Attr> {
-        let (r_valid, r_val) = r.view();
-        if r_valid {
-            let mut arr = Array::new_owned::<Self::O>(l_vals.len());
-            let res_vals = arr.cast_slice_mut(l_vals.len()).unwrap();
-            for (lhs, res) in l_vals.iter().zip(res_vals) {
-                *res = self.apply(*lhs, r_val);
-            }
-            let validity = l_vmap.map(Bitmap::clone_to_owned);
-            Ok(Attr::new_array(res_ty, arr, validity, None))
-        } else {
-            Ok(Attr::new_single(res_ty, Single::new_null(l_vals.len())))
-        }
-    }
-
-    /// Apply calculation of single and array.
-    #[inline]
-    fn apply_single_array(
-        &self,
-        res_ty: PreciseType,
-        l: &Single,
-        r_vmap: Option<&Arc<Bitmap>>,
-        r_vals: &[Self::R],
-    ) -> Result<Attr> {
-        let (l_valid, l_val) = l.view();
-        if l_valid {
-            let mut arr = Array::new_owned::<Self::O>(r_vals.len());
-            let res_vals = arr.cast_slice_mut(r_vals.len()).unwrap();
-            for (rhs, res) in r_vals.iter().zip(res_vals) {
-                *res = self.apply(l_val, *rhs);
-            }
-            let validity = r_vmap.map(Bitmap::clone_to_owned);
-            let codec = Codec::new_array(arr);
-            Ok(Attr {
-                ty: res_ty,
-                validity,
-                sma: None,
-                codec,
-            })
-        } else {
-            Ok(Attr::new_single(res_ty, Single::new_null(l.len)))
-        }
-    }
-
-    /// Apply calculation of array and array.
-    #[inline]
-    fn apply_both_array(
-        &self,
-        res_ty: PreciseType,
-        l_vmap: Option<&Arc<Bitmap>>,
-        l_vals: &[Self::L],
-        r_vmap: Option<&Arc<Bitmap>>,
-        r_vals: &[Self::R],
-    ) -> Result<Attr> {
-        assert!(l_vals.len() == r_vals.len());
-        let mut arr = Array::new_owned::<Self::O>(l_vals.len());
-        let res_vals = arr.cast_slice_mut(l_vals.len()).unwrap();
-        for ((lhs, rhs), res) in l_vals.iter().zip(r_vals).zip(res_vals) {
-            *res = self.apply(*lhs, *rhs);
-        }
-        let validity = match (l_vmap, r_vmap) {
-            (None, None) => None,
-            (Some(l_bm), None) => Some(Bitmap::clone_to_owned(l_bm)),
-            (None, Some(r_bm)) => Some(Bitmap::clone_to_owned(r_bm)),
-            (Some(l_bm), Some(r_bm)) => {
-                let mut res = Bitmap::to_owned(l_bm.as_ref());
-                res.merge(r_bm)?;
-                Some(Arc::new(res))
-            }
-        };
-        let codec = Codec::new_array(arr);
-        Ok(Attr {
-            ty: res_ty,
-            validity,
-            sma: None,
-            codec,
-        })
-    }
 }
 
 pub struct Impl<T>(T);
 
+impl<T: ArithEval> Impl<T> {
+    /// Apply calculation of single and single.
+    #[inline]
+    fn single_single(
+        &self,
+        res_ty: PreciseType,
+        l_val: T::L,
+        r_val: T::R,
+        validity: Sel,
+    ) -> Result<Attr> {
+        let res = self.0.apply(l_val, r_val);
+        Ok(Attr::new_single(
+            res_ty,
+            Single::new(res, validity.n_records() as u16),
+            validity,
+        ))
+    }
+
+    /// Apply calculation of array and single.
+    #[inline]
+    fn array_single(
+        &self,
+        res_ty: PreciseType,
+        l_vals: &[T::L],
+        r_val: T::R,
+        validity: Sel,
+        sel: Option<&Sel>,
+    ) -> Result<Attr> {
+        if let Some(sel) = sel {
+            match sel {
+                Sel::None { .. } => {
+                    // no value should return, we can fake with single null
+                    return Ok(Attr::new_null(res_ty, l_vals.len() as u16));
+                }
+                Sel::Index { count, indexes, .. } => {
+                    return handle_sel_index::<T::O, _>(
+                        &indexes[..*count as usize],
+                        res_ty,
+                        &validity,
+                        l_vals.len(),
+                        |idx| self.0.apply(l_vals[idx], r_val),
+                    )
+                }
+                // Both Sel::All and Sel::Bitmap will result in evaluation on all values.
+                _ => (),
+            }
+        }
+        let mut arr = Array::new_owned::<T::O>(l_vals.len());
+        let res_vals = arr.cast_slice_mut(l_vals.len()).unwrap();
+        for (lhs, res) in l_vals.iter().zip(res_vals) {
+            *res = self.0.apply(*lhs, r_val);
+        }
+        unsafe { arr.set_len(l_vals.len()) };
+        Ok(Attr::new_array(res_ty, arr, validity, None))
+    }
+
+    /// Apply calculation of single and array.
+    #[inline]
+    fn single_array(
+        &self,
+        res_ty: PreciseType,
+        l_val: T::L,
+        r_vals: &[T::R],
+        validity: Sel,
+        sel: Option<&Sel>,
+    ) -> Result<Attr> {
+        if let Some(sel) = sel {
+            match sel {
+                Sel::None { .. } => {
+                    // no value should return, we can fake with single null
+                    return Ok(Attr::new_null(res_ty, r_vals.len() as u16));
+                }
+                Sel::Index { count, indexes, .. } => {
+                    return handle_sel_index::<T::O, _>(
+                        &indexes[..*count as usize],
+                        res_ty,
+                        &validity,
+                        r_vals.len(),
+                        |idx| self.0.apply(l_val, r_vals[idx]),
+                    )
+                }
+                // Both Sel::All and Sel::Bitmap will result in evaluation on all values.
+                _ => (),
+            }
+        }
+        let mut arr = Array::new_owned::<T::O>(r_vals.len());
+        let res_vals = arr.cast_slice_mut(r_vals.len()).unwrap();
+        for (rhs, res) in r_vals.iter().zip(res_vals) {
+            *res = self.0.apply(l_val, *rhs);
+        }
+        unsafe { arr.set_len(r_vals.len()) };
+        Ok(Attr::new_array(res_ty, arr, validity, None))
+    }
+
+    /// Apply calculation of array and array.
+    #[inline]
+    fn array_array(
+        &self,
+        res_ty: PreciseType,
+        l_vals: &[T::L],
+        r_vals: &[T::R],
+        validity: Sel,
+        sel: Option<&Sel>,
+    ) -> Result<Attr> {
+        assert!(l_vals.len() == r_vals.len());
+        if let Some(sel) = sel {
+            match sel {
+                Sel::None { .. } => {
+                    // no value should return, we can fake with single null
+                    return Ok(Attr::new_null(res_ty, l_vals.len() as u16));
+                }
+                Sel::Index { count, indexes, .. } => {
+                    return handle_sel_index::<T::O, _>(
+                        &indexes[..*count as usize],
+                        res_ty,
+                        &validity,
+                        l_vals.len(),
+                        |idx| self.0.apply(l_vals[idx], r_vals[idx]),
+                    )
+                }
+                // Both Sel::All and Sel::Bitmap will result in evaluation on all values.
+                _ => (),
+            }
+        }
+        let mut arr = Array::new_owned::<T::O>(l_vals.len());
+        let res_vals = arr.cast_slice_mut(l_vals.len()).unwrap();
+        for ((lhs, rhs), res) in l_vals.iter().zip(r_vals).zip(res_vals) {
+            *res = self.0.apply(*lhs, *rhs);
+        }
+        Ok(Attr::new_array(res_ty, arr, validity, None))
+    }
+}
+
 impl<T: ArithEval> BinaryEval for Impl<T> {
     #[inline]
-    fn binary_eval(&self, res_ty: PreciseType, lhs: &Attr, rhs: &Attr) -> Result<Attr> {
-        if lhs.n_records() != rhs.n_records() {
+    fn binary_eval(
+        &self,
+        res_ty: PreciseType,
+        lhs: &Attr,
+        rhs: &Attr,
+        sel: Option<&Sel>,
+    ) -> Result<Attr> {
+        let n_records = lhs.n_records();
+        if n_records != rhs.n_records() {
             return Err(Error::RowNumberMismatch);
         }
+        let validity = lhs.validity.intersect(&rhs.validity)?;
+        if validity.is_none() {
+            return Ok(Attr::new_null(res_ty, n_records as u16));
+        }
         match (&lhs.codec, &rhs.codec) {
-            (Codec::Single(l), Codec::Single(r)) => self.0.apply_both_single(res_ty, l, r),
+            (Codec::Single(l), Codec::Single(r)) => {
+                self.single_single(res_ty, l.view(), r.view(), validity)
+            }
             (Codec::Array(l), Codec::Single(r)) => {
-                self.0
-                    .apply_array_single(res_ty, lhs.validity.as_ref(), l.cast_slice(), r)
+                self.array_single(res_ty, l.cast_slice(), r.view(), validity, sel)
             }
             (Codec::Single(l), Codec::Array(r)) => {
-                self.0
-                    .apply_single_array(res_ty, l, rhs.validity.as_ref(), r.cast_slice())
+                self.single_array(res_ty, l.view(), r.cast_slice(), validity, sel)
             }
-            (Codec::Array(l), Codec::Array(r)) => self.0.apply_both_array(
-                res_ty,
-                lhs.validity.as_ref(),
-                l.cast_slice(),
-                rhs.validity.as_ref(),
-                r.cast_slice(),
-            ),
+            (Codec::Array(l), Codec::Array(r)) => {
+                self.array_array(res_ty, l.cast_slice(), r.cast_slice(), validity, sel)
+            }
             (Codec::Empty, _) | (_, Codec::Empty) => Ok(Attr::empty(res_ty)),
             // Arithmetic expression does not support bitmap codec.
-            (Codec::Bitmap(_), _) | (_, Codec::Bitmap(_)) => Err(Error::UnsupportedArithOp),
+            (Codec::Bitmap(_), _) | (_, Codec::Bitmap(_)) => Err(Error::UnsupportedEval),
         }
     }
+}
+
+#[inline]
+fn handle_sel_index<T: ByteRepr, F: Fn(usize) -> T>(
+    sel: &[u16],
+    res_ty: PreciseType,
+    validity: &Sel,
+    len: usize,
+    f: F,
+) -> Result<Attr> {
+    let mut arr = Array::new_owned::<T>(len);
+    let res_vals = arr.cast_slice_mut::<T>(len).unwrap();
+    let mut valids = [0u16; 6];
+    let mut valid_count = 0;
+    for idx in sel {
+        let idx = *idx as usize;
+        if validity.selected(idx)? {
+            res_vals[idx] = f(idx);
+            valids[valid_count] = idx as u16;
+            valid_count += 1;
+        }
+    }
+    unsafe { arr.set_len(len) };
+    let res = if valid_count == 0 {
+        Attr::new_null(res_ty, len as u16)
+    } else {
+        let validity = Sel::Index {
+            count: valid_count as u8,
+            len: len as u16,
+            indexes: valids,
+        };
+        Attr::new_array(res_ty, arr, validity, None)
+    };
+    Ok(res)
 }
 
 macro_rules! impl_arith_eval_for_num {
@@ -204,7 +287,7 @@ mod tests {
         let c1 = Attr::from((0..SIZE as i32).into_iter());
         let c2 = Attr::from((0..SIZE as i32).into_iter());
         let add = Impl(AddI32);
-        let res = add.binary_eval(PreciseType::i32(), &c1, &c2).unwrap();
+        let res = add.binary_eval(PreciseType::i32(), &c1, &c2, None).unwrap();
         assert_eq!(4096, res.n_records());
     }
 
@@ -213,48 +296,93 @@ mod tests {
         let size = 10i32;
         let c1 = Attr::from((0..size).into_iter());
         let c2 = Attr::from((0..size).into_iter());
-        let c3 = Attr::new_single(PreciseType::i32(), Single::new(1i32, size as usize));
-        let c4 = Attr::new_single(PreciseType::i32(), Single::new(1i32, size as usize));
-        let c5 = Attr::new_single(PreciseType::i32(), Single::new_null(size as usize));
+        let c3 = Attr::new_single(
+            PreciseType::i32(),
+            Single::new(1i32, size as u16),
+            Sel::All(size as u16),
+        );
+        let c4 = Attr::new_single(
+            PreciseType::i32(),
+            Single::new(1i32, size as u16),
+            Sel::All(size as u16),
+        );
+        let c5 = Attr::new_null(PreciseType::i32(), size as u16);
         let add = Impl(AddI32);
         // array vs array
-        let res = add.binary_eval(PreciseType::i32(), &c1, &c2).unwrap();
+        let res = add.binary_eval(PreciseType::i32(), &c1, &c2, None).unwrap();
         let array = res.codec.as_array().unwrap();
         let i32s = array.cast_slice::<i32>();
         let expected: Vec<_> = (0..size).map(|i| i + i).collect();
         assert_eq!(&expected, i32s);
         // single vs single
-        let res = add.binary_eval(PreciseType::i32(), &c3, &c4).unwrap();
+        let res = add.binary_eval(PreciseType::i32(), &c3, &c4, None).unwrap();
+        assert!(res.validity.is_all());
         let single = res.codec.as_single().unwrap();
-        let (valid, value) = single.view::<i32>();
-        assert!(valid);
+        let value = single.view::<i32>();
         assert!(value == 2);
         // array vs single
-        let res = add.binary_eval(PreciseType::i32(), &c1, &c3).unwrap();
+        let res = add.binary_eval(PreciseType::i32(), &c1, &c3, None).unwrap();
         let array = res.codec.as_array().unwrap();
         let i32s = array.cast_slice::<i32>();
         let expected: Vec<_> = (0..size).map(|i| i + 1).collect();
         assert_eq!(&expected, i32s);
         // single vs array
-        let res = add.binary_eval(PreciseType::i32(), &c4, &c2).unwrap();
+        let res = add.binary_eval(PreciseType::i32(), &c4, &c2, None).unwrap();
         let array = res.codec.as_array().unwrap();
         let i32s = array.cast_slice::<i32>();
         let expected: Vec<_> = (0..size).map(|i| i + 1).collect();
         assert_eq!(&expected, i32s);
         // array vs null
-        let res = add.binary_eval(PreciseType::i32(), &c1, &c5).unwrap();
-        let single = res.codec.as_single().unwrap();
-        let (valid, _) = single.view::<i32>();
-        assert!(!valid);
+        let res = add.binary_eval(PreciseType::i32(), &c1, &c5, None).unwrap();
+        assert!(res.validity.is_none());
         // null vs array
-        let res = add.binary_eval(PreciseType::i32(), &c5, &c1).unwrap();
-        let single = res.codec.as_single().unwrap();
-        let (valid, _) = single.view::<i32>();
-        assert!(!valid);
+        let res = add.binary_eval(PreciseType::i32(), &c5, &c1, None).unwrap();
+        assert!(res.validity.is_none());
         // single vs null
-        let res = add.binary_eval(PreciseType::i32(), &c3, &c5).unwrap();
-        let single = res.codec.as_single().unwrap();
-        let (valid, _) = single.view::<i32>();
-        assert!(!valid);
+        let res = add.binary_eval(PreciseType::i32(), &c3, &c5, None).unwrap();
+        assert!(res.validity.is_none());
+    }
+
+    #[test]
+    fn test_arith_eval_sel() {
+        let validity = Sel::new_indexes(1024, vec![0, 1, 2, 3, 4]);
+        let c1 = Attr::new_single(
+            PreciseType::i64(),
+            Single::new(1i64, 1024),
+            validity.clone_to_owned(),
+        );
+        let c2 = Attr::from((0..1024i32).map(|i| i as i64));
+        let array = Array::from((0..1024i32).map(|i| i as i64));
+        let c3 = Attr::new_array(PreciseType::i64(), array, validity, None);
+        let sel = Sel::new_indexes(1024, vec![0, 1, 2, 3, 4, 5]);
+        let add = Impl(AddI64);
+        // single + single
+        let res = add
+            .binary_eval(PreciseType::i64(), &c1, &c1, Some(&sel))
+            .unwrap();
+        assert!(!res.is_valid(5).unwrap());
+        let res = res.codec.as_single().unwrap();
+        assert_eq!(2i64, res.view());
+        // single + array
+        let res = add
+            .binary_eval(PreciseType::i64(), &c1, &c2, Some(&sel))
+            .unwrap();
+        assert!(!res.is_valid(5).unwrap());
+        let res = res.codec.as_array().unwrap();
+        assert_eq!(&[1i64, 2, 3, 4, 5], &res.cast_slice::<i64>()[..5]);
+        // array + single
+        let res = add
+            .binary_eval(PreciseType::i64(), &c2, &c1, Some(&sel))
+            .unwrap();
+        assert!(!res.is_valid(5).unwrap());
+        let res = res.codec.as_array().unwrap();
+        assert_eq!(&[1i64, 2, 3, 4, 5], &res.cast_slice::<i64>()[..5]);
+        // array + array
+        let res = add
+            .binary_eval(PreciseType::i64(), &c2, &c3, Some(&sel))
+            .unwrap();
+        assert!(!res.is_valid(5).unwrap());
+        let res = res.codec.as_array().unwrap();
+        assert_eq!(&[0i64, 2, 4, 6, 8], &res.cast_slice::<i64>()[..5]);
     }
 }

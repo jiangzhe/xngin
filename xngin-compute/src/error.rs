@@ -1,5 +1,4 @@
 use thiserror::Error;
-use xngin_common::error::Error as CommonError;
 use xngin_storage::error::Error as StorageError;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -10,10 +9,10 @@ pub enum Error {
     RowNumberMismatch,
     #[error("Missing attribute")]
     MissingAttr,
-    #[error("Unsupported arithmetic operation")]
-    UnsupportedArithOp,
-    #[error("Invalid attribute to evaluate")]
-    InvalidAttrEval,
+    #[error("unsupported evaluation")]
+    UnsupportedEval,
+    #[error("Invalid evaluation plan")]
+    InvalidEvalPlan,
     #[error("Failed to build eval arguments")]
     FailToBuildEvalArgs,
     #[error("Failed to build eval output")]
@@ -22,10 +21,10 @@ pub enum Error {
     FailToFetchAttr,
     #[error("Failed to fetch eval cache")]
     FailToFetchEvalCache,
-    #[error("Invalid codec for selection")]
-    InvalidCodecForSel,
     #[error("Index out of bound")]
     IndexOutOfBound,
+    #[error("Invalid codec for selection")]
+    InvalidCodecForSel,
 }
 
 impl From<StorageError> for Error {
@@ -33,16 +32,7 @@ impl From<StorageError> for Error {
     fn from(src: StorageError) -> Self {
         match src {
             StorageError::IndexOutOfBound => Error::IndexOutOfBound,
-            _ => todo!(),
-        }
-    }
-}
-
-impl From<CommonError> for Error {
-    #[inline]
-    fn from(src: CommonError) -> Self {
-        match src {
-            CommonError::IndexOutOfBound(_) => Error::IndexOutOfBound,
+            StorageError::InvalidCodecForSel => Error::InvalidCodecForSel,
             _ => todo!(),
         }
     }

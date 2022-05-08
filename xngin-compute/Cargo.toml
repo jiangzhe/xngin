@@ -12,7 +12,6 @@ repository = "https://github.com/jiangzhe/xngin/xngin-compute/"
 [dependencies]
 thiserror = "1.0"
 libc = "0.2.101"
-xngin-common = { version = "0.1.0", path = "../xngin-common" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
 xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-storage = { version = "0.1.0", path = "../xngin-storage" }

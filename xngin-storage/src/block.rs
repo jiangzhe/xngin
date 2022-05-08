@@ -38,12 +38,6 @@ impl Block {
             data: ser_attrs,
         }
     }
-
-    /// Fetch an attribute from block by given index.
-    #[inline]
-    pub fn fetch_attr(&self, attr_idx: usize) -> Option<Attr> {
-        self.data.get(attr_idx).map(Attr::to_owned)
-    }
 }
 
 /// Block Header:
@@ -95,18 +89,18 @@ impl<'a> SerBlock<'a> {
         offset += buf.len();
         buf.clear();
         // attributes
-        // The start of next attribute data is also the end of previous attribute data.
+        // The start of next attribute is also the end of previous attribute.
         // That means we need to fill the gap between neighbor attributes when storing them
         // together.
         let attr_iter = self
             .data
             .iter()
-            .map(|(_, hdr)| hdr.offset_data)
+            .map(|(_, hdr)| hdr.start_offset())
             .chain(std::iter::once(self.ser_bytes))
             .skip(1)
             .zip(self.data.iter());
         for (end_offset, (attr, hdr)) in attr_iter {
-            let total_bytes = end_offset - hdr.offset_data;
+            let total_bytes = end_offset - hdr.start_offset();
             offset += attr.store(writer, buf, total_bytes)?;
         }
         debug_assert_eq!(offset, self.ser_bytes);
@@ -199,14 +193,15 @@ impl RawBlock {
 mod tests {
     use super::*;
     use crate::codec::Single;
+    use crate::sel::Sel;
     use std::io::Cursor;
     use std::sync::Arc;
     use xngin_datatype::PreciseType;
 
     #[test]
     fn test_block_single_store_and_load() {
-        let attr1 = Attr::new_single(PreciseType::i32(), Single::new_null(1024));
-        let attr2 = Attr::new_single(PreciseType::i32(), Single::new(1i32, 1024));
+        let attr1 = Attr::new_null(PreciseType::i32(), 1024);
+        let attr2 = Attr::new_single(PreciseType::i32(), Single::new(1i32, 1024), Sel::All(1024));
         let block = Block::new(1024, vec![attr1, attr2]);
         let mut bs: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut bs);
@@ -223,12 +218,10 @@ mod tests {
         let attr1_new = &new_block.data[0];
         assert_eq!(PreciseType::i32(), attr1_new.ty);
         assert!(attr1_new.validity.is_none() && attr1_new.sma.is_none());
-        let (valid, _) = attr1_new.codec.as_single().unwrap().view::<i32>();
-        assert!(!valid);
         let attr2_new = &new_block.data[1];
         assert_eq!(PreciseType::i32(), attr2_new.ty);
-        let (valid, value) = attr2_new.codec.as_single().unwrap().view::<i32>();
-        assert!(valid);
+        assert!(attr2_new.validity.is_all());
+        let value = attr2_new.codec.as_single().unwrap().view::<i32>();
         assert_eq!(1i32, value);
     }
 
@@ -252,12 +245,12 @@ mod tests {
         let new_block = raw_block.load_all().unwrap();
         let attr1_new = &new_block.data[0];
         assert_eq!(PreciseType::i32(), attr1_new.ty);
-        assert!(attr1_new.validity.is_none() && attr1_new.sma.is_none());
+        assert!(attr1_new.validity.is_all() && attr1_new.sma.is_none());
         let arr1 = attr1_new.codec.as_array().unwrap().cast_slice::<i32>();
         assert_eq!(&data1, arr1);
         let attr2_new = &new_block.data[1];
         assert_eq!(PreciseType::i32(), attr2_new.ty);
-        assert!(attr2_new.validity.is_some() && attr2_new.sma.is_none());
+        assert!(!attr2_new.validity.is_all() && attr2_new.sma.is_none());
         let arr2 = attr2_new.codec.as_array().unwrap().cast_slice::<i32>();
         assert_eq!(&data1, arr2);
     }

@@ -1,33 +1,27 @@
+use crate::repr::ByteRepr;
 use smallvec::{smallvec, SmallVec};
-use xngin_common::repr::ByteRepr;
 
 /// Single codec encodes single value as bytes in case all
 /// values of that attribute are identical.
 #[derive(Debug, Clone)]
 pub struct Single {
-    pub valid: bool,
     pub data: SmallVec<[u8; 16]>,
-    pub len: usize,
+    // pub valid: bool,
+    pub len: u16,
 }
 
 #[allow(clippy::len_without_is_empty)]
 impl Single {
     /// View value as given type.
-    /// Bool is specially handled as u8(true=0x01, false=0x00).
     #[inline]
-    pub fn view<T: ByteRepr>(&self) -> (bool, T) {
-        if self.valid {
-            (true, T::from_bytes(&self.data))
-        } else {
-            (false, T::default())
-        }
+    pub fn view<T: ByteRepr>(&self) -> T {
+        T::from_bytes(&self.data)
     }
 
     /// Create single codec with null value.
     #[inline]
-    pub fn new_null(len: usize) -> Self {
+    pub fn new_null(len: u16) -> Self {
         Single {
-            valid: false,
             data: smallvec![],
             len,
         }
@@ -35,9 +29,8 @@ impl Single {
 
     /// Create single codec with given value.
     #[inline]
-    pub fn new<T: ByteRepr>(val: T, len: usize) -> Self {
+    pub fn new<T: ByteRepr>(val: T, len: u16) -> Self {
         Single {
-            valid: true,
             data: val.to_bytes(),
             len,
         }
@@ -45,19 +38,24 @@ impl Single {
 
     /// Create single codec with bool value.
     #[inline]
-    pub fn new_bool(val: bool, len: usize) -> Self {
+    pub fn new_bool(val: bool, len: u16) -> Self {
         Single {
-            valid: true,
             data: smallvec![if val { 1u8 } else { 0 }],
             len,
         }
     }
 
+    /// View value as bool.
+    #[inline]
+    pub fn view_bool(&self) -> bool {
+        self.data[0] != 0u8
+    }
+
     /// Create single codec from raw bytes.
     #[inline]
-    pub fn new_raw(data: SmallVec<[u8; 16]>, len: usize) -> Self {
+    pub fn new_raw(data: SmallVec<[u8; 16]>, len: u16) -> Self {
         Single {
-            valid: true,
+            // valid: true,
             data,
             len,
         }
