@@ -36,10 +36,10 @@ impl Array {
         Array::Owned { inner, len: 0 }
     }
 
-    /// Create a new array with given capacity.
+    /// Create a new array with given capacity in bytes.
     #[inline]
-    pub fn with_capacity(cap: usize) -> Self {
-        let inner = RawArray::with_capacity(cap);
+    pub fn with_capacity(cap_u8: usize) -> Self {
+        let inner = RawArray::with_capacity(cap_u8);
         Array::Owned { inner, len: 0 }
     }
 
@@ -243,13 +243,16 @@ mod tests {
         bytes[12..16].copy_from_slice(&4i32.to_ne_bytes());
         let input = bytes.clone();
         let raw: Arc<[u8]> = Arc::from(input.into_boxed_slice());
-        let array = Array::new_borrowed::<i32>(raw, 4, 0);
+        let mut array = Array::new_borrowed::<i32>(raw, 4, 0);
         assert_eq!(16, array.total_bytes());
         assert!(!array.is_empty());
         assert_eq!(&bytes[..], array.raw());
+        assert!(array.raw_mut().is_none());
         let a2 = Arc::new(array.clone());
         let a3 = Array::clone_to_owned(&a2);
         assert_eq!(a2.cast_slice::<i32>(), a3.cast_slice::<i32>());
+        let a4 = Array::clone_to_owned(&a3);
+        assert_eq!(a4.cast_slice::<i32>(), a3.cast_slice::<i32>());
     }
 
     #[test]

@@ -1,23 +1,24 @@
+use crate::alloc::align_u128;
+use crate::array::Array;
+use crate::bitmap::Bitmap;
 use crate::codec::{Codec, Single};
 use crate::error::{Error, Result};
+use crate::repr::ByteRepr;
+use crate::sel::Sel;
+use crate::sma::{PosKind, PosTbl, SMA};
 use bitflags::bitflags;
 use smallvec::SmallVec;
 use std::io;
 use std::sync::Arc;
-use xngin_common::alloc::align_u128;
-use xngin_common::array::Array;
-use xngin_common::bitmap::Bitmap;
-use xngin_common::repr::ByteRepr;
-use xngin_common::sma::{PosKind, PosTbl, SMA};
 use xngin_datatype::{PreciseType, StaticTyped};
 
 // attribute header level offset
 const ATTR_HDR_OFFSET_START_FMT: usize = 0;
 const ATTR_HDR_OFFSET_END_FMT: usize = 8;
-const ATTR_HDR_OFFSET_START_DATA: usize = 8;
-const ATTR_HDR_OFFSET_END_DATA: usize = 16;
-const ATTR_HDR_OFFSET_START_VALID: usize = 16;
-const ATTR_HDR_OFFSET_END_VALID: usize = 24;
+const ATTR_HDR_OFFSET_START_VALID: usize = 8;
+const ATTR_HDR_OFFSET_END_VALID: usize = 16;
+const ATTR_HDR_OFFSET_START_DATA: usize = 16;
+const ATTR_HDR_OFFSET_END_DATA: usize = 24;
 const ATTR_HDR_OFFSET_START_SMA: usize = 24;
 const ATTR_HDR_OFFSET_END_SMA: usize = 32;
 const ATTR_HDR_OFFSET_START_DICT: usize = 32;
@@ -27,8 +28,8 @@ const ATTR_HDR_OFFSET_END_STR: usize = 48;
 pub(crate) const LEN_ATTR_HDR: usize = 48;
 
 /// Attribute data:
-/// 1. Compressed data: fixed-length data, length depends on compression method.
-/// 2. Validity bitmap.
+/// 1. Validity.
+/// 2. Compressed data: fixed-length data, length depends on compression method.
 /// 3. SMA data: contains MinValue and MaxValue, length depends on data type.
 ///    and lookup(PSMA) table: lookup by first non-zero byte, length depends on data type.
 /// 4. Dict data
@@ -55,25 +56,38 @@ pub(crate) const LEN_ATTR_HDR: usize = 48;
 pub struct Attr {
     pub ty: PreciseType,
     pub codec: Codec,
-    pub validity: Option<Arc<Bitmap>>,
+    pub validity: Sel,
     pub sma: Option<Arc<SMA>>,
 }
 
 impl Attr {
     /// Create new attribute with single codec.
     #[inline]
-    pub fn new_single(ty: PreciseType, single: Single) -> Attr {
+    pub fn new_single(ty: PreciseType, single: Single, validity: Sel) -> Attr {
+        debug_assert_eq!(single.len as usize, validity.n_records());
+        debug_assert!(!validity.is_none());
         Attr {
             ty,
-            validity: None,
+            validity,
             codec: Codec::Single(single),
+            sma: None,
+        }
+    }
+
+    #[inline]
+    pub fn new_null(ty: PreciseType, n_records: u16) -> Attr {
+        Attr {
+            ty,
+            validity: Sel::None(n_records),
+            codec: Codec::Single(Single::new_null(n_records)),
             sma: None,
         }
     }
 
     /// Create a bitmap attribute.
     #[inline]
-    pub fn new_bitmap(bitmap: Bitmap, validity: Option<Arc<Bitmap>>) -> Attr {
+    pub fn new_bitmap(bitmap: Bitmap, validity: Sel) -> Attr {
+        debug_assert_eq!(bitmap.len(), validity.n_records());
         Attr {
             ty: PreciseType::bool(),
             codec: Codec::new_bitmap(bitmap),
@@ -83,12 +97,19 @@ impl Attr {
     }
 
     #[inline]
-    pub fn new_array(
-        ty: PreciseType,
-        array: Array,
-        validity: Option<Arc<Bitmap>>,
-        sma: Option<Arc<SMA>>,
-    ) -> Attr {
+    pub fn arc_bitmap(arc_bitmap: Arc<Bitmap>, validity: Sel) -> Attr {
+        debug_assert_eq!(arc_bitmap.len(), validity.n_records());
+        Attr {
+            ty: PreciseType::bool(),
+            codec: Codec::Bitmap(arc_bitmap),
+            validity,
+            sma: None,
+        }
+    }
+
+    #[inline]
+    pub fn new_array(ty: PreciseType, array: Array, validity: Sel, sma: Option<Arc<SMA>>) -> Attr {
+        debug_assert_eq!(array.len(), validity.n_records());
         Attr {
             ty,
             codec: Codec::new_array(array),
@@ -102,7 +123,7 @@ impl Attr {
     pub fn empty(ty: PreciseType) -> Attr {
         Attr {
             ty,
-            validity: None,
+            validity: Sel::None(0),
             codec: Codec::Empty,
             sma: None,
         }
@@ -113,16 +134,16 @@ impl Attr {
     pub fn to_owned(&self) -> Self {
         Attr {
             ty: self.ty,
-            validity: self.validity.as_ref().map(Bitmap::clone_to_owned),
+            validity: self.validity.clone_to_owned(),
             codec: Codec::to_owned(&self.codec),
             sma: self.sma.as_ref().map(SMA::clone_to_owned),
         }
     }
 
-    /// Returns validity and raw bytes at given index.
+    /// Returns valid flag and raw bytes at given index.
     /// If it's null, length of returned byte slice is zero.
     #[inline]
-    pub fn raw_val(&self, idx: usize) -> Result<(bool, &[u8])> {
+    pub fn val_at(&self, idx: usize) -> Result<(bool, &[u8])> {
         let valid = self.is_valid(idx)?;
         if !valid {
             return Ok((false, &[]));
@@ -146,20 +167,25 @@ impl Attr {
         Ok((true, bs))
     }
 
+    /// Returns valid flag and bool value at given index.
+    /// The codec must be single or bitmap.
+    #[inline]
+    pub fn bool_at(&self, idx: usize) -> Result<(bool, bool)> {
+        let valid = self.is_valid(idx)?;
+        if !valid {
+            return Ok((false, false));
+        }
+        match &self.codec {
+            Codec::Single(s) => Ok((true, s.view_bool())),
+            Codec::Bitmap(b) => Ok((true, b.get(idx)?)),
+            _ => Err(Error::InvalidDatatype),
+        }
+    }
+
     /// Returns whether the value at given index is valid.
     #[inline]
     pub fn is_valid(&self, idx: usize) -> Result<bool> {
-        if idx >= self.n_records() {
-            Err(Error::IndexOutOfBound)
-        } else {
-            if let Codec::Single(s) = &self.codec {
-                return Ok(s.valid);
-            }
-            if let Some(validity) = self.validity.as_ref() {
-                return validity.get(idx).map_err(Into::into);
-            }
-            Ok(true)
-        }
+        self.validity.selected(idx)
     }
 
     /// Returns number of records.
@@ -173,31 +199,26 @@ impl Attr {
     pub fn ser_header(&self, offset: usize) -> (SerAttrHeader, usize) {
         match &self.codec {
             Codec::Single(s) => {
-                assert!(self.sma.is_none() && self.validity.is_none());
-                let fields = if s.valid {
-                    SerFields::VALID
-                } else {
-                    SerFields::empty()
-                };
+                assert!(self.sma.is_none() && (self.validity.is_all() || self.validity.is_none()));
+                let fields = SerFields::VALID;
                 let format_desc = SerFormatDesc {
                     ty: self.ty,
                     method: SerMethod::Single,
                     fields,
                 };
-                let offset_data = offset;
-                // for variable length type, the total length is data length + prefix width.
-                let offset = if s.valid {
-                    let data_len = s.data.len() + 4 + 4;
-                    align_u128(offset + data_len)
+                // 1. validity
+                let (offset_valid, offset) = ser_validity_offset(&self.validity, offset);
+                // 2. data
+                let (offset_data, offset) = if self.validity.is_none() {
+                    (offset, offset)
                 } else {
-                    // null value, nothing to store
-                    offset
+                    (offset, offset + align_u128(s.data.len() + 4))
                 };
                 (
                     SerAttrHeader {
                         format_desc,
                         offset_data,
-                        offset_valid: offset,
+                        offset_valid,
                         offset_sma: offset,
                         offset_dict: offset,
                         offset_str: offset,
@@ -206,19 +227,13 @@ impl Attr {
                 )
             }
             Codec::Array(a) => {
-                let mut fields = SerFields::empty();
+                let mut fields = SerFields::VALID; // always serialize validity
+                                                   // 1. validity
+                let (offset_valid, offset) = ser_validity_offset(&self.validity, offset);
+                // 2. data
                 // array codec does not support dict and string
-                let offset_data = offset;
-                let offset = align_u128(offset + a.total_bytes());
-                // validity
-                let (offset_valid, offset) = if let Some(validity) = self.validity.as_ref() {
-                    fields.insert(SerFields::VALID);
-                    // encoded as length + bitmap
-                    (offset, align_u128(offset + validity.total_bytes()))
-                } else {
-                    (offset, offset)
-                };
-                // sma
+                let (offset_data, offset) = (offset, align_u128(offset + a.total_bytes()));
+                // 3. sma(optional)
                 let (offset_sma, offset) = if let Some(sma) = self.sma.as_ref() {
                     fields.insert(SerFields::SMA);
                     // array codec does not allow varlen values, so sma values must be fixed length.
@@ -259,54 +274,39 @@ impl Attr {
         buf: &mut Vec<u8>,
         total_bytes: usize,
     ) -> Result<usize> {
-        match &self.codec {
+        let n = match &self.codec {
             Codec::Single(s) => {
-                if s.valid {
-                    buf.clear();
-                    if self.ty.val_len().is_none() {
-                        buf.extend_from_slice(&(s.data.len() as u32).to_ne_bytes());
-                    }
-                    buf.extend_from_slice(&s.data);
-                    if buf.len() < total_bytes {
-                        // fill gap
-                        buf.extend(std::iter::repeat(0u8).take(total_bytes - buf.len()));
-                    }
-                    writer.write_all(buf)?;
-                    Ok(buf.len())
-                } else {
-                    Ok(0)
-                }
-            }
-            Codec::Array(a) => {
-                // write data
-                let mut n = write_align_u128(a.raw(), writer, buf)?;
                 // write validity
-                if let Some(vm) = self.validity.as_ref() {
-                    n += write_align_u128(vm.raw(), writer, buf)?;
-                }
-                // write sma
-                if let Some(sma) = self.sma.as_ref() {
+                let mut n = write_validity(&self.validity, writer, buf)?;
+                // write data
+                if !self.validity.is_none() {
                     buf.clear();
-                    // array codec does not support var length values.
-                    // min value, max value and kind
-                    buf.extend_from_slice(&sma.min);
-                    buf.extend_from_slice(&sma.max);
-                    buf.push(sma.kind as u8);
-                    let padding = align_u128(buf.len()) - buf.len();
-                    if padding > 0 {
-                        buf.extend(std::iter::repeat(0u8).take(padding));
-                    }
-                    // kind
+                    // always prefix with data length
+                    buf.extend_from_slice(&(s.data.len() as u32).to_ne_bytes());
+                    buf.extend_from_slice(&s.data);
+                    // fill gap
+                    buf.extend(std::iter::repeat(0u8).take(align_u128(buf.len()) - buf.len()));
                     writer.write_all(buf)?;
                     n += buf.len();
-                    // position lookup
-                    n += write_align_u128(sma.raw_pos_tbl(), writer, buf)?;
                 }
-                Ok(n)
+                n
+            }
+            Codec::Array(a) => {
+                // write validity
+                let mut n = write_validity(&self.validity, writer, buf)?;
+                // write data
+                n += write_align_u128(a.raw(), writer, buf)?;
+                // write sma
+                if let Some(sma) = self.sma.as_ref() {
+                    n += write_sma(sma, writer, buf)?;
+                }
+                n
             }
             Codec::Bitmap(_) => todo!(),
             Codec::Empty => todo!(),
-        }
+        };
+        debug_assert_eq!(total_bytes, n);
+        Ok(n)
     }
 
     /// Load attribute from byte format.
@@ -314,38 +314,35 @@ impl Attr {
     pub fn load(raw: &Arc<[u8]>, n_records: u16, header: &SerAttrHeader) -> Result<Self> {
         match header.format_desc.method {
             SerMethod::Single => {
-                let single = if header.format_desc.fields.contains(SerFields::VALID) {
-                    let data = if let Some(val_len) = header.format_desc.ty.val_len() {
-                        let mut data = SmallVec::with_capacity(val_len);
-                        data.extend_from_slice(
-                            &raw[header.offset_data..header.offset_data + val_len],
-                        );
-                        data
-                    } else {
-                        let bytes_slice: [u8; 4] =
-                            raw[header.offset_data..header.offset_data + 4].try_into()?;
-                        let n_bytes = u32::from_ne_bytes(bytes_slice) as usize;
-                        let mut data = SmallVec::with_capacity(n_bytes);
-                        data.extend_from_slice(
-                            &raw[header.offset_data + 4..header.offset_data + 4 + n_bytes],
-                        );
-                        data
-                    };
-                    Single::new_raw(data, n_records as usize)
+                debug_assert!(header.format_desc.fields.contains(SerFields::VALID));
+                // 1. validity
+                let validity = load_validity(raw, header.offset_valid, n_records)?;
+                // 2. data
+                if validity.is_none() {
+                    Ok(Attr::new_null(header.format_desc.ty, n_records))
                 } else {
-                    Single::new_null(n_records as usize)
-                };
-                Ok(Attr::new_single(header.format_desc.ty, single))
+                    let bytes_slice: [u8; 4] =
+                        raw[header.offset_data..header.offset_data + 4].try_into()?;
+                    let n_bytes = u32::from_ne_bytes(bytes_slice) as usize;
+                    let mut data = SmallVec::with_capacity(n_bytes);
+
+                    data.extend_from_slice(
+                        &raw[header.offset_data + 4..header.offset_data + 4 + n_bytes],
+                    );
+                    Ok(Attr::new_single(
+                        header.format_desc.ty,
+                        Single::new_raw(data, n_records),
+                        validity,
+                    ))
+                }
             }
             SerMethod::Array => {
+                debug_assert!(header.format_desc.fields.contains(SerFields::VALID));
+                // 1. validity
+                let validity = load_validity(raw, header.offset_valid, n_records)?;
+                // 2. data
                 let arr = load_array(raw, n_records, header.format_desc.ty, header.offset_data)?;
-                let validity = if header.format_desc.fields.contains(SerFields::VALID) {
-                    let validity =
-                        Bitmap::new_borrowed(raw.clone(), n_records as usize, header.offset_valid);
-                    Some(Arc::new(validity))
-                } else {
-                    None
-                };
+                // 3. sma
                 let sma = if header.format_desc.fields.contains(SerFields::SMA) {
                     let sma = load_fixed_len_sma(raw, header.format_desc.ty, header.offset_sma)?;
                     Some(Arc::new(sma))
@@ -370,25 +367,152 @@ impl Attr {
             let sma = match self.ty {
                 PreciseType::Int(4, false) => {
                     let data = a.cast_slice::<i32>();
-                    // let sma = SMA::build(data);
-                    if let Some(validity) = self.validity.as_ref() {
-                        SMA::with_validity(data, validity).map(Arc::new)
-                    } else {
-                        Some(Arc::new(SMA::build(data)))
-                    }
+                    SMA::with_validity(data, &self.validity).map(Arc::new)
                 }
                 _ => todo!(),
             };
             if sma.is_none() {
                 // SMA is not available because all values are null.
                 // Update codec to single.
-                self.codec = Codec::Single(Single::new_null(self.n_records()));
-                self.validity = None;
+                let n_records = self.n_records();
+                self.codec = Codec::Single(Single::new_null(n_records as u16));
+                self.validity = Sel::None(n_records as u16);
             } else {
                 self.sma = sma;
             }
         }
     }
+}
+
+impl From<Sel> for Attr {
+    #[inline]
+    fn from(sel: Sel) -> Self {
+        match sel {
+            Sel::All(len) => Attr::new_single(
+                PreciseType::bool(),
+                Single::new_bool(true, len),
+                Sel::All(len),
+            ),
+            Sel::None(len) => Attr::new_single(
+                PreciseType::bool(),
+                Single::new_bool(false, len),
+                Sel::All(len),
+            ),
+            Sel::Index {
+                count,
+                len,
+                indexes,
+            } => {
+                let mut bm = Bitmap::zeroes(len as usize);
+                for idx in &indexes[..count as usize] {
+                    bm.set(*idx as usize, true).unwrap();
+                }
+                Attr::new_bitmap(bm, Sel::All(len))
+            }
+            Sel::Bitmap(bm) => {
+                if bm.as_ref().is_owned() {
+                    let len = bm.len() as u16;
+                    Attr::arc_bitmap(bm, Sel::All(len))
+                } else {
+                    Attr::arc_bitmap(Bitmap::clone_to_owned(&bm), Sel::All(bm.len() as u16))
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+fn write_validity<W: io::Write>(
+    validity: &Sel,
+    writer: &mut W,
+    buf: &mut Vec<u8>,
+) -> Result<usize> {
+    let mut n = 0;
+    match validity {
+        Sel::All(_) => {
+            let mut data = [0u8; 16];
+            data[0] = SerValidType::All as u8;
+            writer.write_all(&data)?;
+            n += 16;
+        }
+        Sel::None(_) => {
+            let mut data = [0u8; 16];
+            data[0] = SerValidType::None as u8;
+            writer.write_all(&data)?;
+            n += 16;
+        }
+        Sel::Index { count, indexes, .. } => {
+            let mut data = [0u8; 16];
+            data[0] = SerValidType::Index as u8;
+            data[1] = *count;
+            data[2..2 + 12].copy_from_slice(bytemuck::cast_slice::<_, u8>(indexes));
+            writer.write_all(&data)?;
+            n += 16;
+        }
+        Sel::Bitmap(bm) => {
+            let mut data = [0u8; 16];
+            data[0] = SerValidType::Bitmap as u8;
+            writer.write_all(&data)?;
+            n += 16;
+            n += write_align_u128(bm.raw(), writer, buf)?;
+        }
+    }
+    Ok(n)
+}
+
+#[inline]
+fn write_sma<W: io::Write>(sma: &SMA, writer: &mut W, buf: &mut Vec<u8>) -> Result<usize> {
+    let mut n = 0;
+    buf.clear();
+    // array codec does not support var length values.
+    // min value, max value and kind
+    buf.extend_from_slice(&sma.min);
+    buf.extend_from_slice(&sma.max);
+    buf.push(sma.kind as u8);
+    let padding = align_u128(buf.len()) - buf.len();
+    if padding > 0 {
+        buf.extend(std::iter::repeat(0u8).take(padding));
+    }
+    // kind
+    writer.write_all(buf)?;
+    n += buf.len();
+    // position lookup
+    n += write_align_u128(sma.raw_pos_tbl(), writer, buf)?;
+    Ok(n)
+}
+
+#[inline]
+fn ser_validity_offset(validity: &Sel, offset: usize) -> (usize, usize) {
+    let vlen = match validity {
+        Sel::All(_) | Sel::None(_) => align_u128(1),
+        Sel::Index { .. } => align_u128(1 + 1 + 12),
+        Sel::Bitmap(bm) => align_u128(1) + align_u128(bm.total_bytes()),
+    };
+    (offset, offset + vlen)
+}
+
+#[inline]
+fn load_validity(raw: &Arc<[u8]>, offset: usize, n_records: u16) -> Result<Sel> {
+    let res = match SerValidType::try_from(raw[offset])? {
+        SerValidType::All => Sel::All(n_records),
+        SerValidType::None => Sel::None(n_records),
+        SerValidType::Index => {
+            let count = raw[offset + 1];
+            let mut indexes = [0u16; 6];
+            bytemuck::cast_slice_mut::<_, u8>(&mut indexes)
+                .copy_from_slice(&raw[offset + 2..offset + 2 + 12]);
+            Sel::Index {
+                count,
+                len: n_records,
+                indexes,
+            }
+        }
+        SerValidType::Bitmap => {
+            let bm = Bitmap::new_borrowed(Arc::clone(raw), n_records as usize, offset + 16);
+            Sel::Bitmap(Arc::new(bm))
+        }
+    };
+    Ok(res)
 }
 
 #[inline]
@@ -447,7 +571,7 @@ impl<T: ByteRepr + StaticTyped + Default> FromIterator<Option<T>> for Attr {
             (_, Some(hb)) => hb.max(64),
             _ => 64,
         };
-        let mut validity = Bitmap::with_len(iter_size);
+        let mut validity = Bitmap::zeroes(iter_size);
         let (mut validity_u64s, _) = validity.u64s_mut();
         let mut data = Array::new_owned::<T>(iter_size);
         let mut data_slice = data.cast_slice_mut::<T>(iter_size).unwrap();
@@ -502,7 +626,7 @@ impl<T: ByteRepr + StaticTyped + Default> FromIterator<Option<T>> for Attr {
         // update length
         unsafe { data.set_len(len) };
         unsafe { validity.set_len(len) };
-        Attr::new_array(T::static_pty(), data, Some(Arc::new(validity)), None)
+        Attr::new_array(T::static_pty(), data, Sel::from(validity), None)
     }
 }
 
@@ -514,13 +638,14 @@ where
     #[inline]
     fn from(src: I) -> Self {
         let len = src.len();
+        assert!(len <= u16::MAX as usize);
         let mut data = Array::new_owned::<T>(len);
         let data_slice = data.cast_slice_mut::<T>(len).unwrap();
         for (t, s) in data_slice.iter_mut().zip(src) {
             *t = s;
         }
         unsafe { data.set_len(len) };
-        Attr::new_array(T::static_pty(), data, None, None)
+        Attr::new_array(T::static_pty(), data, Sel::All(len as u16), None)
     }
 }
 
@@ -537,21 +662,27 @@ where
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SerAttrHeader {
     pub format_desc: SerFormatDesc, // 0..8
-    pub offset_data: usize,         // 8..16
-    pub offset_valid: usize,        // 16..24
+    pub offset_valid: usize,        // 8..16
+    pub offset_data: usize,         // 16..24
     pub offset_sma: usize,          // 24..32
     pub offset_dict: usize,         // 32..40
     pub offset_str: usize,          // 40..48
 }
 
 impl SerAttrHeader {
+    /// Returns start offset of payload.
+    #[inline]
+    pub fn start_offset(&self) -> usize {
+        self.offset_valid
+    }
+
     /// Write the header in byte format.
     #[inline]
     pub fn store<W: io::Write>(&self, writer: &mut W) -> Result<usize> {
         let mut n = 0;
         n += self.format_desc.store(writer)?;
-        writer.write_all(&(self.offset_data as u64).to_ne_bytes())?;
         writer.write_all(&(self.offset_valid as u64).to_ne_bytes())?;
+        writer.write_all(&(self.offset_data as u64).to_ne_bytes())?;
         writer.write_all(&(self.offset_sma as u64).to_ne_bytes())?;
         writer.write_all(&(self.offset_dict as u64).to_ne_bytes())?;
         writer.write_all(&(self.offset_str as u64).to_ne_bytes())?;
@@ -566,13 +697,13 @@ impl TryFrom<&[u8]> for SerAttrHeader {
     fn try_from(src: &[u8]) -> Result<Self> {
         let format_desc =
             SerFormatDesc::try_from(&src[ATTR_HDR_OFFSET_START_FMT..ATTR_HDR_OFFSET_END_FMT])?;
-        // data
-        let offset_data = u64::from_ne_bytes(
-            src[ATTR_HDR_OFFSET_START_DATA..ATTR_HDR_OFFSET_END_DATA].try_into()?,
-        ) as usize;
         // validity
         let offset_valid = u64::from_ne_bytes(
             src[ATTR_HDR_OFFSET_START_VALID..ATTR_HDR_OFFSET_END_VALID].try_into()?,
+        ) as usize;
+        // data
+        let offset_data = u64::from_ne_bytes(
+            src[ATTR_HDR_OFFSET_START_DATA..ATTR_HDR_OFFSET_END_DATA].try_into()?,
         ) as usize;
         // sma
         let offset_sma =
@@ -658,6 +789,29 @@ bitflags! {
     }
 }
 
+#[repr(u8)]
+pub enum SerValidType {
+    All = 1,
+    None = 2,
+    Index = 3,
+    Bitmap = 4,
+}
+
+impl TryFrom<u8> for SerValidType {
+    type Error = Error;
+    #[inline]
+    fn try_from(src: u8) -> Result<Self> {
+        let res = match src {
+            1 => SerValidType::All,
+            2 => SerValidType::None,
+            3 => SerValidType::Index,
+            4 => SerValidType::Bitmap,
+            _ => return Err(Error::InvalidFormat),
+        };
+        Ok(res)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,10 +819,10 @@ mod tests {
     #[test]
     fn test_array_codec_from_iter() {
         let attr = Attr::from_iter(vec![Some(1i32), None, Some(3)]);
-        let bm = attr.validity.as_ref().unwrap();
-        assert!(bm.get(0).unwrap());
-        assert!(!bm.get(1).unwrap());
-        assert!(bm.get(2).unwrap());
+        let bm = &attr.validity;
+        assert!(bm.selected(0).unwrap());
+        assert!(!bm.selected(1).unwrap());
+        assert!(bm.selected(2).unwrap());
         assert_eq!(
             &[1, 0, 3],
             attr.codec.as_array().unwrap().cast_slice::<i32>()
@@ -678,7 +832,7 @@ mod tests {
     #[test]
     fn test_attr_single_make_header() {
         let single = Single::new(1i32, 1024);
-        let attr = Attr::new_single(PreciseType::i32(), single);
+        let attr = Attr::new_single(PreciseType::i32(), single, Sel::All(1024));
         let offset = 64;
         let (header, new_offset) = attr.ser_header(offset);
         assert_eq!(
@@ -689,8 +843,9 @@ mod tests {
             },
             header.format_desc
         );
-        assert_eq!(64, header.offset_data);
-        assert_eq!(64 + 16, new_offset);
+        assert_eq!(64, header.offset_valid);
+        assert_eq!(64 + align_u128(1), header.offset_data);
+        assert_eq!(64 + align_u128(1) + 16, new_offset);
     }
 
     #[test]
@@ -702,12 +857,13 @@ mod tests {
             SerFormatDesc {
                 ty: attr.ty,
                 method: SerMethod::Array,
-                fields: SerFields::empty()
+                fields: SerFields::VALID,
             },
             header.format_desc
         );
-        assert_eq!(64, header.offset_data);
-        assert_eq!(64 + 1024 * 4, new_offset);
+        assert_eq!(64, header.offset_valid);
+        assert_eq!(64 + align_u128(1), header.offset_data);
+        assert_eq!(64 + align_u128(1) + 1024 * 4, new_offset);
     }
 
     #[test]
@@ -723,9 +879,15 @@ mod tests {
             },
             header.format_desc
         );
-        assert_eq!(64, header.offset_data);
-        assert_eq!(64 + 1024 * 4, header.offset_valid);
-        assert_eq!(64 + align_u128(1024 / 8) + 1024 * 4, new_offset);
+        assert_eq!(64, header.offset_valid);
+        assert_eq!(
+            64 + align_u128(1) + align_u128(1024 / 8),
+            header.offset_data
+        );
+        assert_eq!(
+            64 + align_u128(1) + align_u128(1024 / 8) + 1024 * 4,
+            new_offset
+        );
     }
 
     #[test]
@@ -733,7 +895,7 @@ mod tests {
         use std::io::Cursor;
         // single codec header
         let single = Single::new(1i32, 1024);
-        let attr = Attr::new_single(PreciseType::i32(), single);
+        let attr = Attr::new_single(PreciseType::i32(), single, Sel::All(1024));
         let offset = 64;
         let (header, _) = attr.ser_header(offset);
         let mut bs: Vec<u8> = vec![];
@@ -756,7 +918,7 @@ mod tests {
     fn test_attr_single_store_and_load() {
         use std::io::Cursor;
         let single = Single::new(1i32, 1024);
-        let mut attr = Attr::new_single(PreciseType::i32(), single);
+        let mut attr = Attr::new_single(PreciseType::i32(), single, Sel::All(1024));
         attr.setup_sma(); // no-op
         let mut bs: Vec<u8> = Vec::with_capacity(1024);
         let mut cursor = Cursor::new(&mut bs);
@@ -767,9 +929,9 @@ mod tests {
         let raw: Arc<[u8]> = Arc::from(bs.into_boxed_slice());
         let new_attr = Attr::load(&raw, 1024, &header).unwrap();
         assert_eq!(attr.ty, new_attr.ty);
-        assert!(new_attr.validity.is_none());
-        let (valid, value) = new_attr.codec.as_single().unwrap().view::<i32>();
-        assert!(valid && value == 1);
+        assert!(new_attr.validity.is_all());
+        let value = new_attr.codec.as_single().unwrap().view::<i32>();
+        assert!(value == 1);
     }
 
     #[test]
@@ -786,7 +948,7 @@ mod tests {
         let raw: Arc<[u8]> = Arc::from(bs.into_boxed_slice());
         let new_attr = Attr::load(&raw, 1024, &header).unwrap();
         assert_eq!(attr.ty, new_attr.ty);
-        assert!(new_attr.validity.is_none());
+        assert!(new_attr.validity.is_all());
         let vals = new_attr.codec.as_array().unwrap().cast_slice::<i32>();
         assert_eq!(&nums, vals);
     }
@@ -808,7 +970,7 @@ mod tests {
         let raw: Arc<[u8]> = Arc::from(bs.into_boxed_slice());
         let new_attr = Attr::load(&raw, 1024, &header).unwrap();
         assert_eq!(attr.ty, new_attr.ty);
-        assert!(new_attr.validity.is_none());
+        assert!(new_attr.validity.is_all());
         assert!(new_attr.sma.is_some());
         let vals = new_attr.codec.as_array().unwrap().cast_slice::<i32>();
         assert_eq!(&nums, vals);
@@ -816,5 +978,72 @@ mod tests {
         let sma_tbl = attr.sma.as_ref().map(|sma| sma.pos_tbl()).unwrap();
         let new_sma_tbl = new_attr.sma.as_ref().map(|sma| sma.pos_tbl()).unwrap();
         assert_eq!(sma_tbl, new_sma_tbl);
+        // array with validity and sma
+        let array = Array::from(nums.into_iter());
+        let mut attr = Attr::new_array(
+            PreciseType::i32(),
+            array,
+            Sel::new_indexes(1024, vec![3, 4, 5, 1021, 1022]),
+            None,
+        );
+        attr.setup_sma();
+        let mut bs: Vec<u8> = Vec::with_capacity(1024);
+        let mut cursor = Cursor::new(&mut bs);
+        let mut buf = vec![];
+        let (header, total_bytes) = attr.ser_header(0);
+        let written = attr.store(&mut cursor, &mut buf, total_bytes).unwrap();
+        assert_eq!(written, total_bytes);
+        let written = attr.store(&mut cursor, &mut buf, total_bytes).unwrap();
+        assert_eq!(written, total_bytes);
+        let raw: Arc<[u8]> = Arc::from(bs.into_boxed_slice());
+        let new_attr = Attr::load(&raw, 1024, &header).unwrap();
+        assert_eq!(1024, new_attr.validity.n_records());
+        assert_eq!(5, new_attr.validity.n_filtered());
+        assert!(new_attr.is_valid(3).unwrap());
+        assert!(!new_attr.is_valid(8).unwrap());
+        assert!(new_attr.sma.is_some());
+        if let Some(sma) = new_attr.sma {
+            let max = sma.max_val::<i32>();
+            assert_eq!(1022, max);
+            let min = sma.min_val::<i32>();
+            assert_eq!(3, min);
+        }
+    }
+
+    #[test]
+    fn test_attr_from_sel() {
+        // from sel all
+        let s = Sel::All(1024);
+        let a = Attr::from(s);
+        assert_eq!(1024, a.n_records());
+        let (valid, val) = a.bool_at(0).unwrap();
+        assert!(valid && val);
+        // from sel none
+        let s = Sel::None(1024);
+        let a = Attr::from(s);
+        assert_eq!(1024, a.n_records());
+        let (valid, val) = a.bool_at(0).unwrap();
+        assert!(valid && !val);
+        // from sel index
+        let s = Sel::new_indexes(1024, vec![1, 5, 10]);
+        let a = Attr::from(s);
+        assert_eq!(1024, a.n_records());
+        let (valid, val) = a.bool_at(1).unwrap();
+        assert!(valid && val);
+        let (valid, val) = a.bool_at(2).unwrap();
+        assert!(valid && !val);
+        // from sel bitmap
+        let s = Sel::Bitmap(Arc::new(Bitmap::zeroes(1024)));
+        let a = Attr::from(s);
+        assert_eq!(1024, a.n_records());
+        let (valid, val) = a.bool_at(0).unwrap();
+        assert!(valid && !val);
+        // from sel bitmap borrowed
+        let raw: Arc<[u8]> = Arc::from(vec![0u8; 128].into_boxed_slice());
+        let bm = Bitmap::new_borrowed(raw, 128, 0);
+        let a = Attr::from(Sel::Bitmap(Arc::new(bm)));
+        assert_eq!(128, a.n_records());
+        let (valid, val) = a.bool_at(4).unwrap();
+        assert!(valid && !val);
     }
 }

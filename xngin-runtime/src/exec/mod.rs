@@ -151,7 +151,7 @@ mod tests {
                 assert_eq!(1, res.len());
                 assert_eq!(PreciseType::i64(), res[0].ty);
                 let data: &[i64] = res[0].codec.as_array().unwrap().cast_slice();
-                assert!(res[0].validity.is_none());
+                assert!(res[0].validity.is_all());
                 let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + 1) as i64).collect();
                 assert_eq!(&expected, data);
             } else {

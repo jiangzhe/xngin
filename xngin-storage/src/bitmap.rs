@@ -1,6 +1,8 @@
 use crate::alloc::{align_u128, RawArray};
 use crate::error::{Error, Result};
+use crate::sel::Sel;
 use crate::slice_ext::{OffsetPairMut, OffsetTripleMut, PairSliceExt};
+use smallvec::{smallvec, SmallVec};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -30,14 +32,25 @@ impl Bitmap {
     }
 
     /// Create a new owned bitmap with given length.
-    /// The returned bitmap already has length same as input.
-    /// The caller should guarantee the content should be correctly
-    /// initialized before any reads.
+    /// The returned bitmap already has length same as input
+    /// and all bits are zeroed.
     #[inline]
-    pub fn with_len(len_u1: usize) -> Self {
+    pub fn zeroes(len_u1: usize) -> Self {
         let cap_u8 = if len_u1 == 0 { 1 } else { (len_u1 + 7) / 8 };
         Bitmap::Owned {
-            inner: RawArray::with_capacity(cap_u8),
+            inner: RawArray::zeroes(cap_u8),
+            len_u1,
+        }
+    }
+
+    /// Create a new owned bitmap with given length.
+    /// The returned bitmap already has length same as input
+    /// and all bits are ones.
+    #[inline]
+    pub fn ones(len_u1: usize) -> Self {
+        let cap_u8 = if len_u1 == 0 { 1 } else { (len_u1 + 7) / 8 };
+        Bitmap::Owned {
+            inner: RawArray::ones(cap_u8),
             len_u1,
         }
     }
@@ -67,6 +80,12 @@ impl Bitmap {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns whether the bitmap is owned.
+    #[inline]
+    pub fn is_owned(&self) -> bool {
+        matches!(self, Bitmap::Owned { .. })
     }
 
     /// Returns total bytes(allocated memory) of this bitmap.
@@ -118,7 +137,7 @@ impl Bitmap {
                 end_bytes,
             } => {
                 let total_bytes = *end_bytes - *start_bytes;
-                if cap_u1 * 8 <= total_bytes {
+                if cap_u1 / 8 <= total_bytes {
                     // current capacity is sufficient
                     return;
                 }
@@ -217,10 +236,7 @@ impl Bitmap {
                 len_u1,
                 start_bytes,
                 ..
-            } => {
-                let len_u8 = (*len_u1 + 7) / 8;
-                (&ptr[*start_bytes..*start_bytes + len_u8], *len_u1)
-            }
+            } => (&ptr[*start_bytes..*start_bytes + len_u8], *len_u1),
         }
     }
 
@@ -240,10 +256,7 @@ impl Bitmap {
     pub fn get(&self, idx: usize) -> Result<bool> {
         let (bm, len) = self.u8s(self.len());
         if idx >= len {
-            return Err(Error::IndexOutOfBound(format!(
-                "{} > bitmap length {}",
-                idx, len
-            )));
+            return Err(Error::IndexOutOfBound);
         }
         Ok(bitmap_u8s_get(bm, idx))
     }
@@ -253,10 +266,7 @@ impl Bitmap {
     pub fn set(&mut self, idx: usize, val: bool) -> Result<()> {
         let (bm, len) = self.u8s_mut(self.len());
         if idx >= len {
-            return Err(Error::IndexOutOfBound(format!(
-                "{} >= bitmap length {}",
-                idx, len
-            )));
+            return Err(Error::IndexOutOfBound);
         }
         bitmap_u8s_set(bm, idx, val);
         Ok(())
@@ -288,6 +298,16 @@ impl Bitmap {
     pub fn range_iter(&self) -> RangeIter<'_> {
         let (bm, len) = self.u64s();
         bitmap_range_iter(bm, len)
+    }
+
+    #[inline]
+    pub fn true_index_iter(&self) -> TrueIndexIter<'_> {
+        let range_iter = self.range_iter();
+        TrueIndexIter {
+            range_iter,
+            start: 0,
+            end: 0,
+        }
     }
 
     /// Convert the bitmap to owned.
@@ -367,21 +387,109 @@ impl Bitmap {
         unsafe { self.set_len(new_len) }
     }
 
-    /// Merges given bitmap to current one.
+    /// Intersects given bitmap to current one.
     /// Compiler will apply SIMD optimization automatically, so u64 bytemuck
     /// is unnecessary.
     #[inline]
-    pub fn merge(&mut self, that: &Self) -> Result<()> {
+    pub fn intersect(&mut self, that: &Self) -> Result<()> {
         let (this, this_len) = self.u64s_mut();
         let (that, that_len) = that.u64s();
         if this_len != that_len {
-            return Err(Error::InvalidArgument(format!(
-                "lengths of merging bitmaps mismatch {} != {}",
-                this_len, that_len
-            )));
+            return Err(Error::InvalidArgument);
         }
-        bitmap_merge(this, this_len, that, that_len);
+        bitmap_intersect(this, this_len, that, that_len);
         Ok(())
+    }
+
+    /// Intersects with selection. values outside of selection are set to false.
+    #[inline]
+    pub fn intersect_sel(&mut self, sel: &Sel) -> Result<()> {
+        debug_assert_eq!(self.len(), sel.n_records());
+        match sel {
+            Sel::All(_) => Ok(()),
+            Sel::None(_) => {
+                self.reset_zero(self.len());
+                Ok(())
+            }
+            Sel::Index {
+                count,
+                len,
+                indexes,
+            } => {
+                let len_u1 = *len as usize;
+                let mut vals: SmallVec<[(u16, bool); 6]> = smallvec![];
+                for idx in &indexes[..*count as usize] {
+                    vals.push((*idx, self.get(*idx as usize)?));
+                }
+                self.reset_zero(len_u1);
+                let (u8s, _) = self.u8s_mut(len_u1);
+                for (idx, val) in vals {
+                    bitmap_u8s_set(u8s, idx as usize, val);
+                }
+                Ok(())
+            }
+            Sel::Bitmap(bm) => self.intersect(bm),
+        }
+    }
+
+    /// Reset to zero.
+    #[inline]
+    fn reset_zero(&mut self, len_u1: usize) {
+        let (u8s, _) = self.u8s_mut(len_u1);
+        for u in u8s {
+            *u = 0;
+        }
+    }
+
+    /// Reset to one.
+    #[inline]
+    fn reset_one(&mut self, len_u1: usize) {
+        let (u8s, _) = self.u8s_mut(len_u1);
+        for u in u8s {
+            *u = 0xff;
+        }
+    }
+
+    /// Unions given bitmap to current one.
+    /// Compiler will apply SIMD optimization automatically, so u64 bytemuck
+    /// is unnecessary.
+    #[inline]
+    pub fn union(&mut self, that: &Self) -> Result<()> {
+        let (this, this_len) = self.u64s_mut();
+        let (that, that_len) = that.u64s();
+        if this_len != that_len {
+            return Err(Error::InvalidArgument);
+        }
+        bitmap_union(this, this_len, that, that_len);
+        Ok(())
+    }
+
+    /// Union with selection. all unioned values should be set to true.
+    #[inline]
+    pub fn union_sel(&mut self, sel: &Sel) -> Result<()> {
+        debug_assert_eq!(self.len(), sel.n_records());
+        match sel {
+            Sel::All(_) => {
+                self.reset_one(self.len());
+                Ok(())
+            }
+            Sel::None(_) => Ok(()),
+            Sel::Index {
+                count,
+                len,
+                indexes,
+            } => {
+                let len_u1 = *len as usize;
+                let count = *count;
+                let indexes = *indexes;
+                let (u8s, _) = self.u8s_mut(len_u1);
+                for idx in &indexes[..count as usize] {
+                    bitmap_u8s_set(u8s, *idx as usize, true);
+                }
+                Ok(())
+            }
+            Sel::Bitmap(bm) => self.union(bm),
+        }
     }
 
     /// Inverse all values in this bitmap
@@ -436,10 +544,7 @@ impl Bitmap {
     pub fn extend_range(&mut self, that: &Bitmap, range: Range<usize>) -> Result<()> {
         let (tbm, tlen) = that.u64s();
         if range.end > tlen {
-            return Err(Error::IndexOutOfBound(format!(
-                "extend range {:?} larger than column length {}",
-                range, tlen
-            )));
+            return Err(Error::IndexOutOfBound);
         }
         let range_len = range.end - range.start;
         let orig_len = self.len();
@@ -634,7 +739,7 @@ pub fn bitmap_range_iter(bm: &[u64], len: usize) -> RangeIter<'_> {
             n: 0,
         };
     }
-    let prev = bm[0] & 1 != 1; // pre-read first value
+    let prev = bm[0] & 1 != 0; // pre-read first value
     let last_word_len = if len & 63 == 0 { 64 } else { len & 63 };
     RangeIter {
         u64s: bm,
@@ -647,9 +752,15 @@ pub fn bitmap_range_iter(bm: &[u64], len: usize) -> RangeIter<'_> {
 }
 
 #[inline]
-pub fn bitmap_merge(this: &mut [u64], this_len: usize, that: &[u64], that_len: usize) {
+pub fn bitmap_intersect(this: &mut [u64], this_len: usize, that: &[u64], that_len: usize) {
     debug_assert!(this_len == that_len);
     this.iter_mut().zip(that.iter()).for_each(|(a, b)| *a &= b);
+}
+
+#[inline]
+pub fn bitmap_union(this: &mut [u64], this_len: usize, that: &[u64], that_len: usize) {
+    debug_assert!(this_len == that_len);
+    this.iter_mut().zip(that.iter()).for_each(|(a, b)| *a |= b);
 }
 
 #[derive(Debug, Clone)]
@@ -817,6 +928,38 @@ impl<'a> Iterator for RangeIter<'a> {
             self.break_trues_in_word();
         }
         Some(ret)
+    }
+}
+
+pub struct TrueIndexIter<'a> {
+    range_iter: RangeIter<'a>,
+    start: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for TrueIndexIter<'a> {
+    type Item = usize;
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        if self.start < self.end {
+            let idx = self.start;
+            self.start += 1;
+            return Some(idx);
+        }
+        for (flag, n) in self.range_iter.by_ref() {
+            if flag {
+                self.end += n;
+                if self.start < self.end {
+                    let idx = self.start;
+                    self.start += 1;
+                    return Some(idx);
+                }
+            } else {
+                self.start += n;
+                self.end += n;
+            }
+        }
+        None
     }
 }
 
@@ -1518,13 +1661,78 @@ mod tests {
     fn test_bitmap_merge() {
         let mut bm0 = Bitmap::from_iter(vec![true, false, true, false]);
         let bm1 = Bitmap::from_iter(vec![false, false, true]);
-        assert!(bm0.merge(&bm1).is_err());
+        assert!(bm0.intersect(&bm1).is_err());
         let bm2 = Bitmap::from_iter(vec![false, false, true, true]);
-        bm0.merge(&bm2).unwrap();
+        bm0.intersect(&bm2).unwrap();
         assert_eq!(
             vec![false, false, true, false],
             bm0.bools().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_bitmap_reset() {
+        let mut bm0 = Bitmap::zeroes(1024);
+        let (u8s, _) = bm0.u8s(1024);
+        for b in u8s {
+            assert_eq!(0, *b);
+        }
+        bm0.reset_one(1024);
+        let (u8s, _) = bm0.u8s(1024);
+        for b in u8s {
+            assert_eq!(0xff, *b);
+        }
+        let mut bm1 = Bitmap::ones(1024);
+        let (u8s, _) = bm1.u8s(1024);
+        for b in u8s {
+            assert_eq!(0xff, *b);
+        }
+        bm1.reset_zero(1024);
+        let (u8s, _) = bm1.u8s(1024);
+        for b in u8s {
+            assert_eq!(0, *b);
+        }
+    }
+
+    #[test]
+    fn test_bitmap_union() {
+        let mut bm0 = Bitmap::zeroes(1024);
+        bm0.union_sel(&Sel::All(1024)).unwrap();
+        assert_eq!(1024, bm0.true_count());
+        let mut bm0 = Bitmap::zeroes(1024);
+        bm0.union_sel(&Sel::None(1024)).unwrap();
+        assert_eq!(0, bm0.true_count());
+        let mut bm0 = Bitmap::zeroes(1024);
+        bm0.union_sel(&Sel::new_indexes(1024, vec![1, 5, 100]))
+            .unwrap();
+        assert_eq!(3, bm0.true_count());
+        let mut bm0 = Bitmap::zeroes(1024);
+        bm0.union_sel(&Sel::Bitmap(Arc::new(Bitmap::ones(1024))))
+            .unwrap();
+        assert_eq!(1024, bm0.true_count());
+    }
+
+    #[test]
+    fn test_bitmap_borrow() {
+        let raw = vec![0xffu8; 16].into_boxed_slice();
+        let raw: Arc<[u8]> = Arc::from(raw);
+        let mut bm = Bitmap::new_borrowed(Arc::clone(&raw), 128, 0);
+        assert_eq!(16, bm.total_bytes());
+        assert_eq!(vec![0xff; 16], bm.raw());
+        let (u8s, _) = bm.u8s(16);
+        assert_eq!(vec![0xff; 2], u8s);
+        bm.inverse();
+        assert_eq!(vec![0u8; 16], bm.raw());
+        let bm = Bitmap::new_borrowed(Arc::clone(&raw), 128, 0);
+        let bm = Arc::new(bm);
+        let bm = Bitmap::clone_to_owned(&bm);
+        assert!(bm.is_owned());
+        assert_eq!(vec![0xff; 16], bm.raw());
+        let mut bm = Bitmap::new_borrowed(raw, 128, 0);
+        bm.reserve(64);
+        assert!(!bm.is_owned());
+        bm.reserve(256);
+        assert!(bm.is_owned());
     }
 
     fn rand_bitmap_count(n: usize) {

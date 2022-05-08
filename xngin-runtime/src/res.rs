@@ -3,11 +3,7 @@ use futures_lite::Stream;
 use xngin_datatype::PreciseType;
 use xngin_storage::block::Block;
 
-pub struct ResultSet {
-    fields: Vec<Field>,
-    data: BlockStream,
-    cancel: Cancellation,
-}
+pub struct ResultSet {}
 
 #[derive(Debug)]
 pub struct Field {

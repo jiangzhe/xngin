@@ -68,12 +68,12 @@ impl Default for PreciseType {
 
 impl PreciseType {
     #[inline]
-    pub fn null() -> Self {
+    pub const fn null() -> Self {
         PreciseType::Null
     }
 
     #[inline]
-    pub fn bool() -> Self {
+    pub const fn bool() -> Self {
         PreciseType::Bool
     }
 
@@ -83,32 +83,32 @@ impl PreciseType {
     }
 
     #[inline]
-    pub fn i32() -> Self {
+    pub const fn i32() -> Self {
         PreciseType::Int(4, false)
     }
 
     #[inline]
-    pub fn u32() -> Self {
+    pub const fn u32() -> Self {
         PreciseType::Int(4, true)
     }
 
     #[inline]
-    pub fn i64() -> Self {
+    pub const fn i64() -> Self {
         PreciseType::Int(8, false)
     }
 
     #[inline]
-    pub fn u64() -> Self {
+    pub const fn u64() -> Self {
         PreciseType::Int(8, true)
     }
 
     #[inline]
-    pub fn f32() -> Self {
+    pub const fn f32() -> Self {
         PreciseType::Float(4)
     }
 
     #[inline]
-    pub fn f64() -> Self {
+    pub const fn f64() -> Self {
         PreciseType::Float(8)
     }
 
@@ -158,7 +158,7 @@ impl PreciseType {
     }
 
     #[inline]
-    pub fn date() -> Self {
+    pub const fn date() -> Self {
         PreciseType::Date
     }
 
@@ -173,7 +173,7 @@ impl PreciseType {
     }
 
     #[inline]
-    pub fn interval() -> Self {
+    pub const fn interval() -> Self {
         PreciseType::Interval
     }
 

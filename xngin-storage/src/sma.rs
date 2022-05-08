@@ -1,6 +1,7 @@
 use crate::bitmap::Bitmap;
 use crate::error::{Error, Result};
 use crate::repr::{ByteRepr, LeadingNonZeroByte, SMARepr};
+use crate::sel::Sel;
 use smallvec::SmallVec;
 use std::ops::Index;
 use std::sync::Arc;
@@ -37,69 +38,19 @@ impl SMA {
         let (min, max) = min_max(data[0], data[0], data);
         // check the domain size
         let dom_size = max.wrap_sub(min).to_u64();
+        let data = data.iter().cloned().enumerate();
         let (kind, pos) = if dom_size.to_u64() <= u8::MAX as u64 {
             // build with 1-byte delta lookup
-            let mut lookup = vec![(0u16, 0u16); 256];
-            for (i, v) in data.iter().enumerate() {
-                let i = i as u16;
-                let delta = v.wrap_sub(min).to_u8(); // guaranteed to be 0~255
-                let slot = &mut lookup[delta as usize];
-                if slot.1 == 0 {
-                    *slot = (i, i + 1);
-                } else {
-                    slot.1 = i + 1;
-                }
-            }
-            let pos = PosTbl::new_owned(lookup.into_boxed_slice());
-            (PosKind::Entry256, pos)
+            build_lookup1(min, data)
         } else if dom_size <= u16::MAX as u64 {
             // build with 2-byte delta lookup
-            let mut lookup = vec![(0u16, 0u16); 512];
-            for (i, v) in data.iter().enumerate() {
-                let i = i as u16;
-                let delta = v.wrap_sub(min).to_u16();
-                let (bidx, pidx) = delta.leading_non_zero_byte();
-                let slot = &mut lookup[bidx * 256 + pidx as usize];
-                if slot.1 == 0 {
-                    *slot = (i, i + 1);
-                } else {
-                    slot.1 = i + 1;
-                }
-            }
-            let pos = PosTbl::new_owned(lookup.into_boxed_slice());
-            (PosKind::Entry512, pos)
+            build_lookup2(min, data)
         } else if dom_size <= u32::MAX as u64 {
             // build with 4-byte delta lookup
-            let mut lookup = vec![(0u16, 0u16); 1024];
-            for (i, v) in data.iter().enumerate() {
-                let i = i as u16;
-                let delta = v.wrap_sub(min).to_u32();
-                let (bidx, pidx) = delta.leading_non_zero_byte();
-                let slot = &mut lookup[bidx * 256 + pidx as usize];
-                if slot.1 == 0 {
-                    *slot = (i, i + 1);
-                } else {
-                    slot.1 = i + 1;
-                }
-            }
-            let pos = PosTbl::new_owned(lookup.into_boxed_slice());
-            (PosKind::Entry1024, pos)
+            build_lookup4(min, data)
         } else {
             // build with 8-byte delta lookup
-            let mut lookup = vec![(0u16, 0u16); 2048];
-            for (i, v) in data.iter().enumerate() {
-                let i = i as u16;
-                let delta = v.wrap_sub(min).to_u64();
-                let (bidx, pidx) = delta.leading_non_zero_byte();
-                let slot = &mut lookup[bidx * 256 + pidx as usize];
-                if slot.1 == 0 {
-                    *slot = (i, i + 1);
-                } else {
-                    slot.1 = i + 1;
-                }
-            }
-            let pos = PosTbl::new_owned(lookup.into_boxed_slice());
-            (PosKind::Entry2048, pos)
+            build_lookup8(min, data)
         };
         let min = min.to_bytes();
         let max = max.to_bytes();
@@ -112,7 +63,7 @@ impl SMA {
     }
 
     #[inline]
-    pub fn with_validity<T: ByteRepr + Ord + SMARepr>(
+    fn with_bitmap_validity<T: ByteRepr + Ord + SMARepr>(
         data: &[T],
         validity: &Bitmap,
     ) -> Option<Self> {
@@ -132,95 +83,19 @@ impl SMA {
             }
         }
         let dom_size = max.wrap_sub(min).to_u64();
+        let data = validity.true_index_iter().map(|idx| (idx, data[idx]));
         let (kind, pos) = if dom_size <= u8::MAX as u64 {
             // build with 1-byte delta lookup
-            let mut lookup = vec![(0u16, 0u16); 256];
-            let mut idx = 0;
-            for (valid, n) in validity.range_iter() {
-                if valid {
-                    for (i, v) in data[idx..idx + n].iter().enumerate() {
-                        let i = (idx + i) as u16;
-                        let delta = v.wrap_sub(min).to_u8(); // guaranteed to be 0~255
-                        let slot = &mut lookup[delta as usize];
-                        if slot.1 == 0 {
-                            *slot = (i, i + 1);
-                        } else {
-                            slot.1 = i + 1;
-                        }
-                    }
-                }
-                idx += n;
-            }
-            (
-                PosKind::Entry256,
-                PosTbl::new_owned(lookup.into_boxed_slice()),
-            )
+            build_lookup1(min, data)
         } else if dom_size <= u16::MAX as u64 {
             // build with 2-byte delta lookup
-            let mut lookup = vec![(0u16, 0u16); 512];
-            let mut idx = 0;
-            for (valid, n) in validity.range_iter() {
-                if valid {
-                    for (i, v) in data[idx..idx + n].iter().enumerate() {
-                        let i = (idx + i) as u16;
-                        let delta = v.wrap_sub(min).to_u16();
-                        let (bidx, pidx) = delta.leading_non_zero_byte();
-                        let slot = &mut lookup[bidx * 256 + pidx as usize];
-                        if slot.1 == 0 {
-                            *slot = (i, i + 1);
-                        } else {
-                            slot.1 = i + 1;
-                        }
-                    }
-                }
-                idx += n;
-            }
-            let pos = PosTbl::new_owned(lookup.into_boxed_slice());
-            (PosKind::Entry512, pos)
+            build_lookup2(min, data)
         } else if dom_size <= u32::MAX as u64 {
             // build with 4-byte delta lookup
-            let mut lookup = vec![(0u16, 0u16); 1024];
-            let mut idx = 0;
-            for (valid, n) in validity.range_iter() {
-                if valid {
-                    for (i, v) in data[idx..idx + n].iter().enumerate() {
-                        let i = (idx + i) as u16;
-                        let delta = v.wrap_sub(min).to_u32();
-                        let (bidx, pidx) = delta.leading_non_zero_byte();
-                        let slot = &mut lookup[bidx * 256 + pidx as usize];
-                        if slot.1 == 0 {
-                            *slot = (i, i + 1);
-                        } else {
-                            slot.1 = i + 1;
-                        }
-                    }
-                }
-                idx += n;
-            }
-            let pos = PosTbl::new_owned(lookup.into_boxed_slice());
-            (PosKind::Entry1024, pos)
+            build_lookup4(min, data)
         } else {
             // build with 8-byte delta lookup
-            let mut lookup = vec![(0u16, 0u16); 2048];
-            let mut idx = 0;
-            for (valid, n) in validity.range_iter() {
-                if valid {
-                    for (i, v) in data[idx..idx + n].iter().enumerate() {
-                        let i = (idx + i) as u16;
-                        let delta = v.wrap_sub(min).to_u64();
-                        let (bidx, pidx) = delta.leading_non_zero_byte();
-                        let slot = &mut lookup[bidx * 256 + pidx as usize];
-                        if slot.1 == 0 {
-                            *slot = (i, i + 1);
-                        } else {
-                            slot.1 = i + 1;
-                        }
-                    }
-                }
-                idx += n;
-            }
-            let pos = PosTbl::new_owned(lookup.into_boxed_slice());
-            (PosKind::Entry2048, pos)
+            build_lookup8(min, data)
         };
         let min = min.to_bytes();
         let max = max.to_bytes();
@@ -230,6 +105,49 @@ impl SMA {
             kind,
             pos,
         })
+    }
+
+    #[inline]
+    pub fn with_validity<T: ByteRepr + Ord + SMARepr>(data: &[T], validity: &Sel) -> Option<Self> {
+        match validity {
+            Sel::None(_) => None,
+            Sel::All(_) => Some(Self::build(data)),
+            Sel::Index { count, indexes, .. } => {
+                let (mut min, mut max) = (data[indexes[0] as usize], data[indexes[0] as usize]);
+                let indexes = &indexes[..*count as usize];
+                for idx in indexes {
+                    let idx = *idx as usize;
+                    min = data[idx].min(min);
+                    max = data[idx].max(max);
+                }
+                let dom_size = max.wrap_sub(min).to_u64();
+                let data = indexes
+                    .iter()
+                    .map(|idx| (*idx as usize, data[*idx as usize]));
+                let (kind, pos) = if dom_size <= u8::MAX as u64 {
+                    // build with 1-byte delta lookup
+                    build_lookup1(min, data)
+                } else if dom_size <= u16::MAX as u64 {
+                    // build with 2-byte delta lookup
+                    build_lookup2(min, data)
+                } else if dom_size <= u32::MAX as u64 {
+                    // build with 4-byte delta lookup
+                    build_lookup4(min, data)
+                } else {
+                    // build with 8-byte delta lookup
+                    build_lookup8(min, data)
+                };
+                let min = min.to_bytes();
+                let max = max.to_bytes();
+                Some(SMA {
+                    min,
+                    max,
+                    kind,
+                    pos,
+                })
+            }
+            Sel::Bitmap(bm) => Self::with_bitmap_validity(data, bm.as_ref()),
+        }
     }
 
     /// Returns total bytes of min/max values.
@@ -331,6 +249,94 @@ impl SMA {
 fn min_max<T: Copy + Ord>(min: T, max: T, src: &[T]) -> (T, T) {
     src.iter()
         .fold((min, max), |(mn, mx), item| (mn.min(*item), mx.max(*item)))
+}
+
+#[inline]
+fn build_lookup1<T, I>(min: T, data: I) -> (PosKind, PosTbl)
+where
+    T: ByteRepr + Ord + SMARepr,
+    I: IntoIterator<Item = (usize, T)>,
+{
+    // build with 1-byte delta lookup
+    let mut lookup = vec![(0u16, 0u16); 256];
+    for (i, v) in data {
+        let i = i as u16;
+        let delta = v.wrap_sub(min).to_u8(); // guaranteed to be 0~255
+        let slot = &mut lookup[delta as usize];
+        if slot.1 == 0 {
+            *slot = (i, i + 1);
+        } else {
+            slot.1 = i + 1;
+        }
+    }
+    let pos = PosTbl::new_owned(lookup.into_boxed_slice());
+    (PosKind::Entry256, pos)
+}
+
+#[inline]
+fn build_lookup2<T, I>(min: T, data: I) -> (PosKind, PosTbl)
+where
+    T: ByteRepr + Ord + SMARepr,
+    I: IntoIterator<Item = (usize, T)>,
+{
+    let mut lookup = vec![(0u16, 0u16); 512];
+    for (i, v) in data {
+        let i = i as u16;
+        let delta = v.wrap_sub(min).to_u16();
+        let (bidx, pidx) = delta.leading_non_zero_byte();
+        let slot = &mut lookup[bidx * 256 + pidx as usize];
+        if slot.1 == 0 {
+            *slot = (i, i + 1);
+        } else {
+            slot.1 = i + 1;
+        }
+    }
+    let pos = PosTbl::new_owned(lookup.into_boxed_slice());
+    (PosKind::Entry512, pos)
+}
+
+#[inline]
+fn build_lookup4<T, I>(min: T, data: I) -> (PosKind, PosTbl)
+where
+    T: ByteRepr + Ord + SMARepr,
+    I: IntoIterator<Item = (usize, T)>,
+{
+    let mut lookup = vec![(0u16, 0u16); 1024];
+    for (i, v) in data {
+        let i = i as u16;
+        let delta = v.wrap_sub(min).to_u32();
+        let (bidx, pidx) = delta.leading_non_zero_byte();
+        let slot = &mut lookup[bidx * 256 + pidx as usize];
+        if slot.1 == 0 {
+            *slot = (i, i + 1);
+        } else {
+            slot.1 = i + 1;
+        }
+    }
+    let pos = PosTbl::new_owned(lookup.into_boxed_slice());
+    (PosKind::Entry1024, pos)
+}
+
+#[inline]
+fn build_lookup8<T, I>(min: T, data: I) -> (PosKind, PosTbl)
+where
+    T: ByteRepr + Ord + SMARepr,
+    I: IntoIterator<Item = (usize, T)>,
+{
+    let mut lookup = vec![(0u16, 0u16); 2048];
+    for (i, v) in data {
+        let i = i as u16;
+        let delta = v.wrap_sub(min).to_u64();
+        let (bidx, pidx) = delta.leading_non_zero_byte();
+        let slot = &mut lookup[bidx * 256 + pidx as usize];
+        if slot.1 == 0 {
+            *slot = (i, i + 1);
+        } else {
+            slot.1 = i + 1;
+        }
+    }
+    let pos = PosTbl::new_owned(lookup.into_boxed_slice());
+    (PosKind::Entry2048, pos)
 }
 
 /// PSMA lookup table.
@@ -573,11 +579,11 @@ mod tests {
     fn test_sma_build_with_validity() {
         // all null
         let data: Vec<i32> = vec![1, 1, 2, 1, 3];
-        let validity = Bitmap::from_iter(vec![false; 5]);
+        let validity = Sel::None(5);
         assert!(SMA::with_validity(&data, &validity).is_none());
         // 1-byte
         let data: Vec<i32> = vec![1, 1, 2, 1, 3];
-        let validity = Bitmap::from_iter(vec![true; 5]);
+        let validity = Sel::All(5);
         let sma = SMA::with_validity(&data, &validity).unwrap();
         assert_eq!(1, sma.min_val::<i32>());
         assert_eq!(3, sma.max_val::<i32>());
@@ -588,7 +594,9 @@ mod tests {
         assert_eq!((4, 5), sma.range(3i32));
         // 2-byte
         let data: Vec<i32> = (0i32..1024).collect();
-        let validity = Bitmap::from_iter(std::iter::repeat(true).take(1024));
+        let validity = Sel::Bitmap(Arc::new(Bitmap::from_iter(
+            std::iter::repeat(true).take(1024),
+        )));
         let sma = SMA::with_validity(&data, &validity).unwrap();
         assert_eq!(0, sma.min_val::<i32>());
         assert_eq!(1023, sma.max_val::<i32>());
@@ -599,7 +607,7 @@ mod tests {
         assert_eq!((256, 512), sma.range(256i32));
         // 4-byte
         let data: Vec<i32> = vec![0x00, 0x0100, 0x010000, 0x01000000];
-        let validity = Bitmap::from_iter(vec![true; 4]);
+        let validity = Sel::Bitmap(Arc::new(Bitmap::from_iter(vec![true; 4])));
         let sma = SMA::with_validity(&data, &validity).unwrap();
         assert_eq!(0, sma.min_val::<i32>());
         assert_eq!(0x01000000, sma.max_val::<i32>());
@@ -618,7 +626,7 @@ mod tests {
             0x0100000000,
             0x010000000000,
         ];
-        let validity = Bitmap::from_iter(vec![true; 6]);
+        let validity = Sel::Bitmap(Arc::new(Bitmap::from_iter(vec![true; 6])));
         let sma = SMA::with_validity(&data, &validity).unwrap();
         assert_eq!(0, sma.min_val::<i64>());
         assert_eq!(0x010000000000, sma.max_val::<i64>());
