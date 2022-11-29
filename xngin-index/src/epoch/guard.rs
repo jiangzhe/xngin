@@ -1,11 +1,11 @@
 use super::atomic::{Pointable, Shared};
-use super::internal::Local;
-use super::internal::Deferred;
 use super::collector::Collector;
+use super::internal::Deferred;
+use super::internal::Local;
+use scopeguard::defer;
 use std::fmt;
 use std::mem;
 use std::ptr;
-use scopeguard::defer;
 
 pub struct Guard {
     pub(crate) local: *const Local,
@@ -49,7 +49,7 @@ impl Guard {
         }
     }
 
-    pub fn repin_after<F, R>(&mut self, f: F) -> R 
+    pub fn repin_after<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -92,8 +92,6 @@ impl fmt::Debug for Guard {
 pub unsafe fn unprotected() -> &'static Guard {
     struct GuardWrapper(Guard);
     unsafe impl Sync for GuardWrapper {}
-    static UNPROTECTED: GuardWrapper = GuardWrapper(Guard {
-        local: ptr::null(),
-    });
+    static UNPROTECTED: GuardWrapper = GuardWrapper(Guard { local: ptr::null() });
     &UNPROTECTED.0
 }

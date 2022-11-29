@@ -8,16 +8,23 @@ pub trait KeywordString {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement<'a> {
+    // DML statements
     Select(QueryExpr<'a>),
     Insert(InsertExpr<'a>),
     Update(UpdateExpr<'a>),
     Delete(DeleteExpr<'a>),
+    // DDL statements
+    Create(Create<'a>),
+    Drop(Drop<'a>),
+    // Utility statements
+    UseDB(UseDB<'a>),
+    Explain(Explain<'a>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertExpr<'a> {
     pub target: TableName<'a>,
-    pub cols: Vec<ColumnName<'a>>,
+    pub cols: Vec<Ident<'a>>,
     pub source: InsertSource<'a>,
 }
 
@@ -48,14 +55,14 @@ pub struct DeleteExpr<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateExpr<'a> {
     pub target: TableName<'a>,
-    pub acts: Vec<(ColumnName<'a>, Expr<'a>)>,
+    pub acts: Vec<(Ident<'a>, Expr<'a>)>,
     pub cond: Option<Expr<'a>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ident<'a> {
     Regular(&'a str),
-    Delimited(&'a str),
+    Quoted(&'a str),
     AutoAlias(&'a str),
 }
 
@@ -64,7 +71,7 @@ impl<'a> Ident<'a> {
     pub fn as_str(&self) -> SmolStr {
         match self {
             // todo: handle escaped characters in delimited format
-            Ident::Regular(s) | Ident::Delimited(s) | Ident::AutoAlias(s) => SmolStr::new(s),
+            Ident::Regular(s) | Ident::Quoted(s) | Ident::AutoAlias(s) => SmolStr::new(s),
         }
     }
 
@@ -72,7 +79,7 @@ impl<'a> Ident<'a> {
     pub fn to_lower(&self) -> SmolStr {
         match self {
             // todo: handle escaped characters in delimited format
-            Ident::Regular(s) | Ident::Delimited(s) | Ident::AutoAlias(s) => {
+            Ident::Regular(s) | Ident::Quoted(s) | Ident::AutoAlias(s) => {
                 SmolStr::from_iter(s.chars().map(|c| c.to_ascii_lowercase()))
             }
         }
@@ -82,7 +89,7 @@ impl<'a> Ident<'a> {
     pub fn to_upper(&self) -> SmolStr {
         match self {
             // todo: handle escaped characters in delimited format
-            Ident::Regular(s) | Ident::Delimited(s) | Ident::AutoAlias(s) => {
+            Ident::Regular(s) | Ident::Quoted(s) | Ident::AutoAlias(s) => {
                 SmolStr::from_iter(s.chars().map(|c| c.to_ascii_uppercase()))
             }
         }
@@ -105,8 +112,8 @@ impl<'a> Ident<'a> {
         Ident::Regular(value.into())
     }
 
-    pub fn delimited<T: Into<&'a str>>(value: T) -> Self {
-        Ident::Delimited(value.into())
+    pub fn quoted<T: Into<&'a str>>(value: T) -> Self {
+        Ident::Quoted(value.into())
     }
 }
 
@@ -128,8 +135,6 @@ impl<'a> From<&'a str> for TableName<'a> {
         TableName::new(None, src.into())
     }
 }
-
-pub type ColumnName<'a> = Ident<'a>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetQuantifier {
@@ -1071,7 +1076,7 @@ pub struct With<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WithElement<'a> {
     pub name: Ident<'a>,
-    pub cols: Vec<ColumnName<'a>>,
+    pub cols: Vec<Ident<'a>>,
     pub query_expr: QueryExpr<'a>,
 }
 
@@ -1263,7 +1268,7 @@ pub struct QualifiedJoin<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinCondition<'a> {
-    NamedCols(Vec<ColumnName<'a>>),
+    NamedCols(Vec<Ident<'a>>),
     Conds(Expr<'a>),
 }
 
@@ -1296,4 +1301,117 @@ impl<'a> TablePrimitive<'a> {
     pub fn derived(query: QueryExpr<'a>, alias: Ident<'a>) -> Self {
         Self::Derived(Box::new(query), alias)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Create<'a> {
+    Table {
+        if_not_exists: bool,
+        definition: TableDefinition<'a>,
+    },
+    Database {
+        if_not_exists: bool,
+        definition: DatabaseDefinition<'a>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseDefinition<'a> {
+    pub name: Ident<'a>,
+    pub charset: Option<Ident<'a>>,
+    pub collate: Option<Ident<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableDefinition<'a> {
+    pub name: TableName<'a>,
+    pub elems: Vec<TableElement<'a>>,
+    // pub constraint_defs: Vec<TableConstraintDefinition<'a>>,
+    // pub table_options: Vec<TableOption<'a>>,
+    // pub partition_options: Vec<PartitionOption<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableElement<'a> {
+    Column {
+        name: Ident<'a>,
+        ty: DataType,
+        not_null: bool,
+        default: Option<ColumnDefault<'a>>,
+        auto_increment: bool,
+        unique: bool,
+        primary_key: bool,
+        comment: Option<&'a str>,
+        collate: Option<CollationType>,
+    },
+    Key {
+        ty: TableKeyType,
+        name: Option<Ident<'a>>,
+        keys: Vec<KeyPart<'a>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableKeyType {
+    PrimaryKey,
+    UniqueKey,
+    Index,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnDefault<'a> {
+    Literal(Literal<'a>),
+    Func(FuncExpr<'a>),
+    User,
+    CurrentUser,
+    CurrentRole,
+    SessionUser,
+    SystemUser,
+    CurrentPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyPart<'a> {
+    pub col_name: Ident<'a>,
+    pub desc: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DataType {
+    Bigint(bool),
+    Int(bool),
+    Smallint(bool),
+    Tinyint(bool),
+    Varchar(u16),
+    Char(u16),
+    Decimal(Option<u8>, Option<u8>),
+    Date,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollationType {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Drop<'a> {
+    Table {
+        if_exists: bool,
+        names: Vec<TableName<'a>>,
+    },
+    Database {
+        if_exists: bool,
+        name: Ident<'a>,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseDB<'a> {
+    pub name: Ident<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Explain<'a> {
+    Select(QueryExpr<'a>),
+    Insert(InsertExpr<'a>),
+    Update(UpdateExpr<'a>),
+    Delete(DeleteExpr<'a>),
 }

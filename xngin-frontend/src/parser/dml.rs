@@ -1,37 +1,37 @@
 use crate::ast::*;
 use crate::parser::expr::{char_sp0, expr_sp0};
 use crate::parser::query::{filter, query_expr};
-use crate::parser::{ident, ident_tag, spcmt0, spcmt1, table_name, ParseInput};
+use crate::parser::{ident, preceded_tag2_cut, spcmt0, table_name, ParseInput};
 use nom::branch::alt;
+use nom::character::complete::char;
 use nom::combinator::{cut, map, opt};
 use nom::error::ParseError;
 use nom::multi::separated_list1;
-use nom::sequence::{pair, preceded, terminated, tuple};
+use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::IResult;
+
+use super::preceded_tag;
 
 parse!(
     /// Parse an insert statement.
     fn insert -> 'a InsertExpr<'a> = {
-        preceded(
-            preceded(terminated(ident_tag("insert"), spcmt1), cut(ident_tag("into"))),
-            cut(map(pair(
-                preceded(spcmt0,
-                    pair(
-                        terminated(table_name, spcmt0),
-                        opt(
-                            preceded(
-                                char_sp0('('),
-                                terminated(
-                                    separated_list1(char_sp0(','), terminated(ident, spcmt0)),
-                                    char_sp0(')'),
-                                )
-                            )
-                        ),
+        preceded_tag2_cut("insert", "into", cut(map(pair(
+            preceded(spcmt0,
+                pair(
+                    terminated(table_name, spcmt0),
+                    opt(
+                        preceded(
+                            char_sp0('('),
+                            cut(terminated(
+                                separated_list1(char_sp0(','), terminated(ident, spcmt0)),
+                                char_sp0(')'),
+                            ))
+                        )
                     ),
                 ),
-                preceded(spcmt0, insert_source),
-            ), |((target, cols), source)| InsertExpr{target, cols: cols.unwrap_or_default(), source})),
-        )
+            ),
+            preceded(spcmt0, insert_source),
+        ), |((target, cols), source)| InsertExpr{target, cols: cols.unwrap_or_default(), source})),)
     }
 );
 
@@ -48,62 +48,51 @@ parse!(
 parse!(
     /// Parse insert values.
     fn insert_values -> 'a Vec<Expr<'a>> = {
-        preceded(
-            terminated(ident_tag("values"), cut(preceded(spcmt0, char_sp0('(')))),
-            cut(terminated(
-                separated_list1(char_sp0(','), expr_sp0),
-                char_sp0(')'),
-            )),
-        )
+        preceded_tag("values", cut(delimited(
+            char_sp0('('),
+            separated_list1(char_sp0(','), expr_sp0),
+            char(')')
+        )))
     }
 );
 
 parse!(
     /// Parse a delete statement.
     fn delete -> 'a DeleteExpr<'a> = {
-        preceded(
-            preceded(terminated(ident_tag("delete"), spcmt1), cut(terminated(ident_tag("from"), spcmt0))),
-            cut(map(
-                pair(
-                    terminated(table_name, spcmt0),
-                    opt(filter),
-                ),
-                |(target, cond)| DeleteExpr{target, cond},
-            ))
-        )
+        preceded_tag2_cut("delete", "from", cut(map(
+            pair(
+                terminated(table_name, spcmt0),
+                opt(filter),
+            ),
+            |(target, cond)| DeleteExpr{target, cond},
+        )))
     }
 );
 
 parse!(
     /// Parse an update statement.
     fn update -> 'a UpdateExpr<'a> = {
-        preceded(
-            terminated(ident_tag("update"), spcmt0),
-            cut(map(
-                tuple((
-                    terminated(table_name, spcmt0),
-                    update_acts,
-                    opt(filter),
-                )),
-                |(target, acts, cond)| UpdateExpr{target, acts, cond},
-            ))
-        )
+        preceded_tag("update", cut(map(
+            tuple((
+                terminated(table_name, spcmt0),
+                update_acts,
+                opt(filter),
+            )),
+            |(target, acts, cond)| UpdateExpr{target, acts, cond},
+        )))
     }
 );
 
 parse!(
     /// Parse update set clause
-    fn update_acts -> 'a Vec<(ColumnName<'a>, Expr<'a>)> = {
-        preceded(
-            terminated(ident_tag("set"), spcmt0),
-            cut(separated_list1(
-                char_sp0(','),
-                pair(
-                    terminated(ident, spcmt0),
-                    preceded(char_sp0('='), expr_sp0),
-                ),
-            )),
-        )
+    fn update_acts -> 'a Vec<(Ident<'a>, Expr<'a>)> = {
+        preceded_tag("set", cut(separated_list1(
+            char_sp0(','),
+            pair(
+                terminated(ident, spcmt0),
+                preceded(char_sp0('='), expr_sp0),
+            ),
+        )))
     }
 );
 

@@ -23,17 +23,23 @@ impl Epoch {
 
     #[inline]
     pub(crate) fn pinned(self) -> Self {
-        Epoch{data: self.data | 1}
+        Epoch {
+            data: self.data | 1,
+        }
     }
 
     #[inline]
     pub(crate) fn unpinned(self) -> Self {
-        Epoch{data: self.data & !1}
+        Epoch {
+            data: self.data & !1,
+        }
     }
 
     #[inline]
     pub(crate) fn successor(self) -> Self {
-        Epoch{data: self.data.wrapping_add(2)}
+        Epoch {
+            data: self.data.wrapping_add(2),
+        }
     }
 }
 
@@ -46,12 +52,14 @@ impl AtomicEpoch {
     #[inline]
     pub(crate) fn new(epoch: Epoch) -> Self {
         let data = AtomicUsize::new(epoch.data);
-        AtomicEpoch{data}
+        AtomicEpoch { data }
     }
 
     #[inline]
     pub(crate) fn load(&self, ord: Ordering) -> Epoch {
-        Epoch{data: self.data.load(ord)}
+        Epoch {
+            data: self.data.load(ord),
+        }
     }
 
     #[inline]
@@ -60,10 +68,19 @@ impl AtomicEpoch {
     }
 
     #[inline]
-    pub(crate) fn compare_exchange(&self, current: Epoch, new: Epoch, success: Ordering, failure: Ordering) -> Result<Epoch, Epoch> {
-        match self.data.compare_exchange(current.data, new.data, success, failure) {
-            Ok(data) => Ok(Epoch{data}),
-            Err(data) => Err(Epoch{data}),
+    pub(crate) fn compare_exchange(
+        &self,
+        current: Epoch,
+        new: Epoch,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<Epoch, Epoch> {
+        match self
+            .data
+            .compare_exchange(current.data, new.data, success, failure)
+        {
+            Ok(data) => Ok(Epoch { data }),
+            Err(data) => Err(Epoch { data }),
         }
     }
 }

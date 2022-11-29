@@ -1,19 +1,19 @@
 #[macro_use]
 mod node;
 mod key;
-mod value;
-mod partial_key;
 mod node_impl;
+mod partial_key;
+mod value;
 // mod insert;
 
-use crate::epoch::{self, Atomic, Owned, Shared, Inline, Guard};
-use node::{NodeTemplate, NodeKind};
-use node_impl::SP8NodeMut;
-use std::sync::atomic::Ordering;
-use std::ops::{Deref, DerefMut};
-use self::node::{NodeOps, NodeSyncOps, NodeReadDataOps, NodeWriteDataOps, NodeSearchOps};
-use self::key::{Key, ExtractKey, ExtractTID};
+use self::key::{ExtractKey, ExtractTID, Key};
+use self::node::{NodeOps, NodeReadDataOps, NodeSearchOps, NodeSyncOps, NodeWriteDataOps};
 use self::value::ValueLoader;
+use crate::epoch::{self, Atomic, Guard, Inline, Owned, Shared};
+use node::{NodeKind, NodeTemplate};
+use node_impl::SP8NodeMut;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::Ordering;
 
 pub struct HOT {
     root: Atomic<NodeTemplate>,
@@ -23,13 +23,18 @@ impl HOT {
     /// Create an empty HOT.
     #[inline]
     pub fn new() -> Self {
-        HOT{
+        HOT {
             root: Atomic::from(NodeTemplate::empty()),
         }
     }
 
     #[inline]
-    pub fn lookup<'k, L: ValueLoader>(&self, key: Key<'k>, loader: &L, guard: &epoch::Guard) -> Option<L::Value> {
+    pub fn lookup<'k, L: ValueLoader>(
+        &self,
+        key: Key<'k>,
+        loader: &L,
+        guard: &epoch::Guard,
+    ) -> Option<L::Value> {
         let mut node = self.root.load(Ordering::Acquire, guard);
         loop {
             match node.kind() {
@@ -42,16 +47,17 @@ impl HOT {
                     } else {
                         // key does not match
                         None
-                    }
+                    };
                 }
                 _ => {
                     if let Some(res) = try_opt_read_node!(node, |_, n| {
-                        n.search_partial_key(&key).map(|idx| n.value(idx).load(Ordering::Acquire, guard))
+                        n.search_partial_key(&key)
+                            .map(|idx| n.value(idx).load(Ordering::Acquire, guard))
                     }) {
                         if let Some(new) = res {
                             node = new;
                         } else {
-                            return None
+                            return None;
                         }
                     } else {
                         // optimistic read failed: retry from root.
@@ -63,7 +69,12 @@ impl HOT {
     }
 
     #[inline]
-    pub fn insert<V: ExtractKey + ExtractTID, L: ValueLoader<Value=V>>(&self, value: V, loader: &L, guard: &epoch::Guard) -> bool {
+    pub fn insert<V: ExtractKey + ExtractTID, L: ValueLoader<Value = V>>(
+        &self,
+        value: V,
+        loader: &L,
+        guard: &epoch::Guard,
+    ) -> bool {
         let new_key = &*value.extract_key();
         let new_tid = value.extract_tid();
         loop {
@@ -76,25 +87,44 @@ impl HOT {
     }
 
     #[inline]
-    fn insert_internal<L: ValueLoader>(&self, new_key: &[u8], new_tid: u64, loader: &L, guard: &epoch::Guard) -> InsertResult {
+    fn insert_internal<L: ValueLoader>(
+        &self,
+        new_key: &[u8],
+        new_tid: u64,
+        loader: &L,
+        guard: &epoch::Guard,
+    ) -> InsertResult {
         let root = &self.root;
         let node = root.load(Ordering::Acquire, guard);
         match node.kind() {
             NodeKind::Empty => {
                 // empty tree, just replace
                 let new = NodeTemplate::tid(new_tid);
-                match root.compare_exchange_weak(node, new, Ordering::SeqCst, Ordering::Relaxed, guard) {
+                match root.compare_exchange_weak(
+                    node,
+                    new,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                    guard,
+                ) {
                     Ok(_) => InsertResult::Ok,
                     Err(_) => InsertResult::Stalled,
                 }
             }
             NodeKind::Leaf => {
                 // single value
-                let new = match BiNodeBuilder::from_leaf_and_new_key(node, new_key, 0, new_tid, loader) {
-                    Some(bn) => bn.build(),
-                    None => return InsertResult::Duplicated,
-                };
-                match root.compare_exchange_weak(node, new, Ordering::SeqCst, Ordering::Relaxed, guard) {
+                let new =
+                    match BiNodeBuilder::from_leaf_and_new_key(node, new_key, 0, new_tid, loader) {
+                        Some(bn) => bn.build(),
+                        None => return InsertResult::Duplicated,
+                    };
+                match root.compare_exchange_weak(
+                    node,
+                    new,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                    guard,
+                ) {
                     Ok(_) => InsertResult::Ok,
                     Err(_) => InsertResult::Stalled,
                 }
@@ -107,24 +137,39 @@ impl HOT {
     }
 
     #[inline]
-    fn insert_with_stack<'g, L: ValueLoader>(&self, node: Shared<'g, NodeTemplate>, new_key: &[u8], new_tid: u64, loader: &L, stack: &mut InsertStack<'g>, guard: &'g epoch::Guard) -> InsertResult {
+    fn insert_with_stack<'g, L: ValueLoader>(
+        &self,
+        node: Shared<'g, NodeTemplate>,
+        new_key: &[u8],
+        new_tid: u64,
+        loader: &L,
+        stack: &mut InsertStack<'g>,
+        guard: &'g epoch::Guard,
+    ) -> InsertResult {
         self.search_for_insert(new_key, stack, guard);
         let depth = stack.len();
-        let entry = &stack[depth-1];
+        let entry = &stack[depth - 1];
         debug_assert!(entry.node.kind() == NodeKind::Leaf);
         // depth always greater than 0, because root leaf is examined before this method
-        let parent = &stack[depth-2];
+        let parent = &stack[depth - 2];
         let height = parent.node.height();
         if height > 1 {
             // perform leaf push down because it won't increase tree height.
-            let new = match BiNodeBuilder::from_leaf_and_new_key(node, new_key, parent.msb_absolute_idx, new_tid, loader) {
+            let new = match BiNodeBuilder::from_leaf_and_new_key(
+                node,
+                new_key,
+                parent.msb_absolute_idx,
+                new_tid,
+                loader,
+            ) {
                 Some(bn) => bn.build(),
                 None => return InsertResult::Duplicated,
             };
             let node = parent.node;
             with_write_lock_node!(node, |mut n| {
                 // it's ok to overwrite the original value.
-                n.value_mut(parent.index as usize).store(new, Ordering::Relaxed);
+                n.value_mut(parent.index as usize)
+                    .store(new, Ordering::Relaxed);
             });
             return InsertResult::Ok;
         }
@@ -142,7 +187,7 @@ impl HOT {
                 _ => {
                     if let Some((new, entry)) = try_opt_read_node!(curr, |version, n| {
                         let index = n.search_partial_key(key).unwrap();
-                        let entry = InsertStackEntry{
+                        let entry = InsertStackEntry {
                             version,
                             node: curr,
                             index: index as u8,
@@ -161,7 +206,7 @@ impl HOT {
                 }
             }
         }
-        stack.push(InsertStackEntry{
+        stack.push(InsertStackEntry {
             version: 0, // leaf does not have version.
             node: curr,
             index: 0,
@@ -189,11 +234,16 @@ struct BiNodeBuilder<'g> {
 }
 
 impl<'g> BiNodeBuilder<'g> {
-
     /// Create a new node by given leaf and new key.
     /// The returned node contains only two values, so called BiNode.
     #[inline]
-    fn from_leaf_and_new_key<L: ValueLoader>(leaf: Shared<'g, NodeTemplate>, new_key: &[u8], msb_absolute_idx: u16, new_tid: u64, loader: &L) -> Option<Self> {
+    fn from_leaf_and_new_key<L: ValueLoader>(
+        leaf: Shared<'g, NodeTemplate>,
+        new_key: &[u8],
+        msb_absolute_idx: u16,
+        new_tid: u64,
+        loader: &L,
+    ) -> Option<Self> {
         let curr = loader.load_leaf(leaf);
         let curr_key = &*curr.extract_key();
         let start_byte_idx = msb_absolute_idx as usize / 8;
@@ -202,20 +252,25 @@ impl<'g> BiNodeBuilder<'g> {
         // we always extend the shorter key with sequence of 0x00 at the end.
         // There are some consequences:
         // 1. We cannot identify keys followed by different number of 0x00.
-        // 2. key may have not enough bytes, according to msb_absolute_idx, we 
+        // 2. key may have not enough bytes, according to msb_absolute_idx, we
         //    also have to extend it.
-        for (i, (nb, cb)) in new_key[start_byte_idx..].iter().zip(&curr_key[start_byte_idx..]).enumerate() {
+        for (i, (nb, cb)) in new_key[start_byte_idx..]
+            .iter()
+            .zip(&curr_key[start_byte_idx..])
+            .enumerate()
+        {
             if nb != cb {
-                let new_msb_absolute_idx = (start_byte_idx+i) * 8 + (nb ^ cb).leading_zeros() as usize;
-                let bi_node = BiNodeBuilder{
-                    height: 1, 
-                    msb_absolute_idx: new_msb_absolute_idx as u16, 
-                    curr_byte: *cb, 
-                    new_byte: *nb, 
-                    curr_node: leaf, 
+                let new_msb_absolute_idx =
+                    (start_byte_idx + i) * 8 + (nb ^ cb).leading_zeros() as usize;
+                let bi_node = BiNodeBuilder {
+                    height: 1,
+                    msb_absolute_idx: new_msb_absolute_idx as u16,
+                    curr_byte: *cb,
+                    new_byte: *nb,
+                    curr_node: leaf,
                     new_node: NodeTemplate::tid(new_tid),
                 };
-                return Some(bi_node)
+                return Some(bi_node);
             }
         }
         None
@@ -235,8 +290,12 @@ impl<'g> BiNodeBuilder<'g> {
             sp8node.set_partial_key(0, 0);
             sp8node.set_partial_key(1, 1);
             // initialize values
-            sp8node.value_mut_unchecked(0).write(Atomic::from(self.curr_node.into_inline()));
-            sp8node.value_mut_unchecked(1).write(Atomic::from(self.new_node));
+            sp8node
+                .value_mut_unchecked(0)
+                .write(Atomic::from(self.curr_node.into_inline()));
+            sp8node
+                .value_mut_unchecked(1)
+                .write(Atomic::from(self.new_node));
             node
         }
     }
@@ -270,7 +329,7 @@ impl<'g> DerefMut for InsertStack<'g> {
 impl<'g> InsertStack<'g> {
     #[inline]
     fn new() -> Self {
-        InsertStack{inner: Vec::new()}
+        InsertStack { inner: Vec::new() }
     }
 }
 
@@ -299,7 +358,6 @@ unsafe fn drop_subtree(root: &Atomic<NodeTemplate>, guard: &Guard) {
     guard.defer_destroy(node);
 }
 
-
 #[derive(Clone, Copy)]
 pub struct InsertStackEntry<'g> {
     // version of current node.
@@ -320,16 +378,12 @@ pub struct InsertStackEntry<'g> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hot::node::{NodeSyncOps, NodeReadDataOps};
+    use crate::hot::node::{NodeReadDataOps, NodeSyncOps};
     use crate::hot::value::EmbeddedU32;
 
     #[test]
     fn test_leading_zeros() {
-        for (a, b) in [
-            (1u8, 2u8),
-            (128, 0),
-            (10, 10),
-        ] {
+        for (a, b) in [(1u8, 2u8), (128, 0), (10, 10)] {
             let v = a ^ b;
             println!("a={}, b={}, a^b={}, clz={}", a, b, v, v.leading_zeros());
         }

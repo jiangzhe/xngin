@@ -1,18 +1,25 @@
 //! This module defines all parsing functions to generate AST from SQL texts.
 //! Macros are used to eliminate idential parts of generic function signatures
 //! required by nom parsing framework.
+pub(crate) mod ddl;
 pub mod dialect;
 pub(crate) mod dml;
 pub(crate) mod expr;
 pub(crate) mod query;
+pub(crate) mod util;
 
+use std::marker::PhantomData;
 use crate::ast::*;
 use crate::error::{Error, Result};
 use crate::parser::dml::{delete, insert, update};
+use crate::parser::ddl::{create, drop};
+use crate::parser::util::{use_db, explain};
 use crate::parser::expr::{char_sp0, expr_sp0};
 use crate::parser::query::query_expr;
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take, take_till, take_till1, take_until, take_while1};
+use nom::bytes::complete::{
+    tag, tag_no_case, take, take_till, take_till1, take_until, take_while1,
+};
 use nom::character::complete::{char, multispace1};
 use nom::combinator::{cut, map, opt, recognize, rest, value};
 use nom::error::ParseError;
@@ -23,6 +30,74 @@ pub use crate::parser::dialect::ParseInput;
 pub use nom::error::convert_error;
 pub use nom::error::{Error as NomError, VerboseError};
 pub use nom::{Err as NomErr, IResult};
+
+
+/// fast query parsing
+#[inline]
+pub fn parse_query<'a, I: ParseInput<'a>>(input: I) -> Result<QueryExpr<'a>> {
+    terminated::<_, _, _, NomError<I>, _, _>(query::query_expr, spcmt0)(input)
+        .map(|(_, o)| o)
+        .map_err(convert_simple_error)
+}
+
+/// verbose query parsing, if error occurs, use `convert_error` to find more details
+#[inline]
+pub fn parse_query_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<QueryExpr<'a>> {
+    terminated(query_expr, spcmt0)(input)
+        .map(|(_, o)| o)
+        .map_err(|e| convert_verbose_error(input, e))
+}
+
+/// fast statement parsing
+#[inline]
+pub fn parse_stmt<'a, I: ParseInput<'a>>(input: I) -> Result<Statement<'a>> {
+    terminated::<_, _, _, NomError<I>, _, _>(statement, spcmt0)(input)
+        .map(|(_, o)| o)
+        .map_err(convert_simple_error)
+}
+
+/// verbose statement parsing, if error occurs, use `convert_error` to find more details
+#[inline]
+pub fn parse_stmt_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<Statement<'a>> {
+    terminated(statement, spcmt0)(input)
+        .map(|(_, o)| o)
+        .map_err(|e| convert_verbose_error(input, e))
+}
+
+#[inline]
+pub fn parse_multi_stmts<'a, I: ParseInput<'a>>(input: I, delim: char) -> ParseMultiStmtIter<'a, I> {
+    ParseMultiStmtIter{input, delim, _marker: PhantomData}
+}
+
+pub struct ParseMultiStmtIter<'a, I: 'a> {
+    input: I,
+    delim: char,
+    _marker: PhantomData<&'a mut I>,
+}
+
+impl<'a, I: ParseInput<'a>> Iterator for ParseMultiStmtIter<'a, I> {
+    type Item = Result<Statement<'a>>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.input.is_empty() {
+            return None
+        }
+        match statement::<_, NomError<I>>(self.input) {
+            Ok((i, stmt)) => {
+                // eat whitespaces and comments between statements.
+                let (i, _) = spcmt0::<_, NomError<I>>(i).unwrap(); // won't fail
+                let (i, _) = char_sp0::<_, NomError<I>>(self.delim)(i).unwrap(); // won't fail
+                self.input = i;
+                Some(Ok(stmt))
+            }
+            Err(e) => {
+                let e = convert_simple_error(e);
+                Some(Err(e))
+            }
+        }
+    }
+}
 
 reserved_keywords!(
     /// Reserved keywords defined by MySQL.
@@ -346,43 +421,11 @@ impl<'a> std::cmp::PartialEq for CastAsciiLowerCase<'a> {
     }
 }
 
-/// fast query parsing
-#[inline]
-pub fn parse_query<'a, I: ParseInput<'a>>(input: I) -> Result<QueryExpr<'a>> {
-    terminated::<_, _, _, NomError<I>, _, _>(query::query_expr, spcmt0)(input)
-        .map(|(_, o)| o)
-        .map_err(convert_simple_error)
-}
-
-/// verbose query parsing, if error occurs, use `convert_error` to find more details
-#[inline]
-pub fn parse_query_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<QueryExpr<'a>> {
-    terminated(query_expr, spcmt0)(input)
-        .map(|(_, o)| o)
-        .map_err(|e| convert_verbose_error(input, e))
-}
-
-/// fast statement parsing
-#[inline]
-pub fn parse_stmt<'a, I: ParseInput<'a>>(input: I) -> Result<Statement<'a>> {
-    terminated::<_, _, _, NomError<I>, _, _>(statement, spcmt0)(input)
-        .map(|(_, o)| o)
-        .map_err(convert_simple_error)
-}
-
-/// verbose statement parsing, if error occurs, use `convert_error` to find more details
-#[inline]
-pub fn parse_stmt_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<Statement<'a>> {
-    terminated(statement, spcmt0)(input)
-        .map(|(_, o)| o)
-        .map_err(|e| convert_verbose_error(input, e))
-}
-
 #[inline]
 fn convert_simple_error<'a, I: ParseInput<'a>>(e: NomErr<NomError<I>>) -> Error {
     let err_msg = match e {
         NomErr::Incomplete(_) => "Incomplete input".to_string(),
-        NomErr::Error(e) | NomErr::Failure(e) => format!("{:?}", e.code),
+        NomErr::Error(e) | NomErr::Failure(e) => format!("{:?}", e),
     };
     Error::SyntaxError(Box::new(err_msg))
 }
@@ -404,6 +447,10 @@ parse!(
             map(insert, Statement::Insert),
             map(delete, Statement::Delete),
             map(update, Statement::Update),
+            map(create, Statement::Create),
+            map(drop, Statement::Drop),
+            map(use_db, Statement::UseDB),
+            map(explain, Statement::Explain),
         ))
     }
 );
@@ -548,7 +595,7 @@ parse!(
                             // if expression is column reference, just use its name.
                             if let Expr::ColumnRef(cr) = &expr {
                                 let col_name = match cr.last() {
-                                    Some(Ident::Regular(s)) | Some(Ident::Delimited(s)) => *s,
+                                    Some(Ident::Regular(s)) | Some(Ident::Quoted(s)) => *s,
                                     _ => unreachable!(),
                                 };
                                 Ok((i, DerivedCol::auto_alias(expr, col_name)))
@@ -574,15 +621,15 @@ parse!(
     fn ident -> 'a Ident<'a> = {
         alt((
             map(regular_ident, Ident::regular),
-            map(delimited_ident, Ident::delimited),
+            map(quoted_ident, Ident::quoted),
         ))
     }
 );
 
 /// Parse delimited identifier.
 /// Different dialect has different delimiter and escape sequence.
-fn delimited_ident<'a, I: ParseInput<'a>, E: ParseError<I>>(i: I) -> IResult<I, I, E> {
-    let delim = I::ident_delim();
+fn quoted_ident<'a, I: ParseInput<'a>, E: ParseError<I>>(i: I) -> IResult<I, I, E> {
+    let delim = I::ident_quote();
     let escape = I::ident_escape();
     delimited(
         char(delim),
@@ -606,11 +653,11 @@ parse!(
                     Ok((i, Ident::regular(id)))
                 }
             }),
-            next(delimited_ident, |i: I, id| {
+            next(quoted_ident, |i: I, id| {
                 if id.as_bytes()[id.len()-1].is_ascii_whitespace() { // whitespace not allowed at end of alias
                     Err(nom::Err::Error(E::from_error_kind(i, nom::error::ErrorKind::Verify)))
                 } else {
-                    Ok((i, Ident::delimited(id)))
+                    Ok((i, Ident::quoted(id)))
                 }
             }),
         ))
@@ -656,8 +703,8 @@ fn is_ident_char(c: u8) -> bool {
 }
 
 fn ident_tag<'a, I: ParseInput<'a>, E: ParseError<I>>(
-    id: &'a str,
-) -> impl Fn(I) -> IResult<I, I, E> + 'a {
+    id: &'static str,
+) -> impl Fn(I) -> IResult<I, I, E> {
     use std::cmp::Ordering;
     move |i: I| {
         let id = id.as_bytes();
@@ -680,6 +727,64 @@ fn ident_tag<'a, I: ParseInput<'a>, E: ParseError<I>>(
             i,
             nom::error::ErrorKind::Tag,
         )))
+    }
+}
+
+fn preceded_tag<'a, O, I, F, E>(id: &'static str, mut f: F) -> impl FnMut(I) -> IResult<I, O, E>
+where
+    I: ParseInput<'a>,
+    E: ParseError<I>,
+    F: nom::Parser<I, O, E>,
+{
+    move |i: I| {
+        let (i, _) = terminated(tag_no_case(id), spcmt1)(i)?;
+        f.parse(i)
+    }
+}
+
+fn preceded_ident_tag<'a, O, I, F, E>(
+    id: &'static str,
+    mut f: F,
+) -> impl FnMut(I) -> IResult<I, O, E>
+where
+    I: ParseInput<'a>,
+    E: ParseError<I>,
+    F: nom::Parser<I, O, E>,
+{
+    move |i: I| {
+        let (i, _) = terminated(ident_tag(id), spcmt0)(i)?;
+        f.parse(i)
+    }
+}
+
+fn preceded_tag2_cut<'a, O, I, F, E>(
+    id1: &'static str,
+    id2: &'static str,
+    mut f: F,
+) -> impl FnMut(I) -> IResult<I, O, E>
+where
+    I: ParseInput<'a>,
+    E: ParseError<I>,
+    F: nom::Parser<I, O, E>,
+{
+    move |i: I| {
+        let (i, _) = terminated(tag_no_case(id1), spcmt1)(i)?;
+        let (i, _) = cut(terminated(tag_no_case(id2), spcmt1))(i)?;
+        f.parse(i)
+    }
+}
+
+fn paren_cut<'a, O, I, F, E>(mut f: F) -> impl FnMut(I) -> IResult<I, O, E>
+where
+    I: ParseInput<'a>,
+    E: ParseError<I>,
+    F: nom::Parser<I, O, E>,
+{
+    move |i: I| {
+        let (i, _) = char_sp0('(')(i)?;
+        let (i, out) = f.parse(i)?;
+        let (i, _) = cut(char(')'))(i)?;
+        Ok((i, out))
     }
 }
 
@@ -745,9 +850,9 @@ mod tests {
             ("abc123", ("", Ident::Regular("abc123"))),
             ("user_info", ("", Ident::Regular("user_info"))),
             ("X", ("", Ident::Regular("X"))),
-            ("\"\"", ("", Ident::Delimited(""))),
-            ("\"abc\"", ("", Ident::Delimited("abc"))),
-            ("\"abc\"\"def\"", ("", Ident::Delimited("abc\"\"def"))),
+            ("\"\"", ("", Ident::Quoted(""))),
+            ("\"abc\"", ("", Ident::Quoted("abc"))),
+            ("\"abc\"\"def\"", ("", Ident::Quoted("abc\"\"def"))),
         ] {
             let res = match ident::<'_, _, VerboseError<_>>(Ansi(c.0)) {
                 Ok(res) => res,
@@ -777,21 +882,21 @@ mod tests {
         for c in vec![
             ("a", ("", TableName::new(None, "a".into()))),
             ("a1", ("", TableName::new(None, "a1".into()))),
-            ("\"a\"", ("", TableName::new(None, Ident::Delimited("a")))),
+            ("\"a\"", ("", TableName::new(None, Ident::Quoted("a")))),
             (
                 "\"a\"\"b\"",
-                ("", TableName::new(None, Ident::Delimited("a\"\"b"))),
+                ("", TableName::new(None, Ident::Quoted("a\"\"b"))),
             ),
             ("a.a", ("", TableName::new(Some("a".into()), "a".into()))),
             (
                 "\"a\".a",
-                ("", TableName::new(Some(Ident::Delimited("a")), "a".into())),
+                ("", TableName::new(Some(Ident::Quoted("a")), "a".into())),
             ),
             (
                 "\"a\".\"a\"",
                 (
                     "",
-                    TableName::new(Some(Ident::Delimited("a")), Ident::Delimited("a")),
+                    TableName::new(Some(Ident::Quoted("a")), Ident::Quoted("a")),
                 ),
             ),
         ] {
@@ -890,7 +995,7 @@ mod tests {
                 "a.\"b\".*",
                 (
                     "",
-                    DerivedCol::Asterisk(vec!["a".into(), Ident::Delimited("b")]),
+                    DerivedCol::Asterisk(vec!["a".into(), Ident::Quoted("b")]),
                 ),
             ),
         ] {

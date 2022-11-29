@@ -29,13 +29,13 @@ use nom::combinator::{cut, map, map_opt, not, opt, peek, recognize, value};
 use nom::error::{ErrorKind, ParseError};
 use nom::multi::{fold_many0, many0, many1, separated_list0, separated_list1};
 use nom::number::complete::recognize_float;
-use nom::sequence::{delimited, pair, preceded, terminated, tuple};
+use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::IResult;
 
 use crate::parser::query::{query_expr, subquery};
 use crate::parser::ParseInput;
 use crate::parser::{
-    delimited_ident, ident, ident_tag, match_builtin_keyword, match_reserved_keyword, next,
+    quoted_ident, ident, ident_tag, match_builtin_keyword, match_reserved_keyword, next,
     next_cut, regular_ident, set_quantifier, spcmt0, spcmt1, BuiltinKeyword, ReservedKeyword,
 };
 
@@ -560,7 +560,7 @@ parse!(
             terminated(
                 alt((
                     map_opt(regular_ident, |id: I| if is_reserved_keyword(&*id) { None } else { Some(Ident::regular(id))} ),
-                    map(delimited_ident, Ident::delimited),
+                    map(quoted_ident, Ident::quoted),
                 )),
                 spcmt0,
             )
@@ -577,14 +577,14 @@ parse!(
         alt((
             value(
                 AggrFunc::count_asterisk(),
-                tuple((
+                pair(
                     terminated(ident_tag("count"), spcmt0),
                     delimited(
                         char_sp0('('),
                         char('*'),
                         sp0_char(')'),
                     ),
-                ))),
+                )),
             map(
                 pair(
                     terminated(aggr_func_kind, spcmt0),

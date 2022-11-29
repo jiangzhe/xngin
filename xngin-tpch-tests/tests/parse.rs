@@ -1,7 +1,7 @@
 use std::ops::{Add, Div, Mul, Sub};
 use xngin_frontend::ast::*;
-use xngin_frontend::parser::dialect::Ansi;
-use xngin_frontend::parser::parse_query_verbose;
+use xngin_frontend::parser::dialect::{Ansi, MySQL};
+use xngin_frontend::parser::{parse_query_verbose, parse_multi_stmts};
 
 macro_rules! col {
     ( $($lit:literal).* ) => {
@@ -36,6 +36,14 @@ macro_rules! check_sql {
         };
         assert_eq!($expected, res);
     };
+}
+
+#[test]
+fn parse_tpch_ddl() {
+    let ddl = include_str!("../../sql/tpch_ddl.sql");
+    for res in parse_multi_stmts(MySQL(ddl), ';') {
+        assert!(res.is_ok());
+    }
 }
 
 #[test]
@@ -660,7 +668,7 @@ fn parse_tpch11() {
                 auto_derived!("ps_partkey"),
                 DerivedCol::new(
                     Expr::sum(Expr::mul(col!("ps_supplycost"), col!("ps_availqty"))),
-                    Ident::Delimited("value"),
+                    Ident::Quoted("value"),
                 ),
             ],
             from: vec![table!("partsupp"), table!("supplier"), table!("nation")],
@@ -697,7 +705,7 @@ fn parse_tpch11() {
                 }),
             )),
             order_by: vec![OrderElement::desc(Expr::column_ref(vec![
-                Ident::Delimited("value"),
+                Ident::Quoted("value"),
             ]))],
             limit: None,
         }),

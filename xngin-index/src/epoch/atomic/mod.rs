@@ -1,23 +1,25 @@
-mod shared;
-mod owned;
 mod inline;
+mod owned;
+mod shared;
 
+use super::guard::Guard;
+pub use inline::Inline;
+pub use owned::Owned;
+pub use shared::Shared;
+use std::fmt;
+use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
-use std::fmt;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use std::marker::PhantomData;
-use super::guard::Guard;
-pub use shared::Shared;
-pub use owned::Owned;
-pub use inline::Inline;
 
 pub struct CompareExchangeError<'g, T: Pointable, P: PointerOrInline<T>> {
     pub current: Shared<'g, T>,
     pub new: P,
 }
 
-impl<T: Pointable, P: PointerOrInline<T> + fmt::Debug> fmt::Debug for CompareExchangeError<'_, T, P> {
+impl<T: Pointable, P: PointerOrInline<T> + fmt::Debug> fmt::Debug
+    for CompareExchangeError<'_, T, P>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CompareExchangeError")
             .field("current", &self.current)
@@ -27,10 +29,10 @@ impl<T: Pointable, P: PointerOrInline<T> + fmt::Debug> fmt::Debug for CompareExc
 }
 
 /// Types that are pointed to by a single word.
-/// 
+///
 /// This trait differs from crossbeam-epoch, as it
 /// only supports sized type.
-/// 
+///
 /// If user wants to use dynamic sized type, he/she can
 /// compose a sized struct with header and 0-length u8
 /// array at end, embed the total length inside header
@@ -60,7 +62,7 @@ unsafe impl<T: Pointable + Send + Sync> Sync for Atomic<T> {}
 
 impl<T> Atomic<T>
 where
-    T: Pointable<Init=T>,
+    T: Pointable<Init = T>,
 {
     pub fn new(init: T) -> Atomic<T> {
         Self::from(Owned::new(init))
@@ -68,9 +70,8 @@ where
 }
 
 impl<T: Pointable> Atomic<T> {
-    
     fn from_ptr(data: *mut ()) -> Self {
-        Self{
+        Self {
             data: AtomicPtr::new(data),
             _marker: PhantomData,
         }
@@ -91,7 +92,12 @@ impl<T: Pointable> Atomic<T> {
         self.data.store(new.into_ptr(), ord);
     }
 
-    pub fn swap<'g, P: PointerOrInline<T>>(&self, new: P, ord: Ordering, _: &'g Guard) -> Shared<'g, T> {
+    pub fn swap<'g, P: PointerOrInline<T>>(
+        &self,
+        new: P,
+        ord: Ordering,
+        _: &'g Guard,
+    ) -> Shared<'g, T> {
         unsafe { Shared::from_ptr(self.data.swap(new.into_ptr(), ord)) }
     }
 
@@ -104,12 +110,20 @@ impl<T: Pointable> Atomic<T> {
         }
     }
 
-    pub fn compare_exchange<'g, P>(&self, current: Shared<'_, T>, new: P, success: Ordering, failure: Ordering, _: &'g Guard) -> Result<Shared<'g, T>, CompareExchangeError<'g, T, P>>
+    pub fn compare_exchange<'g, P>(
+        &self,
+        current: Shared<'_, T>,
+        new: P,
+        success: Ordering,
+        failure: Ordering,
+        _: &'g Guard,
+    ) -> Result<Shared<'g, T>, CompareExchangeError<'g, T, P>>
     where
         P: PointerOrInline<T>,
     {
         let new = new.into_ptr();
-        self.data.compare_exchange(current.into_ptr(), new, success, failure)
+        self.data
+            .compare_exchange(current.into_ptr(), new, success, failure)
             .map(|_| unsafe { Shared::from_ptr(new) })
             .map_err(|current| unsafe {
                 CompareExchangeError {
@@ -119,15 +133,23 @@ impl<T: Pointable> Atomic<T> {
             })
     }
 
-    pub fn compare_exchange_weak<'g, P>(&self, current: Shared<'_, T>, new: P, success: Ordering, failure: Ordering, _: &'g Guard) -> Result<Shared<'g, T>, CompareExchangeError<'g, T, P>>
+    pub fn compare_exchange_weak<'g, P>(
+        &self,
+        current: Shared<'_, T>,
+        new: P,
+        success: Ordering,
+        failure: Ordering,
+        _: &'g Guard,
+    ) -> Result<Shared<'g, T>, CompareExchangeError<'g, T, P>>
     where
         P: PointerOrInline<T>,
     {
         let new = new.into_ptr();
-        self.data.compare_exchange_weak(current.into_ptr(), new, success, failure)
+        self.data
+            .compare_exchange_weak(current.into_ptr(), new, success, failure)
             .map(|_| unsafe { Shared::from_ptr(new) })
             .map_err(|current| unsafe {
-                CompareExchangeError{
+                CompareExchangeError {
                     current: Shared::from_ptr(current),
                     new: P::from_ptr(new),
                 }
@@ -180,7 +202,10 @@ pub fn low_bits<T: ?Sized + Pointable>() -> usize {
 
 #[inline]
 pub(self) fn compose_tag<T: ?Sized + Pointable>(ptr: *mut (), tag: usize) -> *mut () {
-    int_to_ptr_with_provenance((ptr as usize & !low_bits::<T>()) | (tag & low_bits::<T>()), ptr)
+    int_to_ptr_with_provenance(
+        (ptr as usize & !low_bits::<T>()) | (tag & low_bits::<T>()),
+        ptr,
+    )
 }
 
 #[inline]
@@ -222,7 +247,7 @@ mod tests {
         let size = std::mem::size_of::<A>();
         let align = std::mem::align_of::<A>();
         println!("size={}, align={}", size, align);
-        let a = A{data: 256};
+        let a = A { data: 256 };
         let arr = unsafe { std::mem::transmute::<_, [u8; 16]>(a) };
         println!("arr={:?}", arr);
     }

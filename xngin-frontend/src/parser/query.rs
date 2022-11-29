@@ -1,7 +1,8 @@
 use crate::ast::*;
 use crate::parser::expr::{char_sp0, expr_sp0, sp0_char};
 use crate::parser::{
-    derived_col, ident, is_reserved_keyword, next, next_cut, spcmt0, spcmt1, table_name, ParseInput,
+    derived_col, ident, ident_tag, is_reserved_keyword, next, next_cut, paren_cut,
+    preceded_ident_tag, preceded_tag, preceded_tag2_cut, spcmt0, spcmt1, table_name, ParseInput,
 };
 use nom::branch::alt;
 use nom::bytes::complete::tag_no_case;
@@ -23,7 +24,7 @@ parse!(
     fn query_expr -> 'a QueryExpr<'a> = {
         map(
             pair(
-                opt(with),
+                opt(terminated(with, spcmt0)),
                 next_cut(select, |_, i, query| {
                     let mut input = i;
                     let mut res = query;
@@ -77,28 +78,22 @@ parse!(
 parse!(
     /// Parse a with clause.
     fn with -> 'a With<'a> = {
-        preceded(
-            terminated(tag_no_case("with"), spcmt0),
-            cut(alt((
-                map(
-                    preceded(
-                        terminated(tag_no_case("recursive"), spcmt1),
-                        separated_list1(
-                            terminated(char_sp0(','), spcmt0),
-                            terminated(with_element, spcmt0),
-                        )
-                    ),
-                    |elements| With{recursive: true, elements},
+        preceded_tag("with", cut(alt((
+            map(
+                preceded_tag("recursive", separated_list1(
+                    char_sp0(','),
+                    terminated(with_element, spcmt0),
+                )),
+                |elements| With{recursive: true, elements},
+            ),
+            map(
+                separated_list1(
+                    char_sp0(','),
+                    terminated(with_element, spcmt0),
                 ),
-                map(
-                    separated_list1(
-                        terminated(char_sp0(','), spcmt0),
-                        terminated(with_element, spcmt0),
-                    ),
-                    |elements| With{recursive: false, elements},
-                )
-            )))
-        )
+                |elements| With{recursive: false, elements},
+            )
+        ))))
     }
 );
 
@@ -111,21 +106,13 @@ parse!(
     fn with_element -> 'a WithElement<'a> = {
         map(
             tuple((
-                terminated(ident, spcmt0),
-                opt(
-                    preceded(
-                        char_sp0('('),
-                        cut(terminated(
-                            separated_list1(char_sp0(','), terminated(ident, spcmt0)),
-                            char_sp0(')'),
-                        )),
-                    )
-                ),
-                cut(delimited(
+                ident,
+                opt(preceded(spcmt0, paren_cut(separated_list1(char_sp0(','), terminated(ident, spcmt0))))),
+                cut(preceded(spcmt0, delimited(
                     preceded(tag_no_case("as"), sp0_char('(')),
                     preceded(spcmt0, query_expr),
                     preceded(spcmt0, char(')')),
-                )),
+                ))),
             )),
             |(name, cols, query_expr)| WithElement{name, cols: cols.unwrap_or_default(), query_expr},
         )
@@ -143,19 +130,15 @@ parse!(
     fn select -> 'a Query<'a> = {
         map(
             pair(
-                pair(
-                    terminated(
-                        alt((
-                            value(SetQuantifier::Distinct, delimited(tag_no_case("select"), spcmt1, tag_no_case("distinct"))),
-                            value(SetQuantifier::All, delimited(tag_no_case("select"), spcmt1, tag_no_case("all"))),
-                            value(SetQuantifier::All, preceded(tag_no_case("select"), spcmt1)),
-                        )),
-                        spcmt0,
-                    ),
-                    cut(separated_list1(char_sp0(','), terminated(derived_col, spcmt0))),
-                ),
+                preceded_tag("select", cut(pair(
+                    terminated(alt((
+                        value(SetQuantifier::Distinct, tag_no_case("distinct")),
+                        value(SetQuantifier::All, opt(tag_no_case("all"))),
+                    )), spcmt1),
+                    separated_list1(char_sp0(','), terminated(derived_col, spcmt0)),
+                ))),
                 opt(
-                    pair(
+                    preceded(spcmt1, pair(
                         from,
                         cut(tuple((
                             opt(filter),
@@ -164,7 +147,7 @@ parse!(
                             opt(order_by),
                             opt(limit),
                         )))
-                    )
+                    ))
                 ),
             ),
             |((q, cols), other)| match other {
@@ -187,9 +170,8 @@ parse!(
     /// ```
     fn from -> 'a Vec<TableRef<'a>> = {
         preceded(
-            preceded(tag_no_case("from"), terminated(peek(not(alphanumeric1)), spcmt0)),
-            // cut(terminated(table_name, multispace0)),
-            cut(separated_list1(char_sp0(','), terminated(table_ref, spcmt0)))
+            ident_tag("from"),
+            cut(preceded(spcmt0, separated_list1(char_sp0(','), terminated(table_ref, spcmt0))))
         )
     }
 );
@@ -210,10 +192,7 @@ parse!(
     /// <group_by_clause> ::= GROUP BY <grouping_element_list>
     /// ```
     fn group_by -> 'a Vec<Expr<'a>> = {
-        preceded(
-            delimited(tag_no_case("group"), spcmt1, terminated(tag_no_case("by"), spcmt0)),
-            cut(separated_list1(terminated(char(','), spcmt0), expr_sp0)),
-        )
+        preceded_tag2_cut("group", "by", separated_list1(terminated(char(','), spcmt0), expr_sp0))
     }
 );
 
@@ -223,7 +202,7 @@ parse!(
     /// <having_clause> ::= HAVING <expr>
     /// ```
     fn having -> 'a Expr<'a> = {
-        preceded(terminated(tag_no_case("having"), peek(not(alphanumeric1))), cut(preceded(spcmt0, expr_sp0)))
+        preceded_ident_tag("having", cut(preceded(spcmt0, expr_sp0)))
     }
 );
 
@@ -233,13 +212,7 @@ parse!(
     /// <order_by_clause> ::= ORDER BY <sort_spec_list>
     /// ```
     fn order_by -> 'a Vec<OrderElement<'a>> = {
-        preceded(
-            preceded(
-                preceded(tag_no_case("order"), spcmt1),
-                tag_no_case("by"),
-            ),
-            cut(separated_list1(char(','), order_element)),
-        )
+        preceded_tag2_cut("order", "by", separated_list1(char_sp0(','), terminated(order_element, spcmt0)))
     }
 );
 
@@ -254,8 +227,8 @@ parse!(
                 preceded(spcmt0, expr_sp0),
                 map(
                     opt(alt((
-                        value(false, preceded(tag_no_case("asc"), spcmt0)),
-                        value(true, preceded(tag_no_case("desc"), spcmt0)),
+                        value(false, tag_no_case("asc")),
+                        value(true, tag_no_case("desc")),
                     ))),
                     |ordering| ordering.unwrap_or(false),
                 )
@@ -438,17 +411,19 @@ parse!(
     fn join_type -> JoinType = {
         alt((
             value(JoinType::Inner,
-                delimited(tag_no_case("inner"), spcmt1, tag_no_case("join"))),
-            terminated(
-                alt((
-                    value(JoinType::Left, terminated(tag_no_case("left"), spcmt1)),
-                    value(JoinType::Right, terminated(tag_no_case("right"), spcmt1)),
-                    value(JoinType::Full, terminated(tag_no_case("full"), spcmt1)),
-                )),
-                preceded(
-                    opt(terminated(tag_no_case("outer"), spcmt1)),
-                    tag_no_case("join"),
-                )),
+                preceded_tag("inner", cut(tag_no_case("join")))),
+            value(JoinType::Left, preceded_tag("left", cut(alt((
+                tag_no_case("join"),
+                preceded_tag("outer", tag_no_case("join")),
+            ))))),
+            value(JoinType::Right, preceded_tag("right", cut(alt((
+                tag_no_case("join"),
+                preceded_tag("outer", tag_no_case("join")),
+            ))))),
+            value(JoinType::Full, preceded_tag("Full", cut(alt((
+                tag_no_case("join"),
+                preceded_tag("outer", tag_no_case("join")),
+            ))))),
             value(JoinType::Inner, tag_no_case("join")),
         ))
     }
@@ -459,20 +434,11 @@ parse!(
     fn join_condition -> 'a JoinCondition<'a> = {
         alt((
             map(
-                preceded(
-                    terminated(tag_no_case("on"), spcmt1),
-                    cut(expr_sp0),
-                ),
+                preceded_tag("on", expr_sp0),
                 JoinCondition::Conds,
             ),
             map(
-                preceded(
-                    delimited(tag_no_case("using"), spcmt0, char('(')),
-                    cut(terminated(
-                        separated_list1(sp0_char(','), preceded(spcmt0, ident)),
-                        sp0_char(')')
-                    )),
-                ),
+                preceded_ident_tag("using", paren_cut(separated_list1(char_sp0(','), terminated(ident, spcmt0)))),
                 JoinCondition::NamedCols,
             ),
         ))

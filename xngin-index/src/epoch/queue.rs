@@ -1,8 +1,8 @@
-use crossbeam_utils::CachePadded;
 use super::atomic::{Atomic, Owned, Shared};
-use super::guard::{Guard, unprotected};
-use std::sync::atomic::Ordering;
+use super::guard::{unprotected, Guard};
+use crossbeam_utils::CachePadded;
 use std::mem::MaybeUninit;
+use std::sync::atomic::Ordering;
 
 pub(crate) struct Queue<T> {
     head: CachePadded<Atomic<Node<T>>>,
@@ -33,7 +33,7 @@ impl<T> Queue<T> {
 
     #[inline(always)]
     fn push_internal(
-        &self, 
+        &self,
         onto: Shared<'_, Node<T>>,
         new: Shared<'_, Node<T>>,
         guard: &Guard,
@@ -41,12 +41,29 @@ impl<T> Queue<T> {
         let o = unsafe { onto.deref() };
         let next = o.next.load(Ordering::Acquire, guard);
         if unsafe { next.as_ref().is_some() } {
-            let _ = self.tail.compare_exchange(onto, next, Ordering::Release, Ordering::Relaxed, guard);
+            let _ =
+                self.tail
+                    .compare_exchange(onto, next, Ordering::Release, Ordering::Relaxed, guard);
             false
         } else {
-            let result = o.next.compare_exchange(Shared::null(), new, Ordering::Release, Ordering::Relaxed, guard).is_ok();
+            let result = o
+                .next
+                .compare_exchange(
+                    Shared::null(),
+                    new,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                    guard,
+                )
+                .is_ok();
             if result {
-                let _ = self.tail.compare_exchange(onto, new, Ordering::Release, Ordering::Relaxed, guard);
+                let _ = self.tail.compare_exchange(
+                    onto,
+                    new,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                    guard,
+                );
             }
             result
         }
@@ -76,16 +93,24 @@ impl<T> Queue<T> {
         let h = unsafe { head.deref() };
         let next = h.next.load(Ordering::Acquire, guard);
         match unsafe { next.as_ref() } {
-            Some(n) if condition(unsafe {&*n.data.as_ptr() }) => unsafe {
-                self.head.compare_exchange(head, next, Ordering::Release, Ordering::Relaxed, guard)
+            Some(n) if condition(unsafe { &*n.data.as_ptr() }) => unsafe {
+                self.head
+                    .compare_exchange(head, next, Ordering::Release, Ordering::Relaxed, guard)
                     .map(|_| {
                         let tail = self.tail.load(Ordering::Relaxed, guard);
                         if head == tail {
-                            let _ = self.tail.compare_exchange(tail, next, Ordering::Release, Ordering::Relaxed, guard);
+                            let _ = self.tail.compare_exchange(
+                                tail,
+                                next,
+                                Ordering::Release,
+                                Ordering::Relaxed,
+                                guard,
+                            );
                         }
                         guard.defer_destroy(head);
                         Some(n.data.as_ptr().read())
-                    }).map_err(|_| ())
+                    })
+                    .map_err(|_| ())
             },
             None | Some(_) => Ok(None),
         }

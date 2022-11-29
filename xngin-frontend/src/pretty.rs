@@ -46,7 +46,7 @@ impl PrettyFormat for Ident<'_> {
     fn pretty_fmt<F: Write>(&self, f: &mut F, conf: &PrettyConf, _indent: usize) -> fmt::Result {
         match self {
             Ident::Regular(s) => f.write_str(s),
-            Ident::Delimited(s) | Ident::AutoAlias(s) => {
+            Ident::Quoted(s) | Ident::AutoAlias(s) => {
                 // here treat auto-alias same as delimited.
                 // todo: should take care of escape characters.
                 f.write_char(conf.ident_delim)?;
