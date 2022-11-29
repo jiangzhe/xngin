@@ -1,10 +1,12 @@
-use super::node::{NodeOps, NodeKind, NodeSearchOps, NodeReadDataOps, NodeWriteDataOps, NodeTemplate, NodeSyncOps};
+use super::node::{
+    NodeKind, NodeOps, NodeReadDataOps, NodeSearchOps, NodeSyncOps, NodeTemplate, NodeWriteDataOps,
+};
+use crate::epoch::{Atomic, Owned, Shared};
 use crate::hot::partial_key::PartialKey;
-use crate::epoch::{Atomic, Shared, Owned};
+use std::arch::x86_64::_pext_u64;
+use std::marker::PhantomData;
 use std::mem::{self, MaybeUninit};
 use std::ptr;
-use std::marker::PhantomData;
-use std::arch::x86_64::_pext_u64;
 
 #[repr(C, align(8))]
 pub struct SingleMaskNodeRef<'a, P: PartialKey> {
@@ -64,10 +66,12 @@ impl<P: PartialKey> SingleMaskNodeRef<'_, P> {
 }
 
 impl<P: PartialKey> SingleMaskNodeMut<'_, P> {
-
     #[inline]
     pub fn to_ref(&self) -> SingleMaskNodeRef<'_, P> {
-        SingleMaskNodeRef{tmpl: self.tmpl, _marker: PhantomData}
+        SingleMaskNodeRef {
+            tmpl: self.tmpl,
+            _marker: PhantomData,
+        }
     }
 
     #[inline]
@@ -126,7 +130,10 @@ impl<'g, P: PartialKey> NodeSyncOps for SingleMaskNodeRef<'g, P> {
     #[inline]
     unsafe fn to_mut(&self) -> Self::TargetMut {
         let tmpl = &mut *(self.tmpl as *const _ as *mut _);
-        SingleMaskNodeMut{tmpl, _marker: PhantomData}
+        SingleMaskNodeMut {
+            tmpl,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -155,7 +162,7 @@ impl<P: PartialKey> NodeReadDataOps for SingleMaskNodeRef<'_, P> {
 
 impl<P: PartialKey> NodeReadDataOps for SingleMaskNodeMut<'_, P> {
     type PartialKey = P;
-    
+
     fn partial_key(&self, index: usize) -> Self::PartialKey {
         self.to_ref().partial_key(index)
     }
@@ -178,7 +185,10 @@ impl<P: PartialKey> NodeWriteDataOps for SingleMaskNodeMut<'_, P> {
         unsafe { self.value_mut_unchecked(index).assume_init_mut() }
     }
 
-    unsafe fn value_mut_unchecked(&mut self, index: usize) -> &mut MaybeUninit<Atomic<NodeTemplate>> {
+    unsafe fn value_mut_unchecked(
+        &mut self,
+        index: usize,
+    ) -> &mut MaybeUninit<Atomic<NodeTemplate>> {
         let p = self.values_ptr() as *mut MaybeUninit<Atomic<NodeTemplate>>;
         &mut *p.add(index)
     }
@@ -187,11 +197,11 @@ impl<P: PartialKey> NodeWriteDataOps for SingleMaskNodeMut<'_, P> {
 impl<P: PartialKey> NodeSearchOps for SingleMaskNodeRef<'_, P> {
     fn extract_partial_key(&self, input: &[u8]) -> Self::PartialKey {
         let start = self.msb_offset() as usize / 8;
-        let len = (input.len()-start).min(8);
+        let len = (input.len() - start).min(8);
         // partial key must reside within 8-bytes,
         // so we fix the key size with 8.
         let mut key_u64 = [0u8; 8];
-        key_u64[..len].copy_from_slice(&input[start..start+len]);
+        key_u64[..len].copy_from_slice(&input[start..start + len]);
         let mask = self.mask();
         unsafe {
             let key = _pext_u64(u64::from_be_bytes(key_u64), mask);
@@ -207,7 +217,7 @@ impl<P: PartialKey> NodeSearchOps for SingleMaskNodeRef<'_, P> {
         let mut keys_ptr = self.partial_keys_ptr() as *const P;
         unsafe {
             let end_ptr = keys_ptr.add(self.n_values());
-            while keys_ptr.add(step)  <= end_ptr {
+            while keys_ptr.add(step) <= end_ptr {
                 let match_mask = partial_key.mm256_search(keys_ptr);
                 // if we always make keys continugous, we do not need the entries mask.
                 // let res_mask = (match_mask << i) & self.header.used_entries_mask;
@@ -235,7 +245,7 @@ impl<P: PartialKey> Drop for SingleMaskNodeRef<'_, P> {
     fn drop(&mut self) {
         for i in 0..self.n_values() {
             unsafe {
-                ptr::drop_in_place(self.value(i as usize) as *const _ as *mut Atomic<NodeTemplate>) 
+                ptr::drop_in_place(self.value(i as usize) as *const _ as *mut Atomic<NodeTemplate>)
             }
         }
     }
@@ -252,7 +262,10 @@ impl<'g> SP8NodeRef<'g> {
     pub unsafe fn from(shared: Shared<'g, NodeTemplate>) -> Self {
         debug_assert_eq!(shared.kind(), NodeKind::SP8);
         let tmpl = shared.deref();
-        Self{tmpl, _marker: PhantomData}
+        Self {
+            tmpl,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -263,7 +276,10 @@ impl<'a> SP8NodeMut<'a> {
     pub fn from(owned: &'a mut Owned<NodeTemplate>) -> Self {
         debug_assert_eq!(owned.kind(), NodeKind::SP8);
         let tmpl = &mut **owned;
-        Self{tmpl, _marker: PhantomData}
+        Self {
+            tmpl,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -274,11 +290,11 @@ pub type SP32Node<'a> = SingleMaskNodeRef<'a, u32>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hot::node::NodeTemplate;
-    use crate::hot::node::NodeKind;
     use crate::epoch;
-    use std::sync::atomic::Ordering;
+    use crate::hot::node::NodeKind;
+    use crate::hot::node::NodeTemplate;
     use memoffset::offset_of;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn test_node_impl_size_and_align() {
@@ -300,21 +316,23 @@ mod tests {
             let mut node = unsafe { SP8NodeMut::from(&mut node) };
             assert_eq!(1, node.height());
             assert_eq!(2, node.n_values());
-            
+
             node.set_partial_key(1, 10);
             node.set_partial_key(0, 20);
-            
+
             assert_eq!(20, node.partial_key(0));
             assert_eq!(10, node.partial_key(1));
-            
+
             unsafe {
-                node.value_mut_unchecked(0).write(Atomic::from(NodeTemplate::tid(100)));
-                node.value_mut_unchecked(1).write(Atomic::from(NodeTemplate::tid(200)));
+                node.value_mut_unchecked(0)
+                    .write(Atomic::from(NodeTemplate::tid(100)));
+                node.value_mut_unchecked(1)
+                    .write(Atomic::from(NodeTemplate::tid(200)));
             }
-            
-            let v0 = node.value(0).load(Ordering::Relaxed, &guard).tid();   
+
+            let v0 = node.value(0).load(Ordering::Relaxed, &guard).tid();
             assert_eq!(100, v0);
-            let v1 = node.value(1).load(Ordering::Relaxed, &guard).tid();   
+            let v1 = node.value(1).load(Ordering::Relaxed, &guard).tid();
             assert_eq!(200, v1);
         }
         assert_eq!(2, node.tag());

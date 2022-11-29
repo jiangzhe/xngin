@@ -1,20 +1,20 @@
 #[macro_use]
 mod macros;
 mod atomic;
+mod collector;
 mod epoch;
+mod guard;
 mod internal;
 mod list;
-mod collector;
-mod guard;
 mod queue;
 
 mod sealed {
     pub trait Sealed {}
 }
 
+pub use atomic::{low_bits, Atomic, Inline, Owned, Pointable, PointerOrInline, Shared};
 pub use epoch::Epoch;
-pub use guard::{Guard, unprotected};
-pub use atomic::{Atomic, Owned, Shared, Inline, Pointable, PointerOrInline, low_bits};
+pub use guard::{unprotected, Guard};
 
 use collector::{Collector, LocalHandle};
 
@@ -22,7 +22,7 @@ use once_cell::sync::Lazy;
 
 static COLLECTOR: Lazy<Collector> = Lazy::new(Collector::default);
 
-thread_local!{
+thread_local! {
     static HANDLE: LocalHandle = COLLECTOR.register();
 }
 
@@ -41,6 +41,7 @@ fn with_handle<F, R>(mut f: F) -> R
 where
     F: FnMut(&LocalHandle) -> R,
 {
-    HANDLE.try_with(|h| f(h))
+    HANDLE
+        .try_with(|h| f(h))
         .unwrap_or_else(|_| f(&COLLECTOR.register()))
 }

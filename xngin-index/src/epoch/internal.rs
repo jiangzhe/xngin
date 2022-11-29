@@ -1,19 +1,19 @@
-use std::fmt;
-use std::mem::{self, MaybeUninit, ManuallyDrop};
-use std::marker::PhantomData;
-use std::ptr;
-use std::sync::atomic::{self, Ordering};
-use std::cell::{Cell, UnsafeCell};
 use super::atomic::{Owned, Shared};
-use super::epoch::{Epoch, AtomicEpoch};
-use super::guard::{Guard, unprotected};
-use super::collector::{LocalHandle, Collector};
-use super::list::{List, IterError};
-use std::num::Wrapping;
+use super::collector::{Collector, LocalHandle};
+use super::epoch::{AtomicEpoch, Epoch};
+use super::guard::{unprotected, Guard};
 use super::list::{Entry, IsElement};
+use super::list::{IterError, List};
 use super::queue::Queue;
 use crossbeam_utils::CachePadded;
 use memoffset::offset_of;
+use std::cell::{Cell, UnsafeCell};
+use std::fmt;
+use std::marker::PhantomData;
+use std::mem::{self, ManuallyDrop, MaybeUninit};
+use std::num::Wrapping;
+use std::ptr;
+use std::sync::atomic::{self, Ordering};
 
 const MAX_OBJECTS: usize = 64;
 
@@ -44,7 +44,7 @@ impl Bag {
     }
 
     fn seal(self, epoch: Epoch) -> SealedBag {
-        SealedBag{epoch, _bag: self}
+        SealedBag { epoch, _bag: self }
     }
 }
 
@@ -119,7 +119,10 @@ impl Global {
         let global_epoch = self.try_advance(guard);
         let steps = Self::COLLECT_STEPS;
         for _ in 0..steps {
-            match self.queue.try_pop_if(&|sealed_bag: &SealedBag| sealed_bag.is_expired(global_epoch), guard) {
+            match self.queue.try_pop_if(
+                &|sealed_bag: &SealedBag| sealed_bag.is_expired(global_epoch),
+                guard,
+            ) {
                 None => break,
                 Some(sealed_bag) => drop(sealed_bag),
             }
@@ -151,7 +154,6 @@ impl Global {
     }
 }
 
-
 pub(crate) struct Local {
     entry: Entry,
     epoch: AtomicEpoch,
@@ -167,7 +169,7 @@ impl Local {
 
     pub(crate) fn register(collector: &Collector) -> LocalHandle {
         unsafe {
-            let local = Owned::new(Local{
+            let local = Owned::new(Local {
                 entry: Entry::default(),
                 epoch: AtomicEpoch::new(Epoch::starting()),
                 collector: UnsafeCell::new(ManuallyDrop::new(collector.clone())),
@@ -178,7 +180,7 @@ impl Local {
             })
             .into_shared(unprotected());
             collector.global.locals.insert(local, unprotected());
-            LocalHandle{
+            LocalHandle {
                 local: local.as_raw(),
             }
         }
@@ -226,7 +228,12 @@ impl Local {
             let new_epoch = global_epoch.pinned();
             if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
                 let current = Epoch::starting();
-                let res = self.epoch.compare_exchange(current, new_epoch, Ordering::SeqCst, Ordering::SeqCst);
+                let res = self.epoch.compare_exchange(
+                    current,
+                    new_epoch,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
                 debug_assert!(res.is_ok(), "participant was expected to be unpinned");
                 atomic::compiler_fence(Ordering::SeqCst);
             } else {
@@ -360,12 +367,12 @@ impl Deferred {
             if size <= mem::size_of::<Data>() && align <= mem::align_of::<Data>() {
                 let mut data = MaybeUninit::<Data>::uninit();
                 ptr::write(data.as_mut_ptr().cast::<F>(), f);
-            
+
                 unsafe fn call<F: FnOnce()>(raw: *mut u8) {
                     let f: F = ptr::read(raw.cast::<F>());
                     f();
                 }
-    
+
                 Deferred {
                     call: call::<F>,
                     data,
@@ -375,13 +382,13 @@ impl Deferred {
                 let b: Box<F> = Box::new(f);
                 let mut data = MaybeUninit::<Data>::uninit();
                 ptr::write(data.as_mut_ptr().cast::<Box<F>>(), b);
-                
+
                 unsafe fn call<F: FnOnce()>(raw: *mut u8) {
                     let b: Box<F> = ptr::read(raw.cast::<Box<F>>());
                     (*b)();
                 }
 
-                Deferred{
+                Deferred {
                     call: call::<F>,
                     data,
                     _marker: PhantomData,

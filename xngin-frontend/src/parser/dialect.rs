@@ -8,11 +8,12 @@ use nom::{
 };
 use std::ops::{Deref, Range, RangeFrom, RangeFull, RangeTo};
 use std::str::{CharIndices, Chars};
+use std::fmt::Debug;
 
 // Defines parsing details of SQL dialects.
 pub trait Dialect {
     /// Delimiter of identfier.
-    fn ident_delim() -> char;
+    fn ident_quote() -> char;
 
     /// Escape string of delimited identifier.
     fn ident_escape() -> &'static str;
@@ -22,6 +23,7 @@ pub trait Dialect {
 pub trait ParseInput<'a>:
     Clone
     + Copy
+    + Debug
     + InputLength
     + AsBytes
     + InputTake
@@ -44,7 +46,7 @@ define_dialect!(Ansi);
 
 impl<'a> Dialect for Ansi<'a> {
     #[inline]
-    fn ident_delim() -> char {
+    fn ident_quote() -> char {
         '"'
     }
 
@@ -60,7 +62,7 @@ define_dialect!(MySQL);
 
 impl<'a> Dialect for MySQL<'a> {
     #[inline]
-    fn ident_delim() -> char {
+    fn ident_quote() -> char {
         '`'
     }
 
@@ -86,9 +88,9 @@ mod tests {
             ("a", ("", Ident::Regular("a"))),
             ("abc", ("", Ident::Regular("abc"))),
             ("abc123", ("", Ident::Regular("abc123"))),
-            ("``", ("", Ident::Delimited(""))),
-            ("`abc`", ("", Ident::Delimited("abc"))),
-            ("`abc``def`", ("", Ident::Delimited("abc``def"))),
+            ("``", ("", Ident::Quoted(""))),
+            ("`abc`", ("", Ident::Quoted("abc"))),
+            ("`abc``def`", ("", Ident::Quoted("abc``def"))),
         ] {
             let res = ident::<'_, _, VerboseError<_>>(MySQL(c.0))?;
             assert_eq!(&*res.0, c.1 .0);

@@ -1,7 +1,7 @@
-use std::sync::Arc;
 use super::guard::Guard;
 use super::internal::{Global, Local};
 use std::fmt;
+use std::sync::Arc;
 
 pub struct Collector {
     pub(crate) global: Arc<Global>,

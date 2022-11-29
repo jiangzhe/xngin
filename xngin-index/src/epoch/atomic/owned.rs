@@ -1,6 +1,8 @@
-use std::marker::PhantomData;
-use super::{Guard, Shared, Pointable, PointerOrInline, compose_tag, decompose_tag, ensure_aligned};
+use super::{
+    compose_tag, decompose_tag, ensure_aligned, Guard, Pointable, PointerOrInline, Shared,
+};
 use std::fmt;
+use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 
@@ -30,7 +32,7 @@ impl<T: Pointable> PointerOrInline<T> for Owned<T> {
     }
 }
 
-impl<T: Pointable<Init=T>> Owned<T> {
+impl<T: Pointable<Init = T>> Owned<T> {
     pub fn new(init: T) -> Owned<T> {
         unsafe { Self::from_ptr(T::init(init)) }
     }
@@ -43,7 +45,6 @@ impl<T: Pointable> Owned<T> {
 }
 
 impl<T: Pointable> Owned<T> {
-
     pub fn into_box(self) -> Box<T> {
         let (raw, _) = decompose_tag::<T>(self.data);
         mem::forget(self);
@@ -72,9 +73,7 @@ impl<T: Pointable> Owned<T> {
 impl<T: Pointable> Drop for Owned<T> {
     fn drop(&mut self) {
         let (raw, tag) = decompose_tag::<T>(self.data);
-        unsafe {
-            T::drop(raw, tag)
-        }
+        unsafe { T::drop(raw, tag) }
     }
 }
 
@@ -88,7 +87,7 @@ impl<T: Pointable> fmt::Debug for Owned<T> {
     }
 }
 
-impl<T: Pointable<Init=T> + Clone> Clone for Owned<T> {
+impl<T: Pointable<Init = T> + Clone> Clone for Owned<T> {
     fn clone(&self) -> Self {
         let owned: Owned<T> = Owned::new((**self).clone());
         owned.with_tag(self.tag())

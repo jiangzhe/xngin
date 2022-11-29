@@ -1,5 +1,5 @@
 use super::atomic::{Atomic, Pointable, Shared};
-use super::guard::{Guard, unprotected};
+use super::guard::{unprotected, Guard};
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 
@@ -66,7 +66,13 @@ impl<T: Pointable, C: IsElement<T>> List<T, C> {
         let mut next = to.load(Ordering::Relaxed, guard);
         loop {
             entry.next.store(next, Ordering::Relaxed);
-            match to.compare_exchange_weak(next, entry_ptr, Ordering::Release, Ordering::Relaxed, guard) {
+            match to.compare_exchange_weak(
+                next,
+                entry_ptr,
+                Ordering::Release,
+                Ordering::Relaxed,
+                guard,
+            ) {
                 Ok(_) => break,
                 Err(err) => next = err.current,
             }
@@ -108,21 +114,25 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
             if succ.tag() == 1 {
                 let succ = succ.with_tag(0);
                 debug_assert!(self.curr.tag() == 0);
-                let succ = match self.pred.compare_exchange(self.curr, succ, Ordering::Acquire, Ordering::Acquire, self.guard) {
+                let succ = match self.pred.compare_exchange(
+                    self.curr,
+                    succ,
+                    Ordering::Acquire,
+                    Ordering::Acquire,
+                    self.guard,
+                ) {
                     Ok(_) => {
                         unsafe {
                             C::finalize(self.curr.deref(), self.guard);
                         }
                         succ
                     }
-                    Err(e) => {
-                        e.current
-                    }
+                    Err(e) => e.current,
                 };
                 if succ.tag() != 0 {
                     self.pred = self.head;
                     self.curr = self.head.load(Ordering::Acquire, self.guard);
-                    return Some(Err(IterError::Stalled))
+                    return Some(Err(IterError::Stalled));
                 }
                 self.curr = succ;
                 continue;
@@ -138,7 +148,7 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::epoch::{self, Owned, Collector};
+    use crate::epoch::{self, Collector, Owned};
     use memoffset::offset_of;
 
     impl_sized_pointable!(A);
@@ -148,18 +158,18 @@ mod tests {
         entry: Entry,
         data: usize,
     }
-   
+
     impl IsElement<A> for A {
         fn entry_of(a: &A) -> &Entry {
             let entry_ptr = ((a as *const A as usize) + offset_of!(A, entry)) as *const Entry;
             unsafe { &*entry_ptr }
         }
-   
+
         unsafe fn element_of(entry: &Entry) -> &A {
             let elem_ptr = ((entry as *const Entry as usize) - offset_of!(A, entry)) as *const A;
             &*elem_ptr
         }
-   
+
         unsafe fn finalize(entry: &Entry, guard: &Guard) {
             guard.defer_destroy(Shared::from(Self::element_of(entry) as *const _));
         }

@@ -1,6 +1,6 @@
-use crate::epoch::{Atomic, Pointable, Shared, Guard};
-use super::node::{NodeTemplate, NodeOps};
 use super::key::ExtractKey;
+use super::node::{NodeOps, NodeTemplate};
+use crate::epoch::{Atomic, Guard, Pointable, Shared};
 
 pub trait ValueLoader {
     type Value: ExtractKey;

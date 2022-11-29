@@ -1,7 +1,9 @@
-use std::marker::PhantomData;
-use super::{Owned, Pointable, Inline, PointerOrInline, compose_tag, decompose_tag, ensure_aligned};
-use std::ptr;
+use super::{
+    compose_tag, decompose_tag, ensure_aligned, Inline, Owned, Pointable, PointerOrInline,
+};
 use std::fmt;
+use std::marker::PhantomData;
+use std::ptr;
 
 pub struct Shared<'g, T: 'g + ?Sized + Pointable> {
     data: *mut (),
@@ -121,7 +123,7 @@ impl<T: Pointable> fmt::Debug for Shared<'_, T> {
 
 impl<T: Pointable> fmt::Pointer for Shared<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Pointer::fmt(&(unsafe {self.deref() as *const _}), f)
+        fmt::Pointer::fmt(&(unsafe { self.deref() as *const _ }), f)
     }
 }
 

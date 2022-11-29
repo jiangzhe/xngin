@@ -1,5 +1,5 @@
-use std::ops::Deref;
 use std::mem;
+use std::ops::Deref;
 
 const MAX_OWNED_KEY_LENGTH: usize = 15;
 
@@ -52,7 +52,7 @@ macro_rules! impl_extract_key_for_int {
                 Key::Owned(data, len as u8)
             }
         }
-    }
+    };
 }
 
 impl_extract_key_for_int!(i64);
@@ -63,8 +63,8 @@ impl_extract_key_for_int!(u32);
 /// Specify how to extract TID.
 /// TID stands for tuple id, which is unique identifier
 /// of a record.
-/// Sometimes, if the tuple contains only small values 
-/// that can be fit in 8 bytes, it can be directly 
+/// Sometimes, if the tuple contains only small values
+/// that can be fit in 8 bytes, it can be directly
 /// embedded in TID.
 pub trait ExtractTID {
     fn extract_tid(&self) -> u64;
@@ -78,7 +78,7 @@ macro_rules! impl_extract_tid_for_int {
                 *self as u64
             }
         }
-    } 
+    };
 }
 
 impl_extract_tid_for_int!(i32);

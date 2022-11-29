@@ -1,15 +1,15 @@
-use crate::epoch::{self, Pointable, Atomic, Owned, Shared, Inline, low_bits};
-use super::node_impl::{SP8NodeRef, SP16Node, SP32Node};
+use super::node_impl::{SP16Node, SP32Node, SP8NodeRef};
+use crate::epoch::{self, low_bits, Atomic, Inline, Owned, Pointable, Shared};
 // use super::partial_key::NodePartialKeyOps;
 // use super::value::NodeValueOps;
-use parking_lot::RawRwLock;
 use parking_lot::lock_api::RawRwLock as RawRwLockAPI;
-use std::mem::{self, MaybeUninit};
-use std::alloc;
-use std::fmt;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use parking_lot::RawRwLock;
 use scopeguard::defer;
+use std::alloc;
 use std::cell::UnsafeCell;
+use std::fmt;
+use std::mem::{self, MaybeUninit};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,17 +62,14 @@ impl From<u8> for NodeKind {
 #[repr(C, align(8))]
 pub struct NodeTemplate {
     /* first word */
-
     // version to support optimistic read.
     pub(super) version: AtomicU64,
-    
-    /* second word */
 
+    /* second word */
     // lock for write access.
     pub(super) lock: RawRwLock,
 
     /* third word */
-    
     // 65535 bytes is big enough for all types of nodes.
     pub(super) data_len: u16,
     // height of current node.
@@ -83,7 +80,6 @@ pub struct NodeTemplate {
     pub(super) padding: UnsafeCell<[u8; 4]>,
 
     /* fourth word */
-
     // The actual data is allocated just after the 0-sized data array.
     pub(super) data: UnsafeCell<[u8; 0]>,
 }
@@ -92,7 +88,10 @@ impl NodeTemplate {
     /// Create a new node with given height, number of values and node kind.
     #[inline]
     pub unsafe fn new(height: u8, n_values: u8, kind: NodeKind) -> Owned<NodeTemplate> {
-        debug_assert!(kind != NodeKind::Empty && kind != NodeKind::Leaf, "Invalid node kind");
+        debug_assert!(
+            kind != NodeKind::Empty && kind != NodeKind::Leaf,
+            "Invalid node kind"
+        );
         debug_assert!(n_values <= 32, "Number of values exceeds limitation");
         let size_of_partial_keys = match kind {
             NodeKind::SP8 => 1 * n_values as usize,
@@ -131,7 +130,6 @@ impl NodeTemplate {
 }
 
 pub trait NodeOps {
-
     /// Returns reference of common template.
     fn tmpl(&self) -> &NodeTemplate;
 
@@ -196,23 +194,23 @@ pub trait NodeSyncOps: NodeOps {
     }
 
     /// Try optimistic read and return result if succeeds.
-    fn try_opt_read<'s, U, F>(&'s self, f: F) -> Option<U> 
+    fn try_opt_read<'s, U, F>(&'s self, f: F) -> Option<U>
     where
         U: 's,
         F: Fn(u64, &Self) -> U,
     {
         if self.is_locked_exclusive() {
-            return None
+            return None;
         }
         let pre_ver = self.version(Ordering::Acquire);
         let res = f(pre_ver, self);
         if self.is_locked_exclusive() || pre_ver != self.version(Ordering::Acquire) {
-            return None
+            return None;
         }
         Some(res)
     }
 
-    fn unchecked_read<U, F>(&self, f: F) -> U 
+    fn unchecked_read<U, F>(&self, f: F) -> U
     where
         F: Fn(&Self) -> U,
         Self: Sized,
@@ -223,11 +221,11 @@ pub trait NodeSyncOps: NodeOps {
     fn with_read_lock<U, F>(&self, f: F) -> (u64, U)
     where
         F: FnOnce(&Self) -> U,
-        Self: Sized, 
+        Self: Sized,
     {
         self.lock_shared();
         defer!(unsafe { self.unlock_shared() });
-        
+
         let prev_ver = self.version(Ordering::Relaxed);
         let res = f(self);
         (prev_ver, res)
@@ -236,7 +234,7 @@ pub trait NodeSyncOps: NodeOps {
     fn with_write_lock<F>(&self, f: F) -> u64
     where
         F: FnOnce(Self::TargetMut),
-        Self: Sized, 
+        Self: Sized,
     {
         self.lock_exclusive();
         defer!(unsafe { self.unlock_exclusive() });
@@ -250,7 +248,6 @@ pub trait NodeSyncOps: NodeOps {
     }
 }
 
-
 pub trait NodeReadDataOps {
     type PartialKey: Copy;
 
@@ -260,12 +257,14 @@ pub trait NodeReadDataOps {
 }
 
 pub trait NodeWriteDataOps: NodeReadDataOps {
-
     fn set_partial_key(&mut self, index: usize, key: Self::PartialKey);
 
     fn value_mut(&mut self, index: usize) -> &mut Atomic<NodeTemplate>;
 
-    unsafe fn value_mut_unchecked(&mut self, index: usize) -> &mut MaybeUninit<Atomic<NodeTemplate>>;
+    unsafe fn value_mut_unchecked(
+        &mut self,
+        index: usize,
+    ) -> &mut MaybeUninit<Atomic<NodeTemplate>>;
 }
 
 pub trait NodeSearchOps: NodeReadDataOps {
@@ -283,9 +282,9 @@ macro_rules! unchecked_read_node {
                 let sp8node = $crate::hot::node_impl::SP8NodeRef::from($id);
                 sp8node.unchecked_read($e)
             }
-            _ => todo!()
+            _ => todo!(),
         }
-    }
+    };
 }
 
 macro_rules! try_opt_read_node {
@@ -296,9 +295,9 @@ macro_rules! try_opt_read_node {
                 let sp8node = unsafe { $crate::hot::node_impl::SP8NodeRef::from($id) };
                 sp8node.try_opt_read($e)
             }
-            _ => todo!()
+            _ => todo!(),
         }
-    }
+    };
 }
 
 macro_rules! with_read_lock_node {
@@ -309,9 +308,9 @@ macro_rules! with_read_lock_node {
                 let sp8node = unsafe { $crate::hot::node_impl::SP8NodeRef::from($id) };
                 sp8node.with_read_lock($e)
             }
-            _ => todo!()
+            _ => todo!(),
         }
-    }
+    };
 }
 
 macro_rules! with_write_lock_node {
@@ -322,9 +321,9 @@ macro_rules! with_write_lock_node {
                 let sp8node = unsafe { $crate::hot::node_impl::SP8NodeRef::from($id) };
                 sp8node.with_write_lock($e)
             }
-            _ => todo!()
+            _ => todo!(),
         }
-    }
+    };
 }
 
 impl Shared<'_, NodeTemplate> {
@@ -332,7 +331,7 @@ impl Shared<'_, NodeTemplate> {
     pub fn height(&self) -> u8 {
         match self.kind() {
             NodeKind::Empty | NodeKind::Leaf => 0,
-            _ => unsafe { self.deref().height }
+            _ => unsafe { self.deref().height },
         }
     }
 
@@ -395,7 +394,7 @@ impl fmt::Debug for NodeTemplate {
             .field("data_len", &self.data_len)
             .field("height", &self.height)
             .field("n_values", &self.n_values)
-            .finish()   
+            .finish()
     }
 }
 
