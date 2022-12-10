@@ -4,6 +4,7 @@ use crate::{Date, Datetime, Decimal, Interval, PreciseType, RuntimeType, Time, T
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::ops::Deref;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Const {
@@ -213,7 +214,10 @@ impl AlignPartialOrd for Const {
     }
 }
 
-#[derive(Debug, Clone)]
+pub const F64_ZERO: ValidF64 = ValidF64(0.0);
+pub const F64_ONE: ValidF64 = ValidF64(1.0);
+
+#[derive(Debug, Clone, Copy)]
 pub struct ValidF64(f64);
 
 impl ValidF64 {
@@ -227,7 +231,7 @@ impl ValidF64 {
     }
 
     #[inline]
-    pub fn value(&self) -> f64 {
+    pub const fn value(&self) -> f64 {
         self.0
     }
 }
@@ -241,8 +245,30 @@ impl PartialEq for ValidF64 {
 // we must ensure f64 is valid for equality check
 impl Eq for ValidF64 {}
 
+impl PartialOrd for ValidF64 {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+impl Ord for ValidF64 {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.partial_cmp(&other.0).unwrap()
+    }
+}
+
 impl Hash for ValidF64 {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write_u64(self.0.to_bits())
+    }
+}
+
+impl Deref for ValidF64 {
+    type Target = f64;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
