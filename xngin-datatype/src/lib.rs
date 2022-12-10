@@ -1,6 +1,7 @@
 pub mod align;
 pub mod error;
 pub mod konst;
+pub mod memcmp;
 
 pub use align::*;
 pub use konst::*;
