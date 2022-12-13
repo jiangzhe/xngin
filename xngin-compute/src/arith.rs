@@ -50,7 +50,7 @@ pub trait ArithEval {
     fn apply(&self, lhs: Self::L, rhs: Self::R) -> Self::O;
 }
 
-pub struct Impl<T>(T);
+pub struct Impl<T>(pub T);
 
 impl<T: ArithEval> Impl<T> {
     /// Apply calculation of single and single.

@@ -4,8 +4,8 @@ use std::arch::x86_64::{
     _mm256_movemask_epi8, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set1_epi8, _pext_u32,
 };
 
-const PEXT_MASK_U16_FROM_U8: u32 = 0b10101010_10101010_10101010_10101010;
-const PEXT_MASK_U32_FROM_U8: u32 = 0b10001000_10001000_10001000_10001000;
+const PEXT_MASK_U16_FROM_U8: u32 = 0b1010_1010_1010_1010_1010_1010_1010_1010;
+const PEXT_MASK_U32_FROM_U8: u32 = 0b1000_1000_1000_1000_1000_1000_1000_1000;
 
 pub trait PartialKey: Sized + Copy + PartialEq {
     fn cast_from(src: u64) -> Self;
@@ -30,7 +30,7 @@ impl PartialKey for u8 {
         // let sel_bits = _mm256_and_si256(sparse_keys, key);
         let match_keys = _mm256_cmpeq_epi8(key, sparse_keys);
         let match_mask = _mm256_movemask_epi8(match_keys);
-        return match_mask as u32;
+        match_mask as u32
     }
 
     #[inline]

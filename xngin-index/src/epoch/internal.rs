@@ -1,10 +1,10 @@
 use super::atomic::{Owned, Shared};
 use super::collector::{Collector, LocalHandle};
-use super::epoch::{AtomicEpoch, Epoch};
 use super::guard::{unprotected, Guard};
 use super::list::{Entry, IsElement};
 use super::list::{IterError, List};
 use super::queue::Queue;
+use super::{AtomicEpoch, Epoch};
 use crossbeam_utils::CachePadded;
 use memoffset::offset_of;
 use std::cell::{Cell, UnsafeCell};
@@ -120,7 +120,7 @@ impl Global {
         let steps = Self::COLLECT_STEPS;
         for _ in 0..steps {
             match self.queue.try_pop_if(
-                &|sealed_bag: &SealedBag| sealed_bag.is_expired(global_epoch),
+                |sealed_bag: &SealedBag| sealed_bag.is_expired(global_epoch),
                 guard,
             ) {
                 None => break,
@@ -189,7 +189,7 @@ impl Local {
     #[inline]
     pub(crate) fn collector(&self) -> &Collector {
         let c = self.collector.get();
-        unsafe { &**c }
+        unsafe { &*c }
     }
 
     #[inline]

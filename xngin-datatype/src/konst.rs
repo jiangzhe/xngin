@@ -3,8 +3,8 @@ use crate::Collation;
 use crate::{Date, Datetime, Decimal, Interval, PreciseType, RuntimeType, Time, Typed};
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::ops::Deref;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Const {

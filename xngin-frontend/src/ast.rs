@@ -1400,7 +1400,7 @@ pub enum Drop<'a> {
     Database {
         if_exists: bool,
         name: Ident<'a>,
-    }
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

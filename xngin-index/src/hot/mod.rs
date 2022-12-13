@@ -15,6 +15,7 @@ use node_impl::SP8NodeMut;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering;
 
+#[allow(clippy::upper_case_acronyms)]
 pub struct HOT {
     root: Atomic<NodeTemplate>,
 }
@@ -42,7 +43,7 @@ impl HOT {
                 NodeKind::Leaf => {
                     let value = loader.load_leaf(node);
                     let k = value.extract_key();
-                    return if &*k == &*key {
+                    return if *k == *key {
                         Some(value)
                     } else {
                         // key does not match

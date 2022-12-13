@@ -65,6 +65,7 @@ impl<P: PartialKey> SingleMaskNodeRef<'_, P> {
     }
 }
 
+#[allow(dead_code)]
 impl<P: PartialKey> SingleMaskNodeMut<'_, P> {
     #[inline]
     pub fn to_ref(&self) -> SingleMaskNodeRef<'_, P> {
@@ -127,8 +128,9 @@ impl<P: PartialKey> NodeOps for SingleMaskNodeRef<'_, P> {
 impl<'g, P: PartialKey> NodeSyncOps for SingleMaskNodeRef<'g, P> {
     type TargetMut = SingleMaskNodeMut<'g, P>;
 
+    #[allow(clippy::cast_ref_to_mut)]
     #[inline]
-    unsafe fn to_mut(&self) -> Self::TargetMut {
+    unsafe fn as_mut(&self) -> Self::TargetMut {
         let tmpl = &mut *(self.tmpl as *const _ as *mut _);
         SingleMaskNodeMut {
             tmpl,
@@ -271,6 +273,7 @@ impl<'g> SP8NodeRef<'g> {
 
 pub type SP8NodeMut<'a> = SingleMaskNodeMut<'a, u8>;
 
+#[allow(dead_code)]
 impl<'a> SP8NodeMut<'a> {
     #[inline]
     pub fn from(owned: &'a mut Owned<NodeTemplate>) -> Self {

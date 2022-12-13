@@ -27,7 +27,7 @@ use xngin_expr::{
 #[inline]
 pub fn pred_pullup(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     let mut p_preds = HashMap::new();
-    let _ = pullup_pred(qry_set, qry_id, HashSet::new(), &mut p_preds)?; // pass empty parent columns, so pulled preds must be empty
+    pullup_pred(qry_set, qry_id, HashSet::new(), &mut p_preds)?; // pass empty parent columns, so pulled preds must be empty
     Ok(())
 }
 

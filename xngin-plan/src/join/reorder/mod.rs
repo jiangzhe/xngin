@@ -40,7 +40,7 @@ where
     F: FnMut() -> R,
 {
     struct S<'a, F>(&'a mut QuerySet, &'a mut F);
-    impl<'a, 'r, R, F> OpMutVisitor for S<'a, F>
+    impl<'a, R, F> OpMutVisitor for S<'a, F>
     where
         R: Reorder,
         F: FnMut() -> R,
