@@ -1,8 +1,8 @@
 use crate::ast::*;
 use crate::parser::expr::{char_sp0, sp0_char};
 use crate::parser::{
-    ident, ident_tag, paren_cut, preceded_ident_tag, preceded_tag, spcmt0, spcmt1, table_name,
-    ParseInput, preceded_tag2_cut,
+    ident, ident_tag, paren_cut, preceded_ident_tag, preceded_tag, preceded_tag2_cut, spcmt0,
+    spcmt1, table_name, ParseInput,
 };
 use nom::branch::alt;
 use nom::bytes::complete::tag_no_case;
@@ -527,7 +527,7 @@ mod tests {
                 "create database db1",
                 Create::Database {
                     if_not_exists: false,
-                    definition: DatabaseDefinition{
+                    definition: DatabaseDefinition {
                         name: Ident::regular("db1"),
                         charset: None,
                         collate: None,
@@ -538,7 +538,7 @@ mod tests {
                 "create database if not exists db1",
                 Create::Database {
                     if_not_exists: true,
-                    definition: DatabaseDefinition{
+                    definition: DatabaseDefinition {
                         name: Ident::regular("db1"),
                         charset: None,
                         collate: None,
@@ -549,7 +549,7 @@ mod tests {
                 "create database db1 character set utf8mb4",
                 Create::Database {
                     if_not_exists: false,
-                    definition: DatabaseDefinition{
+                    definition: DatabaseDefinition {
                         name: Ident::regular("db1"),
                         charset: Some(Ident::regular("utf8mb4")),
                         collate: None,
@@ -560,7 +560,7 @@ mod tests {
                 "create database db1 default character set utf8mb4",
                 Create::Database {
                     if_not_exists: false,
-                    definition: DatabaseDefinition{
+                    definition: DatabaseDefinition {
                         name: Ident::regular("db1"),
                         charset: Some(Ident::regular("utf8mb4")),
                         collate: None,
@@ -571,7 +571,7 @@ mod tests {
                 "create database db1 character set utf8mb4 collate utf8mb4_bin",
                 Create::Database {
                     if_not_exists: false,
-                    definition: DatabaseDefinition{
+                    definition: DatabaseDefinition {
                         name: Ident::regular("db1"),
                         charset: Some(Ident::regular("utf8mb4")),
                         collate: Some(Ident::regular("utf8mb4_bin")),
@@ -582,7 +582,7 @@ mod tests {
                 "create database db1 collate utf8mb4_bin",
                 Create::Database {
                     if_not_exists: false,
-                    definition: DatabaseDefinition{
+                    definition: DatabaseDefinition {
                         name: Ident::regular("db1"),
                         charset: None,
                         collate: Some(Ident::regular("utf8mb4_bin")),
@@ -604,18 +604,20 @@ mod tests {
                 "drop table t1",
                 Drop::Table {
                     if_exists: false,
-                    names: vec![
-                        TableName{schema: None, table: Ident::regular("t1")},
-                    ],
+                    names: vec![TableName {
+                        schema: None,
+                        table: Ident::regular("t1"),
+                    }],
                 },
             ),
             (
                 "drop table if exists t1",
                 Drop::Table {
                     if_exists: true,
-                    names: vec![
-                        TableName{schema: None, table: Ident::regular("t1")},
-                    ],
+                    names: vec![TableName {
+                        schema: None,
+                        table: Ident::regular("t1"),
+                    }],
                 },
             ),
             (
@@ -623,9 +625,18 @@ mod tests {
                 Drop::Table {
                     if_exists: false,
                     names: vec![
-                        TableName{schema: None, table: Ident::regular("t1")},
-                        TableName{schema: None, table: Ident::regular("t2")},
-                        TableName{schema: None, table: Ident::regular("t3")},
+                        TableName {
+                            schema: None,
+                            table: Ident::regular("t1"),
+                        },
+                        TableName {
+                            schema: None,
+                            table: Ident::regular("t2"),
+                        },
+                        TableName {
+                            schema: None,
+                            table: Ident::regular("t3"),
+                        },
                     ],
                 },
             ),
@@ -633,9 +644,10 @@ mod tests {
                 "drop table db1.t1",
                 Drop::Table {
                     if_exists: false,
-                    names: vec![
-                        TableName{schema: Some(Ident::regular("db1")), table: Ident::regular("t1")},
-                    ],
+                    names: vec![TableName {
+                        schema: Some(Ident::regular("db1")),
+                        table: Ident::regular("t1"),
+                    }],
                 },
             ),
         ] {

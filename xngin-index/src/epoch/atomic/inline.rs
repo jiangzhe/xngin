@@ -35,7 +35,7 @@ impl<T: Pointable> Inline<T> {
         }
     }
 
-    pub fn into_shared<'g>(self, _: &'g Guard) -> Shared<'g, T> {
+    pub fn into_shared(self, _: &Guard) -> Shared<'_, T> {
         unsafe { Shared::from_ptr(self.into_ptr()) }
     }
 

@@ -1,4 +1,4 @@
-use crate::digraph::{DiGraph, EdgeIndex, NodeIndex};
+use crate::digraph::{DiGraph, NodeIndex};
 use crate::error::{Error, Result};
 use xngin_catalog::TableID;
 use xngin_compute::eval::{QueryEvalPlan, TableEvalPlan};
@@ -6,6 +6,7 @@ use xngin_plan::lgc::LgcPlan;
 use xngin_plan::op::Op;
 use xngin_plan::query::{Location, QuerySet, Subquery};
 
+#[allow(dead_code)]
 pub struct PhyPlan {
     graph: DiGraph<Phy, ()>,
     start: Vec<NodeIndex>,
@@ -76,7 +77,7 @@ impl<'a> Builder<'a> {
     fn build_intermediate(&mut self, root: &Op) -> Result<NodeIndex> {
         match root {
             Op::Proj { cols, input } => {
-                let input_idx = self.build_intermediate(&*input)?;
+                let input_idx = self.build_intermediate(input)?;
                 let eval_plan = QueryEvalPlan::new(cols.iter().map(|(e, _)| e))?;
                 let proj = Phy {
                     kind: PhyKind::Project(eval_plan),
@@ -103,7 +104,7 @@ impl<'a> Builder<'a> {
                 Op::Proj { cols, input } => {
                     let eval_plan = TableEvalPlan::new(cols.iter().map(|(e, _)| e))?;
                     proj = Some(eval_plan);
-                    root = &*input;
+                    root = &**input;
                 }
                 Op::Table(_, tid) => {
                     table_id = Some(*tid);

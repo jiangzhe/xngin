@@ -1,4 +1,4 @@
-use crate::cancel::{Cancellable, Cancellation};
+use crate::cancel::Cancellable;
 use futures_lite::Stream;
 use xngin_datatype::PreciseType;
 use xngin_storage::block::Block;

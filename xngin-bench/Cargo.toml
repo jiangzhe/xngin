@@ -11,7 +11,6 @@ repository = "https://github.com/jiangzhe/xngin/xngin-bench/"
 
 [dependencies]
 xngin-datatype = {version = "0.1.0", path = "../xngin-datatype"}
-xngin-common = {version = "0.1.0", path = "../xngin-common"}
 xngin-compute = {version = "0.1.0", path = "../xngin-compute"}
 xngin-storage = {version = "0.1.0", path = "../xngin-storage"}
 criterion = {version = "0.3", features = ["html_reports"]}
@@ -21,12 +20,13 @@ pprof = {version = "0.4", features = ["flamegraph", "criterion"]}
 [dev-dependencies]
 bytemuck = "1.7"
 
+
 [[bench]]
 name = "bitmap_shift"
 harness = false
 
 [[bench]]
-name = "bitmap_merge"
+name = "bitmap_intersect"
 harness = false
 
 [[bench]]
@@ -43,6 +43,10 @@ harness = false
 
 [[bench]]
 name = "codec_add"
+harness = false
+
+[[bench]]
+name = "memcmp_sort"
 harness = false
 
 [[example]]

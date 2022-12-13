@@ -43,6 +43,7 @@ pub struct Node<N> {
     data: N,
 }
 
+#[allow(dead_code)]
 pub struct Edge<E> {
     // Index of start node
     start: NodeIndex,

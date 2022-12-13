@@ -190,7 +190,7 @@ impl<'a, T: DataSourceID> Builder<'a, T> {
                     }
                 };
                 let sel = self.gen_conj_sel(base, lhs)?;
-                let (rhs, _) = self.find_ref(*last, Some(sel))?;
+                let (rhs, _) = self.find_ref(last, Some(sel))?;
                 Ok(Eval::logic(
                     LogicKind::And,
                     vec![Eval::new_bool_ref(lhs), Eval::new_bool_ref(rhs)],

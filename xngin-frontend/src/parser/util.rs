@@ -1,14 +1,12 @@
 use crate::ast::*;
-use crate::parser::{
-    ident, preceded_tag, ParseInput,
-};
-use nom::combinator::{map, cut};
+use crate::parser::{ident, preceded_tag, ParseInput};
 use nom::branch::alt;
+use nom::combinator::{cut, map};
 use nom::error::ParseError;
 use nom::IResult;
 
+use super::dml::{delete, insert, update};
 use super::query::query_expr;
-use super::dml::{insert, delete, update};
 
 parse!(
     /// Parse a USE statement.
@@ -40,11 +38,15 @@ mod tests {
         for (i, u) in vec![
             (
                 "use db1",
-                UseDB{name: Ident::regular("db1")},
+                UseDB {
+                    name: Ident::regular("db1"),
+                },
             ),
             (
                 "use `db1`",
-                UseDB{name: Ident::quoted("db1")},
+                UseDB {
+                    name: Ident::quoted("db1"),
+                },
             ),
         ] {
             let (i, o) = use_db::<'_, _, Error<_>>(MySQL(i))?;

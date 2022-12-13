@@ -1,6 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use pprof::criterion::{PProfProfiler, Output};
-use xngin_compute::binary::{BinaryEval, AddI32};
+use xngin_compute::BinaryEval;
+use xngin_compute::arith::{Impl, AddI32};
 use xngin_storage::attr::Attr;
 use xngin_datatype::PreciseType;
 
@@ -10,8 +11,8 @@ fn bench_add(c: &mut Criterion) {
         let c2 = Attr::from((0..size as i32).into_iter());
         c.bench_function(&format!("flat_codec_add_{}", size), |b| {
             b.iter(|| {
-                let add = AddI32;
-                let _ = add.binary_eval(PreciseType::i32(), &c1, &c2).unwrap();
+                let add = Impl(AddI32);
+                let _ = add.binary_eval(PreciseType::i32(), &c1, &c2, None).unwrap();
             })
         });
 }

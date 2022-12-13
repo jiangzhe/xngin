@@ -94,7 +94,7 @@ impl NodeTemplate {
         );
         debug_assert!(n_values <= 32, "Number of values exceeds limitation");
         let size_of_partial_keys = match kind {
-            NodeKind::SP8 => 1 * n_values as usize,
+            NodeKind::SP8 => n_values as usize,
             NodeKind::SP16 => 2 * n_values as usize,
             NodeKind::SP32 => 4 * n_values as usize,
             _ => todo!(),
@@ -149,7 +149,7 @@ pub trait NodeOps {
 pub trait NodeSyncOps: NodeOps {
     type TargetMut;
 
-    unsafe fn to_mut(&self) -> Self::TargetMut;
+    unsafe fn as_mut(&self) -> Self::TargetMut;
 
     /// Returns current version.
     #[inline]
@@ -241,10 +241,9 @@ pub trait NodeSyncOps: NodeOps {
         // SAFETY:
         //
         // This is safe because we already acquired write lock on this node.
-        let tgt = unsafe { self.to_mut() };
+        let tgt = unsafe { self.as_mut() };
         f(tgt);
-        let prev_ver = self.promote_version(Ordering::SeqCst);
-        prev_ver
+        self.promote_version(Ordering::SeqCst)
     }
 }
 

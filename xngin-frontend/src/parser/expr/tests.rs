@@ -27,19 +27,11 @@ fn test_parse_column_ref() -> anyhow::Result<()> {
         ),
         (
             "\"a\". b .\"c\"",
-            Expr::column_ref(vec![
-                Ident::Quoted("a"),
-                "b".into(),
-                Ident::Quoted("c"),
-            ]),
+            Expr::column_ref(vec![Ident::Quoted("a"), "b".into(), Ident::Quoted("c")]),
         ),
         (
             "\"a\". \"b\" .c",
-            Expr::column_ref(vec![
-                Ident::Quoted("a"),
-                Ident::Quoted("b"),
-                "c".into(),
-            ]),
+            Expr::column_ref(vec![Ident::Quoted("a"), Ident::Quoted("b"), "c".into()]),
         ),
         (
             "\"a\". \"b\" .\"c\"",

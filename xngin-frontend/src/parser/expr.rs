@@ -35,8 +35,8 @@ use nom::IResult;
 use crate::parser::query::{query_expr, subquery};
 use crate::parser::ParseInput;
 use crate::parser::{
-    quoted_ident, ident, ident_tag, match_builtin_keyword, match_reserved_keyword, next,
-    next_cut, regular_ident, set_quantifier, spcmt0, spcmt1, BuiltinKeyword, ReservedKeyword,
+    ident, ident_tag, match_builtin_keyword, match_reserved_keyword, next, next_cut, quoted_ident,
+    regular_ident, set_quantifier, spcmt0, spcmt1, BuiltinKeyword, ReservedKeyword,
 };
 
 use super::is_reserved_keyword;
@@ -192,7 +192,7 @@ fn pratt_expr<'a, I: ParseInput<'a>, E: ParseError<I>>(
                             i = ri;
                             let (ri, id) = regular_ident(i)?;
                             let (ri, _) = spcmt0(ri)?;
-                            let is_op = if let Some(op) = is_op(&*id, true) {
+                            let is_op = if let Some(op) = is_op(&id, true) {
                                 op
                             } else {
                                 return Err(nom::Err::Error(E::from_error_kind(i, ErrorKind::Tag)));
@@ -200,7 +200,7 @@ fn pratt_expr<'a, I: ParseInput<'a>, E: ParseError<I>>(
                             lhs = Expr::pred_is(is_op, lhs);
                             i = ri;
                         } else {
-                            let is_op = if let Some(op) = is_op(&*id, false) {
+                            let is_op = if let Some(op) = is_op(&id, false) {
                                 op
                             } else {
                                 return Err(nom::Err::Error(E::from_error_kind(i, ErrorKind::Tag)));
@@ -399,7 +399,7 @@ parse!(
             // preceded with regular identifier
             next_cut(terminated(regular_ident, spcmt0), |pi, i: I, id| {
                 // literals starting with keyword
-                if let Some(kw) = match_reserved_keyword(&*id) {
+                if let Some(kw) = match_reserved_keyword(&id) {
                     match kw {
                         ReservedKeyword::Not => {
                             let (i, operand) = pratt_expr(i, PREFIX_BP_LOGICAL_NOT)?;
@@ -559,7 +559,7 @@ parse!(
             char_sp0('.'),
             terminated(
                 alt((
-                    map_opt(regular_ident, |id: I| if is_reserved_keyword(&*id) { None } else { Some(Ident::regular(id))} ),
+                    map_opt(regular_ident, |id: I| if is_reserved_keyword(&id) { None } else { Some(Ident::regular(id))} ),
                     map(quoted_ident, Ident::quoted),
                 )),
                 spcmt0,

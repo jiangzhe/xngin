@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::iter::FromIterator;
-use xngin_common::bitmap::Bitmap;
+use xngin_storage::bitmap::Bitmap;
 
 fn bench_shift(c: &mut Criterion) {
     for log2_size in [12, 14] {

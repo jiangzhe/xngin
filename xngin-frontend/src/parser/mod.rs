@@ -8,14 +8,13 @@ pub(crate) mod expr;
 pub(crate) mod query;
 pub(crate) mod util;
 
-use std::marker::PhantomData;
 use crate::ast::*;
 use crate::error::{Error, Result};
-use crate::parser::dml::{delete, insert, update};
 use crate::parser::ddl::{create, drop};
-use crate::parser::util::{use_db, explain};
+use crate::parser::dml::{delete, insert, update};
 use crate::parser::expr::{char_sp0, expr_sp0};
 use crate::parser::query::query_expr;
+use crate::parser::util::{explain, use_db};
 use nom::branch::alt;
 use nom::bytes::complete::{
     tag, tag_no_case, take, take_till, take_till1, take_until, take_while1,
@@ -25,12 +24,12 @@ use nom::combinator::{cut, map, opt, recognize, rest, value};
 use nom::error::ParseError;
 use nom::multi::fold_many0;
 use nom::sequence::{delimited, pair, preceded, terminated};
+use std::marker::PhantomData;
 
 pub use crate::parser::dialect::ParseInput;
 pub use nom::error::convert_error;
 pub use nom::error::{Error as NomError, VerboseError};
 pub use nom::{Err as NomErr, IResult};
-
 
 /// fast query parsing
 #[inline]
@@ -65,8 +64,15 @@ pub fn parse_stmt_verbose<'a, I: ParseInput<'a>>(input: I) -> Result<Statement<'
 }
 
 #[inline]
-pub fn parse_multi_stmts<'a, I: ParseInput<'a>>(input: I, delim: char) -> ParseMultiStmtIter<'a, I> {
-    ParseMultiStmtIter{input, delim, _marker: PhantomData}
+pub fn parse_multi_stmts<'a, I: ParseInput<'a>>(
+    input: I,
+    delim: char,
+) -> ParseMultiStmtIter<'a, I> {
+    ParseMultiStmtIter {
+        input,
+        delim,
+        _marker: PhantomData,
+    }
 }
 
 pub struct ParseMultiStmtIter<'a, I: 'a> {
@@ -81,7 +87,7 @@ impl<'a, I: ParseInput<'a>> Iterator for ParseMultiStmtIter<'a, I> {
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.input.is_empty() {
-            return None
+            return None;
         }
         match statement::<_, NomError<I>>(self.input) {
             Ok((i, stmt)) => {

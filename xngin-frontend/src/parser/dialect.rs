@@ -6,9 +6,9 @@ use nom::{
     AsBytes, Compare, CompareResult, Err, FindSubstring, FindToken, IResult, InputIter,
     InputLength, InputTake, InputTakeAtPosition, Needed, Offset, Slice,
 };
+use std::fmt::Debug;
 use std::ops::{Deref, Range, RangeFrom, RangeFull, RangeTo};
 use std::str::{CharIndices, Chars};
-use std::fmt::Debug;
 
 // Defines parsing details of SQL dialects.
 pub trait Dialect {

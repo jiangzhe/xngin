@@ -1,7 +1,7 @@
 use std::ops::{Add, Div, Mul, Sub};
 use xngin_frontend::ast::*;
 use xngin_frontend::parser::dialect::{Ansi, MySQL};
-use xngin_frontend::parser::{parse_query_verbose, parse_multi_stmts};
+use xngin_frontend::parser::{parse_multi_stmts, parse_query_verbose};
 
 macro_rules! col {
     ( $($lit:literal).* ) => {
@@ -704,9 +704,9 @@ fn parse_tpch11() {
                     }),
                 }),
             )),
-            order_by: vec![OrderElement::desc(Expr::column_ref(vec![
-                Ident::Quoted("value"),
-            ]))],
+            order_by: vec![OrderElement::desc(Expr::column_ref(vec![Ident::Quoted(
+                "value",
+            )]))],
             limit: None,
         }),
     };
