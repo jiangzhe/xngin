@@ -153,7 +153,7 @@ fn test_plan_build_select_table() {
         let plan = match builder.build_plan(&qr) {
             Ok(plan) => plan,
             Err(e) => {
-                eprintln!("sql={}", sql);
+                eprintln!("error sql={}", sql);
                 panic!("{:?}", e)
             }
         };

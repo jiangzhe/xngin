@@ -85,12 +85,12 @@ mod tests {
     fn test_mysql_dialect() -> anyhow::Result<()> {
         // success cases
         for c in vec![
-            ("a", ("", Ident::Regular("a"))),
-            ("abc", ("", Ident::Regular("abc"))),
-            ("abc123", ("", Ident::Regular("abc123"))),
-            ("``", ("", Ident::Quoted(""))),
-            ("`abc`", ("", Ident::Quoted("abc"))),
-            ("`abc``def`", ("", Ident::Quoted("abc``def"))),
+            ("a", ("", Ident::regular("a"))),
+            ("abc", ("", Ident::regular("abc"))),
+            ("abc123", ("", Ident::regular("abc123"))),
+            ("``", ("", Ident::quoted(""))),
+            ("`abc`", ("", Ident::quoted("abc"))),
+            ("`abc``def`", ("", Ident::quoted("abc``def"))),
         ] {
             let res = ident::<'_, _, VerboseError<_>>(MySQL(c.0))?;
             assert_eq!(&*res.0, c.1 .0);

@@ -1,12 +1,14 @@
 use crate::controlflow::{Branch, ControlFlow, Unbranch};
 use crate::error::{Error, Result};
-use crate::{Col, Expr, ExprKind, ExprMutVisitor, FuncKind, Pred, PredFuncKind, QueryID};
+use crate::{
+    Col, ColIndex, ColKind, Expr, ExprKind, ExprMutVisitor, FuncKind, Pred, PredFuncKind, QueryID,
+};
 use std::cmp::Ordering;
 use std::mem;
 use xngin_datatype::{Collation, PreciseType, Typed};
 
 #[inline]
-pub fn fix_rec<F: Fn(QueryID, u32) -> Option<PreciseType>>(e: &mut Expr, f: F) -> Result<()> {
+pub fn fix_rec<F: Fn(QueryID, ColIndex) -> Option<PreciseType>>(e: &mut Expr, f: F) -> Result<()> {
     e.walk_mut(&mut FixRec(f)).unbranch()
 }
 
@@ -14,7 +16,7 @@ struct FixRec<F>(F);
 
 impl<F> ExprMutVisitor for FixRec<F>
 where
-    F: Fn(QueryID, u32) -> Option<PreciseType>,
+    F: Fn(QueryID, ColIndex) -> Option<PreciseType>,
 {
     type Cont = ();
     type Break = Error;
@@ -27,18 +29,18 @@ where
 /// Fix data type of given expression, with the assumption that
 /// all its arguments have been already fixed.
 #[inline]
-pub fn fix<F: Fn(QueryID, u32) -> Option<PreciseType>>(e: &mut Expr, f: F) -> Result<()> {
+pub fn fix<F: Fn(QueryID, ColIndex) -> Option<PreciseType>>(e: &mut Expr, f: F) -> Result<()> {
     match &mut e.kind {
         ExprKind::Const(c) => e.ty = c.pty(),
-        ExprKind::Col(c) => match c {
-            Col::QueryCol(qid, idx) | Col::CorrelatedCol(qid, idx) => {
+        ExprKind::Col(Col { kind, idx, .. }) => match kind {
+            ColKind::QueryCol(qid) | ColKind::CorrelatedCol(qid) => {
                 if let Some(pty) = f(*qid, *idx) {
                     e.ty = pty;
                 } else {
                     return Err(Error::UnknownColumnType);
                 }
             }
-            Col::TableCol(..) => (), // table column already has type, do nothing
+            ColKind::TableCol(..) => (), // table column already has type, do nothing
         },
         ExprKind::Func { kind, args } => {
             let pty = fix_func(*kind, args.as_mut())?;

@@ -37,6 +37,10 @@ pub enum Error {
     TableNotExists(String),
     #[error("Column not exists '{0}'")]
     ColumnNotExists(String),
+    #[error("Schema id not found '{0}'")]
+    SchemaIdNotFound(u32),
+    #[error("Table id not found '{0}'")]
+    TableIdNotFound(u32),
     #[error("Column count mismatch")]
     ColumnCountMismatch,
     #[error("Not unique alias or table '{0}'")]
@@ -91,6 +95,16 @@ pub enum Error {
     CrossJoinNotSupport,
     #[error("Type infer failed")]
     TypeInferFailed,
+    #[error(transparent)]
+    StringArenaError(#[from] aosa::Error),
+    #[error("Duplicated query id")]
+    DuplicatedQueryID(QueryID),
+    #[error("Incomplete query generation from logical plan")]
+    IncompleteLgcPlanReflection,
+    #[error("Invalid plan structure for logical plan reflection")]
+    InvalidPlanStructureForReflection,
+    #[error("Invalid expr transformation for logical plan reflection")]
+    InvalidExprTransformationForReflection,
     #[error("Break")]
     Break,
 }

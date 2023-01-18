@@ -1,14 +1,15 @@
+use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::QuerySet;
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce, PartialExpr};
-use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{
-    Col, Expr, ExprKind, ExprVisitor, FuncKind, Pred, PredFuncKind, QueryCol, QueryID,
+    Col, ColIndex, ColKind, Expr, ExprKind, ExprVisitor, FuncKind, GlobalID, Pred, PredFuncKind,
+    QueryCol, QueryID,
 };
 
 /// Pullup predicates.
@@ -27,7 +28,7 @@ use xngin_expr::{
 #[inline]
 pub fn pred_pullup(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     let mut p_preds = HashMap::new();
-    pullup_pred(qry_set, qry_id, HashSet::new(), &mut p_preds)?; // pass empty parent columns, so pulled preds must be empty
+    pullup_pred(qry_set, qry_id, HashMap::new(), &mut p_preds)?; // pass empty parent columns, so pulled preds must be empty
     Ok(())
 }
 
@@ -35,8 +36,8 @@ pub fn pred_pullup(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
 fn pullup_pred(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
-    p_cols: HashSet<QueryCol>,
-    p_preds: &mut HashMap<QueryCol, HashSet<PartialExpr>>,
+    p_cols: HashMap<QueryCol, GlobalID>,
+    p_preds: &mut HashMap<QueryCol, PartialExprSet>,
 ) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut ppu = PredPullup::new(qry_set, p_cols, p_preds);
@@ -48,18 +49,18 @@ fn pullup_pred(
 struct PredPullup<'a> {
     qry_set: &'a mut QuerySet,
     // parent columns that predicates target
-    p_cols: HashSet<QueryCol>,
+    p_cols: HashMap<QueryCol, GlobalID>,
     // predicates converted based on mapping, this field is passed by
     // parent oprator
-    p_preds: &'a mut HashMap<QueryCol, HashSet<PartialExpr>>,
+    p_preds: &'a mut HashMap<QueryCol, PartialExprSet>,
     // mapping current cols to parent cols
     mapping: HashMap<QueryCol, Expr>,
     // whether the parent columns have been translated.
     translated: bool,
     // current columns involved in current predicates.
-    c_cols: HashSet<QueryCol>,
+    c_cols: HashMap<QueryCol, GlobalID>,
     // current preds, that will be passed to child query.
-    c_preds: HashMap<QueryCol, HashSet<PartialExpr>>,
+    c_preds: HashMap<QueryCol, PartialExprSet>,
     // store join op that are temporarily removed, in order to restore back
     stack: Vec<JoinOp>,
 }
@@ -68,8 +69,8 @@ impl<'a> PredPullup<'a> {
     #[inline]
     fn new(
         qry_set: &'a mut QuerySet,
-        p_cols: HashSet<QueryCol>,
-        p_preds: &'a mut HashMap<QueryCol, HashSet<PartialExpr>>,
+        p_cols: HashMap<QueryCol, GlobalID>,
+        p_preds: &'a mut HashMap<QueryCol, PartialExprSet>,
     ) -> Self {
         PredPullup {
             qry_set,
@@ -77,7 +78,7 @@ impl<'a> PredPullup<'a> {
             p_preds,
             mapping: HashMap::new(),
             translated: false,
-            c_cols: HashSet::new(),
+            c_cols: HashMap::new(),
             c_preds: HashMap::new(),
             stack: vec![],
         }
@@ -93,14 +94,14 @@ impl<'a> PredPullup<'a> {
     // new predicate "c1 - 1 > 1" or simplified version "c1 > 2" which could be
     // propagated in parent scope.
     #[inline]
-    fn translate_p_cols(&mut self, out_cols: &[(Expr, SmolStr)]) {
+    fn translate_p_cols(&mut self, out_cols: &[ProjCol]) {
         if self.translated {
             // translate at most once for each query block
             return;
         }
-        for (p_qid, p_idx) in &self.p_cols {
-            let (e, _) = &out_cols[*p_idx as usize];
-            if let Some((c_col, new_e)) = translate_col(*p_qid, *p_idx, e) {
+        for ((p_qid, p_idx), p_gid) in &self.p_cols {
+            let c = &out_cols[p_idx.value() as usize];
+            if let Some((c_col, new_e)) = translate_col(*p_gid, *p_qid, *p_idx, &c.expr) {
                 self.mapping.insert(c_col, new_e);
             }
         }
@@ -113,8 +114,12 @@ impl<'a> PredPullup<'a> {
             return Ok(());
         }
         for p in c_preds {
-            if let Some((qid, idx, e)) = translate_pred(p, &self.mapping)? {
-                self.p_preds.entry((qid, idx)).or_default().insert(e);
+            if let Some((gid, qid, idx, e)) = translate_pred(p, &self.mapping)? {
+                let peset = self
+                    .p_preds
+                    .entry((qid, idx))
+                    .or_insert_with(|| PartialExprSet(gid, HashSet::new()));
+                peset.1.insert(e);
             }
         }
         Ok(())
@@ -132,7 +137,7 @@ impl<'a> PredPullup<'a> {
 
     #[inline]
     fn pull_inner_side(&mut self, jo: &mut JoinOp) -> ControlFlow<Error> {
-        let p_cols = HashSet::new();
+        let p_cols = HashMap::new();
         let mut p_preds = HashMap::new();
         let mut ppu = PredPullup::new(self.qry_set, p_cols, &mut p_preds);
         jo.as_mut().walk_mut(&mut ppu)
@@ -140,29 +145,42 @@ impl<'a> PredPullup<'a> {
 
     // currently we only support propagate based on equation join condition.
     #[inline]
-    fn propagate_preds(&mut self, conds: &[Expr]) -> Vec<(QueryCol, PartialExpr)> {
+    fn propagate_preds(
+        &mut self,
+        conds: &[Expr],
+    ) -> Vec<(GlobalID, QueryID, ColIndex, PartialExpr)> {
         let mut res = vec![];
         for c in conds {
             if let ExprKind::Pred(Pred::Func { kind, args }) = &c.kind {
                 if let (
                     PredFuncKind::Equal,
                     [Expr {
-                        kind: ExprKind::Col(Col::QueryCol(l_qid, l_idx)),
+                        kind:
+                            ExprKind::Col(Col {
+                                gid: l_gid,
+                                kind: ColKind::QueryCol(l_qid),
+                                idx: l_idx,
+                            }),
                         ..
                     }, Expr {
-                        kind: ExprKind::Col(Col::QueryCol(r_qid, r_idx)),
+                        kind:
+                            ExprKind::Col(Col {
+                                gid: r_gid,
+                                kind: ColKind::QueryCol(r_qid),
+                                idx: r_idx,
+                            }),
                         ..
                     }],
-                ) = (kind, args.as_ref())
+                ) = (kind, &args[..])
                 {
-                    if let Some(pes) = self.c_preds.get(&(*l_qid, *l_idx)) {
+                    if let Some(PartialExprSet(_, pes)) = self.c_preds.get(&(*l_qid, *l_idx)) {
                         for pe in pes {
-                            res.push(((*r_qid, *r_idx), pe.clone()));
+                            res.push((*r_gid, *r_qid, *r_idx, pe.clone()));
                         }
                     }
-                    if let Some(pes) = self.c_preds.get(&(*r_qid, *r_idx)) {
+                    if let Some(PartialExprSet(_, pes)) = self.c_preds.get(&(*r_qid, *r_idx)) {
                         for pe in pes {
-                            res.push(((*l_qid, *l_idx), pe.clone()));
+                            res.push((*l_gid, *l_qid, *l_idx, pe.clone()));
                         }
                     }
                 }
@@ -235,12 +253,12 @@ impl OpMutVisitor for PredPullup<'_> {
             Op::Query(qry_id) => {
                 // Here we collect all p_cols according to the child query id,
                 // and recursively call the predicate pullup.
-                let p_cols: HashSet<_> = self
+                let p_cols: HashMap<_, _> = self
                     .c_cols
                     .iter()
-                    .filter_map(|(qid, idx)| {
+                    .filter_map(|((qid, idx), gid)| {
                         if qid == qry_id {
-                            Some((*qid, *idx))
+                            Some(((*qid, *idx), *gid))
                         } else {
                             None
                         }
@@ -268,11 +286,11 @@ impl OpMutVisitor for PredPullup<'_> {
             Op::Proj { input, .. } => {
                 if !self.c_preds.is_empty() {
                     let mut pred = vec![];
-                    for ((qid, idx), pes) in self.c_preds.drain() {
+                    for ((qid, idx), PartialExprSet(gid, pes)) in self.c_preds.drain() {
                         for pe in pes {
                             let new_e = Expr::pred_func(
                                 pe.kind,
-                                vec![Expr::query_col(qid, idx), Expr::new_const(pe.r_arg)],
+                                vec![Expr::query_col(gid, qid, idx), Expr::new_const(pe.r_arg)],
                             );
                             pred.push(new_e);
                         }
@@ -284,11 +302,11 @@ impl OpMutVisitor for PredPullup<'_> {
             }
             Op::Aggr(aggr) => {
                 if !self.c_preds.is_empty() {
-                    for ((qid, idx), pes) in self.c_preds.drain() {
+                    for ((qid, idx), PartialExprSet(gid, pes)) in self.c_preds.drain() {
                         for pe in pes {
                             let new_e = Expr::pred_func(
                                 pe.kind,
-                                vec![Expr::query_col(qid, idx), Expr::new_const(pe.r_arg)],
+                                vec![Expr::query_col(gid, qid, idx), Expr::new_const(pe.r_arg)],
                             );
                             aggr.filt.push(new_e);
                         }
@@ -299,19 +317,19 @@ impl OpMutVisitor for PredPullup<'_> {
             Op::Filt { pred, .. } => {
                 if !pred.is_empty() && !self.c_preds.is_empty() {
                     let new_preds = self.propagate_preds(pred);
-                    for ((qid, idx), pes) in self.c_preds.drain() {
+                    for ((qid, idx), PartialExprSet(gid, pes)) in self.c_preds.drain() {
                         for pe in pes {
                             let new_e = Expr::pred_func(
                                 pe.kind,
-                                vec![Expr::query_col(qid, idx), Expr::new_const(pe.r_arg)],
+                                vec![Expr::query_col(gid, qid, idx), Expr::new_const(pe.r_arg)],
                             );
                             pred.push(new_e);
                         }
                     }
-                    for ((qid, idx), pe) in new_preds {
+                    for (gid, qid, idx, pe) in new_preds {
                         let new_e = Expr::pred_func(
                             pe.kind,
-                            vec![Expr::query_col(qid, idx), Expr::new_const(pe.r_arg)],
+                            vec![Expr::query_col(gid, qid, idx), Expr::new_const(pe.r_arg)],
                         );
                         pred.push(new_e);
                     }
@@ -332,8 +350,12 @@ impl OpMutVisitor for PredPullup<'_> {
                         // Here we propagate predicates based on transitivity.
                         // e.g. join condition: a1=b1, predicate: a1>0, propagated: b1 > 0
                         let new_preds = self.propagate_preds(cond);
-                        for (qc, pe) in new_preds {
-                            self.c_preds.entry(qc).or_default().insert(pe);
+                        for (gid, qid, idx, pe) in new_preds {
+                            let peset = self
+                                .c_preds
+                                .entry((qid, idx))
+                                .or_insert_with(|| PartialExprSet(gid, HashSet::new()));
+                            peset.1.insert(pe);
                         }
                     }
                     JoinKind::Left => {
@@ -344,16 +366,23 @@ impl OpMutVisitor for PredPullup<'_> {
                             let mut r_qids = HashSet::new();
                             r_jo.collect_qry_ids(&mut r_qids);
                             // add right predicates to join condition, add others to c_preds
-                            for ((qid, idx), pe) in new_preds {
+                            for (gid, qid, idx, pe) in new_preds {
                                 if r_qids.contains(&qid) {
                                     let new_e = Expr::pred_func(
                                         pe.kind,
-                                        vec![Expr::query_col(qid, idx), Expr::new_const(pe.r_arg)],
+                                        vec![
+                                            Expr::query_col(gid, qid, idx),
+                                            Expr::new_const(pe.r_arg),
+                                        ],
                                     );
                                     cond.push(new_e);
                                 } else {
                                     // all others belong to left side and can be pulled up
-                                    self.c_preds.entry((qid, idx)).or_default().insert(pe);
+                                    let peset = self
+                                        .c_preds
+                                        .entry((qid, idx))
+                                        .or_insert_with(|| PartialExprSet(gid, HashSet::new()));
+                                    peset.1.insert(pe);
                                 }
                             }
                         }
@@ -384,11 +413,11 @@ impl OpMutVisitor for PredPullup<'_> {
 
 /// collect query columns in expression.
 #[inline]
-fn collect_non_aggr_qry_cols(e: &Expr, hs: &mut HashSet<QueryCol>) {
+fn collect_non_aggr_qry_cols(e: &Expr, hs: &mut HashMap<QueryCol, GlobalID>) {
     let mut c = CollectQryCols(hs);
     let _ = e.walk(&mut c);
 }
-struct CollectQryCols<'a>(&'a mut HashSet<QueryCol>);
+struct CollectQryCols<'a>(&'a mut HashMap<QueryCol, GlobalID>);
 
 impl<'a> ExprVisitor<'a> for CollectQryCols<'_> {
     type Cont = ();
@@ -396,8 +425,12 @@ impl<'a> ExprVisitor<'a> for CollectQryCols<'_> {
     #[inline]
     fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
         match &e.kind {
-            ExprKind::Col(Col::QueryCol(qry_id, idx)) => {
-                self.0.insert((*qry_id, *idx));
+            ExprKind::Col(Col {
+                gid,
+                kind: ColKind::QueryCol(qry_id),
+                idx,
+            }) => {
+                self.0.insert((*qry_id, *idx), *gid);
                 ControlFlow::Continue(())
             }
             ExprKind::Aggf { .. } => ControlFlow::Break(()),
@@ -409,18 +442,32 @@ impl<'a> ExprVisitor<'a> for CollectQryCols<'_> {
 // currently, we only support out column 4 patterns:
 // col, col + const, col - const, const - col
 #[inline]
-fn translate_col(p_qid: QueryID, p_idx: u32, e: &Expr) -> Option<(QueryCol, Expr)> {
+fn translate_col(
+    p_gid: GlobalID,
+    p_qid: QueryID,
+    p_idx: ColIndex,
+    e: &Expr,
+) -> Option<(QueryCol, Expr)> {
     let res = match &e.kind {
-        ExprKind::Col(Col::QueryCol(c_qid, c_idx)) => {
+        ExprKind::Col(Col {
+            kind: ColKind::QueryCol(c_qid),
+            idx: c_idx,
+            ..
+        }) => {
             // direct mapping between columns: c_col -> p_col
-            let new_e = Expr::query_col(p_qid, p_idx);
+            let new_e = Expr::query_col(p_gid, p_qid, p_idx);
             ((*c_qid, *c_idx), new_e)
         }
-        ExprKind::Func { kind, args, .. } => match (kind, args.as_ref()) {
+        ExprKind::Func { kind, args, .. } => match (kind, &args[..]) {
             (
                 FuncKind::Add,
                 [Expr {
-                    kind: ExprKind::Col(Col::QueryCol(c_qid, c_idx)),
+                    kind:
+                        ExprKind::Col(Col {
+                            kind: ColKind::QueryCol(c_qid),
+                            idx: c_idx,
+                            ..
+                        }),
                     ..
                 }, c @ Expr {
                     kind: ExprKind::Const(_),
@@ -430,14 +477,19 @@ fn translate_col(p_qid: QueryID, p_idx: u32, e: &Expr) -> Option<(QueryCol, Expr
                 // "p_col = c_col + const" => "c_col = p_col - const"
                 let new_e = Expr::func(
                     FuncKind::Sub,
-                    vec![Expr::query_col(p_qid, p_idx), c.clone()],
+                    vec![Expr::query_col(p_gid, p_qid, p_idx), c.clone()],
                 );
                 ((*c_qid, *c_idx), new_e)
             }
             (
                 FuncKind::Sub,
                 [Expr {
-                    kind: ExprKind::Col(Col::QueryCol(c_qid, c_idx)),
+                    kind:
+                        ExprKind::Col(Col {
+                            kind: ColKind::QueryCol(c_qid),
+                            idx: c_idx,
+                            ..
+                        }),
                     ..
                 }, c @ Expr {
                     kind: ExprKind::Const(_),
@@ -447,7 +499,7 @@ fn translate_col(p_qid: QueryID, p_idx: u32, e: &Expr) -> Option<(QueryCol, Expr
                 // "p_col = c_col - const" => "c_col = p_col + const"
                 let new_e = Expr::func(
                     FuncKind::Add,
-                    vec![Expr::query_col(p_qid, p_idx), c.clone()],
+                    vec![Expr::query_col(p_gid, p_qid, p_idx), c.clone()],
                 );
                 ((*c_qid, *c_idx), new_e)
             }
@@ -457,14 +509,19 @@ fn translate_col(p_qid: QueryID, p_idx: u32, e: &Expr) -> Option<(QueryCol, Expr
                     kind: ExprKind::Const(_),
                     ..
                 }, Expr {
-                    kind: ExprKind::Col(Col::QueryCol(c_qid, c_idx)),
+                    kind:
+                        ExprKind::Col(Col {
+                            kind: ColKind::QueryCol(c_qid),
+                            idx: c_idx,
+                            ..
+                        }),
                     ..
                 }],
             ) => {
                 // "p_col = const - c_col" => "c_col = const - p_col"
                 let new_e = Expr::func(
                     FuncKind::Sub,
-                    vec![c.clone(), Expr::query_col(p_qid, p_idx)],
+                    vec![c.clone(), Expr::query_col(p_gid, p_qid, p_idx)],
                 );
                 ((*c_qid, *c_idx), new_e)
             }
@@ -481,10 +538,14 @@ fn translate_col(p_qid: QueryID, p_idx: u32, e: &Expr) -> Option<(QueryCol, Expr
 fn translate_pred(
     c_pred: &Expr,
     mapping: &HashMap<QueryCol, Expr>,
-) -> Result<Option<(QueryID, u32, PartialExpr)>> {
+) -> Result<Option<(GlobalID, QueryID, ColIndex, PartialExpr)>> {
     let mut new_p = c_pred.clone();
     let res = update_simplify_nested(&mut new_p, NullCoalesce::False, |e| match &e.kind {
-        ExprKind::Col(Col::QueryCol(qry_id, idx)) => {
+        ExprKind::Col(Col {
+            kind: ColKind::QueryCol(qry_id),
+            idx,
+            ..
+        }) => {
             if let Some(new_e) = mapping.get(&(*qry_id, *idx)) {
                 *e = new_e.clone();
                 Ok(())
@@ -496,7 +557,7 @@ fn translate_pred(
     });
     match res {
         Ok(_) => match &new_p.kind {
-            ExprKind::Pred(Pred::Func { kind, args }) => match (kind, args.as_ref()) {
+            ExprKind::Pred(Pred::Func { kind, args }) => match (kind, &args[..]) {
                 (
                     PredFuncKind::Equal
                     | PredFuncKind::Greater
@@ -505,7 +566,12 @@ fn translate_pred(
                     | PredFuncKind::LessEqual
                     | PredFuncKind::NotEqual,
                     [Expr {
-                        kind: ExprKind::Col(Col::QueryCol(qry_id, idx)),
+                        kind:
+                            ExprKind::Col(Col {
+                                gid,
+                                kind: ColKind::QueryCol(qry_id),
+                                idx,
+                            }),
                         ..
                     }, Expr {
                         kind: ExprKind::Const(c),
@@ -516,7 +582,7 @@ fn translate_pred(
                         kind: *kind,
                         r_arg: c.clone(),
                     };
-                    Ok(Some((*qry_id, *idx, partial_e)))
+                    Ok(Some((*gid, *qry_id, *idx, partial_e)))
                 }
                 _ => Ok(None),
             },
@@ -526,6 +592,8 @@ fn translate_pred(
         Err(e) => Err(e),
     }
 }
+
+struct PartialExprSet(GlobalID, HashSet<PartialExpr>);
 
 #[cfg(test)]
 mod tests {

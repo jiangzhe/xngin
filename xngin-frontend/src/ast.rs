@@ -59,65 +59,80 @@ pub struct UpdateExpr<'a> {
     pub cond: Option<Expr<'a>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ident<'a> {
-    Regular(&'a str),
-    Quoted(&'a str),
-    AutoAlias(&'a str),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Ident<'a> {
+    pub kind: IdentKind,
+    pub s: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IdentKind {
+    Regular,
+    Quoted,
+    AutoAlias,
 }
 
 impl<'a> Ident<'a> {
     #[inline]
-    pub fn as_str(&self) -> SmolStr {
-        match self {
-            // todo: handle escaped characters in delimited format
-            Ident::Regular(s) | Ident::Quoted(s) | Ident::AutoAlias(s) => SmolStr::new(s),
+    pub fn regular<T: Into<&'a str>>(s: T) -> Self {
+        Ident {
+            kind: IdentKind::Regular,
+            s: s.into(),
         }
+    }
+
+    #[inline]
+    pub fn quoted<T: Into<&'a str>>(s: T) -> Self {
+        Ident {
+            kind: IdentKind::Quoted,
+            s: s.into(),
+        }
+    }
+
+    #[inline]
+    pub fn auto_alias<T: Into<&'a str>>(s: T) -> Self {
+        Ident {
+            kind: IdentKind::AutoAlias,
+            s: s.into(),
+        }
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> SmolStr {
+        // todo: handle escaped characters in delimited format
+        SmolStr::new(self.s)
     }
 
     #[inline]
     pub fn to_lower(&self) -> SmolStr {
-        match self {
-            // todo: handle escaped characters in delimited format
-            Ident::Regular(s) | Ident::Quoted(s) | Ident::AutoAlias(s) => {
-                SmolStr::from_iter(s.chars().map(|c| c.to_ascii_lowercase()))
-            }
-        }
+        // todo: handle escaped characters in delimited format
+        SmolStr::from_iter(self.s.chars().map(|c| c.to_ascii_lowercase()))
     }
 
     #[inline]
     pub fn to_upper(&self) -> SmolStr {
-        match self {
-            // todo: handle escaped characters in delimited format
-            Ident::Regular(s) | Ident::Quoted(s) | Ident::AutoAlias(s) => {
-                SmolStr::from_iter(s.chars().map(|c| c.to_ascii_uppercase()))
-            }
-        }
-    }
-
-    #[inline]
-    pub fn auto_alias(&self) -> bool {
-        matches!(self, Ident::AutoAlias(_))
+        // todo: handle escaped characters in delimited format
+        SmolStr::from_iter(self.s.chars().map(|c| c.to_ascii_uppercase()))
     }
 }
 
 impl<'a> From<&'a str> for Ident<'a> {
-    fn from(src: &'a str) -> Self {
-        Ident::Regular(src)
+    fn from(s: &'a str) -> Self {
+        Ident {
+            kind: IdentKind::Regular,
+            s,
+        }
     }
 }
 
-impl<'a> Ident<'a> {
-    pub fn regular<T: Into<&'a str>>(value: T) -> Self {
-        Ident::Regular(value.into())
-    }
-
-    pub fn quoted<T: Into<&'a str>>(value: T) -> Self {
-        Ident::Quoted(value.into())
+impl AsRef<str> for Ident<'_> {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.s
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TableName<'a> {
     pub schema: Option<Ident<'a>>,
     pub table: Ident<'a>,
@@ -255,7 +270,7 @@ pub enum Expr<'a> {
     Binary(Box<BinaryExpr<'a>>),
     Predicate(Box<Predicate<'a>>), // all predicates will be evaluated to bool expression
     Func(FuncExpr<'a>),
-    Builtin(Builtin<'a>),
+    FuncArg(ConstArg),
     CaseWhen(CaseWhen<'a>),
     ScalarSubquery(Box<QueryExpr<'a>>),
     Tuple(Vec<Expr<'a>>), // MySQL allow tuple expression
@@ -448,13 +463,13 @@ impl<'a> Expr<'a> {
     }
 
     #[inline]
-    pub fn pred_in_subquery(lhs: Expr<'a>, subquery: QueryExpr<'a>) -> Self {
-        Self::predicate(Predicate::InSubquery(lhs, Box::new(subquery)))
+    pub fn pred_in_subquery(lhs: Expr<'a>, subq: QueryExpr<'a>) -> Self {
+        Self::predicate(Predicate::InSubquery(lhs, Box::new(subq)))
     }
 
     #[inline]
-    pub fn pred_nin_subquery(lhs: Expr<'a>, subquery: QueryExpr<'a>) -> Self {
-        Self::predicate(Predicate::NotInSubquery(lhs, Box::new(subquery)))
+    pub fn pred_nin_subquery(lhs: Expr<'a>, subq: QueryExpr<'a>) -> Self {
+        Self::predicate(Predicate::NotInSubquery(lhs, Box::new(subq)))
     }
 
     #[inline]
@@ -613,13 +628,12 @@ impl<'a> Expr<'a> {
     }
 
     #[inline]
-    pub fn func(id: Vec<Ident<'a>>, args: Vec<Expr<'a>>) -> Self {
-        Expr::Func(FuncExpr { id, args })
-    }
-
-    #[inline]
-    pub fn builtin(f: Builtin<'a>) -> Self {
-        Expr::Builtin(f)
+    pub fn func(ty: FuncType, args: Vec<Expr<'a>>) -> Self {
+        Expr::Func(FuncExpr {
+            ty,
+            args,
+            fname: None,
+        })
     }
 
     #[inline]
@@ -634,15 +648,39 @@ impl<'a> Expr<'a> {
 
     #[inline]
     pub fn case_when(
-        operand: Option<Expr<'a>>,
+        operand: Option<Box<Expr<'a>>>,
         branches: Vec<(Expr<'a>, Expr<'a>)>,
-        fallback: Option<Expr<'a>>,
+        fallback: Option<Box<Expr<'a>>>,
     ) -> Self {
         Expr::CaseWhen(CaseWhen {
-            operand: operand.map(Box::new),
+            operand,
             branches,
-            fallback: fallback.map(Box::new),
+            fallback,
         })
+    }
+
+    #[inline]
+    pub fn into_conj(self) -> Vec<Self> {
+        match self {
+            Expr::Predicate(pred) if pred.is_conj() => pred.conj().unwrap(),
+            _ => vec![self],
+        }
+    }
+
+    #[inline]
+    pub fn into_tuple(self) -> Option<Vec<Self>> {
+        match self {
+            Expr::Tuple(tu) => Some(tu),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn func_arg(&self) -> Option<&ConstArg> {
+        match self {
+            Expr::FuncArg(arg) => Some(arg),
+            _ => None,
+        }
     }
 }
 
@@ -715,6 +753,22 @@ impl<'a> Predicate<'a> {
             _ => return None,
         };
         Some(res)
+    }
+
+    #[inline]
+    pub fn is_conj(&self) -> bool {
+        match self {
+            Predicate::Conj(_) => true,
+            _ => false,
+        }
+    }
+
+    #[inline]
+    pub fn conj(self) -> Option<Vec<Expr<'a>>> {
+        match self {
+            Predicate::Conj(es) => Some(es),
+            _ => None,
+        }
     }
 }
 
@@ -889,8 +943,57 @@ impl_kw_str!(IsOp);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuncExpr<'a> {
-    pub id: Vec<Ident<'a>>,
+    pub ty: FuncType,
     pub args: Vec<Expr<'a>>,
+    // optional function name input by user.
+    // it can identify UDF at runtime.
+    pub fname: Option<Ident<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FuncType {
+    // extract(unit from datetime)
+    Extract,
+    // substring(src, start), substring(src FROM start)
+    // substring(src, start, len), substring(src FROM start FOR len)
+    Substring,
+}
+
+impl FuncType {
+    #[inline]
+    fn upper_str(&self) -> &'static str {
+        match self {
+            FuncType::Extract => "EXTRACT",
+            FuncType::Substring => "SUBSTRING",
+        }
+    }
+
+    #[inline]
+    fn lower_str(&self) -> &'static str {
+        match self {
+            FuncType::Extract => "extract",
+            FuncType::Substring => "substring",
+        }
+    }
+}
+
+impl_kw_str!(FuncType);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstArg {
+    // placeholder for absent argument.
+    None,
+    DatetimeUnit(DatetimeUnit),
+}
+
+impl ConstArg {
+    #[inline]
+    pub fn datetime_unit(&self) -> Option<DatetimeUnit> {
+        match self {
+            ConstArg::DatetimeUnit(unit) => Some(*unit),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -909,7 +1012,7 @@ pub enum UnaryOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Builtin<'a> {
     // extract(unit from datetime)
-    Extract(DatetimeUnit, Box<Expr<'a>>),
+    Extract(Box<Expr<'a>>, Box<Expr<'a>>),
     // substring(src, start), substring(src FROM start)
     // substring(src, start, len), substring(src FROM start FOR len)
     Substring(Box<Expr<'a>>, Box<Expr<'a>>, Option<Box<Expr<'a>>>),
@@ -938,18 +1041,15 @@ impl_kw_str!(Builtin<'_>);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedCol<'a> {
     Asterisk(Vec<Ident<'a>>),
+    // expression and alias.
     Expr(Expr<'a>, Ident<'a>),
 }
 
 impl<'a> DerivedCol<'a> {
+    /// Create a new derived column with alias.
     #[inline]
     pub fn new(expr: Expr<'a>, alias: Ident<'a>) -> Self {
         DerivedCol::Expr(expr, alias)
-    }
-
-    #[inline]
-    pub fn auto_alias(expr: Expr<'a>, text: &'a str) -> Self {
-        DerivedCol::Expr(expr, Ident::AutoAlias(text))
     }
 }
 
@@ -1300,6 +1400,20 @@ impl<'a> TablePrimitive<'a> {
     #[inline]
     pub fn derived(query: QueryExpr<'a>, alias: Ident<'a>) -> Self {
         Self::Derived(Box::new(query), alias)
+    }
+
+    #[inline]
+    pub fn alias(&self) -> Ident<'a> {
+        match self {
+            TablePrimitive::Derived(_, alias) => *alias,
+            TablePrimitive::Named(tn, alias) => {
+                if let Some(alias) = alias.as_ref() {
+                    *alias
+                } else {
+                    tn.table
+                }
+            }
+        }
     }
 }
 

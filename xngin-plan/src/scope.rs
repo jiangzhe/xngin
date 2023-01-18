@@ -3,7 +3,7 @@ use fnv::FnvHashSet;
 use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::ops::{Deref, DerefMut};
-use xngin_expr::{Expr, QueryID};
+use xngin_expr::{ColIndex, Expr, QueryID};
 
 // Scopes is stack-like environment for query blocks.
 #[derive(Debug, Default)]
@@ -67,7 +67,7 @@ pub struct Scope {
     // outer scope for search.
     pub transitive: bool,
     // Correlated variables in current scope.
-    pub cor_vars: FnvHashSet<(QueryID, u32)>,
+    pub cor_vars: FnvHashSet<(QueryID, ColIndex)>,
     // Correlated columns in current scope.
     pub cor_cols: Vec<Expr>,
 }

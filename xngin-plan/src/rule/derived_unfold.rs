@@ -1,14 +1,14 @@
+use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor, OpVisitor};
 use crate::query::{Location, QuerySet, Subquery};
 use crate::rule::RuleEffect;
 use crate::setop::{Setop, SubqOp};
-use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, Expr, ExprKind, ExprMutVisitor, QueryID};
+use xngin_expr::{Col, ColIndex, ColKind, Expr, ExprKind, ExprMutVisitor, QueryCol, QueryID};
 
 /// Unfold derived table.
 ///
@@ -29,7 +29,7 @@ pub fn derived_unfold(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEff
 fn unfold_derived(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
-    mapping: &mut HashMap<Col, Expr>,
+    mapping: &mut HashMap<QueryCol, Expr>,
     mode: Mode,
 ) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, loc, op| {
@@ -53,13 +53,18 @@ fn unfold_derived(
 struct Unfold<'a> {
     qry_set: &'a mut QuerySet,
     stack: Vec<Op>,
-    mapping: &'a mut HashMap<Col, Expr>,
+    // map query column with position to inner expression.
+    mapping: &'a mut HashMap<QueryCol, Expr>,
     mode: Mode,
 }
 
 impl<'a> Unfold<'a> {
     #[inline]
-    fn new(qry_set: &'a mut QuerySet, mapping: &'a mut HashMap<Col, Expr>, mode: Mode) -> Self {
+    fn new(
+        qry_set: &'a mut QuerySet,
+        mapping: &'a mut HashMap<QueryCol, Expr>,
+        mode: Mode,
+    ) -> Self {
         Unfold {
             qry_set,
             stack: vec![],
@@ -157,8 +162,9 @@ impl OpMutVisitor for Unfold<'_> {
                             Some((new_op, out_cols)) => {
                                 // unfold subquery as operator tree, we need to store
                                 // the mapping between original columns to unfolded expressions
-                                for (idx, (e, _)) in out_cols.into_iter().enumerate() {
-                                    self.mapping.insert(Col::QueryCol(*qry_id, idx as u32), e);
+                                for (idx, c) in out_cols.into_iter().enumerate() {
+                                    self.mapping
+                                        .insert((*qry_id, ColIndex::from(idx as u32)), c.expr);
                                 }
                                 *op = new_op;
                                 ControlFlow::Continue(RuleEffect::OPEXPR)
@@ -217,7 +223,7 @@ enum Mode {
 }
 
 #[inline]
-fn try_unfold_subq(subq: &mut Subquery, mode: Mode) -> Option<(Op, Vec<(Expr, SmolStr)>)> {
+fn try_unfold_subq(subq: &mut Subquery, mode: Mode) -> Option<(Op, Vec<ProjCol>)> {
     if subq.location != Location::Intermediate {
         return None;
     }
@@ -233,11 +239,17 @@ fn try_unfold_subq(subq: &mut Subquery, mode: Mode) -> Option<(Op, Vec<(Expr, Sm
             Some(extract(&mut subq.root))
         }
         Mode::Partial => {
-            if subq
-                .out_cols()
-                .iter()
-                .any(|(e, _)| !matches!(e.kind, ExprKind::Col(Col::QueryCol(..))))
-            {
+            // if inner query contains outputs with calculation, we cannot unfold it
+            // because it may break SQL semantics such as outer join, etc.
+            if subq.out_cols().iter().any(|c| {
+                !matches!(
+                    c.expr.kind,
+                    ExprKind::Col(Col {
+                        kind: ColKind::QueryCol(..),
+                        ..
+                    })
+                )
+            }) {
                 return None;
             }
             // detect whether this subquery supports unfolding
@@ -305,7 +317,7 @@ impl OpVisitor for Detect {
 }
 
 #[inline]
-fn extract(op: &mut Op) -> (Op, Vec<(Expr, SmolStr)>) {
+fn extract(op: &mut Op) -> (Op, Vec<ProjCol>) {
     match mem::take(op) {
         Op::Proj { cols, input } => (*input, cols),
         _ => unreachable!(),
@@ -313,15 +325,20 @@ fn extract(op: &mut Op) -> (Op, Vec<(Expr, SmolStr)>) {
 }
 
 #[inline]
-fn rewrite_exprs(op: &mut Op, mapping: &HashMap<Col, Expr>) -> RuleEffect {
-    struct Rewrite<'a>(&'a HashMap<Col, Expr>);
+fn rewrite_exprs(op: &mut Op, mapping: &HashMap<QueryCol, Expr>) -> RuleEffect {
+    struct Rewrite<'a>(&'a HashMap<QueryCol, Expr>);
     impl ExprMutVisitor for Rewrite<'_> {
         type Cont = RuleEffect;
         type Break = ();
         #[inline]
         fn leave(&mut self, e: &mut Expr) -> ControlFlow<(), RuleEffect> {
-            if let ExprKind::Col(c) = &e.kind {
-                if let Some(new) = self.0.get(c) {
+            if let ExprKind::Col(Col {
+                kind: ColKind::QueryCol(qry_id),
+                idx,
+                ..
+            }) = &e.kind
+            {
+                if let Some(new) = self.0.get(&(*qry_id, *idx)) {
                     *e = new.clone();
                     return ControlFlow::Continue(RuleEffect::EXPR);
                 }

@@ -6,7 +6,7 @@ use crate::query::QuerySet;
 use crate::setop::Setop;
 use std::fmt::{self, Write};
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{AggKind, Col, Const, Expr, ExprKind, Farg, Pred, QueryID, Setq};
+use xngin_expr::{AggKind, Col, ColKind, Const, Expr, ExprKind, Pred, QueryID, Setq};
 
 const INDENT: usize = 4;
 const BRANCH_1: char = '└';
@@ -58,7 +58,7 @@ impl Explain for Op {
         match self {
             Op::Proj { cols, .. } => {
                 f.write_str("Proj{")?;
-                write_refs(f, cols.iter().map(|(e, _)| e), ", ")?;
+                write_refs(f, cols.iter().map(|c| &c.expr), ", ")?;
                 f.write_str("}")
             }
             Op::Filt { pred, .. } => {
@@ -87,7 +87,7 @@ impl Explain for Op {
             }
             Op::Row(row) => {
                 f.write_str("Row{")?;
-                write_refs(f, row.iter().map(|(e, _)| e), ", ")?;
+                write_refs(f, row.iter().map(|c| &c.expr), ", ")?;
                 f.write_char('}')
             }
             Op::Table(_, table_id) => {
@@ -113,7 +113,7 @@ impl Explain for Aggr {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Aggr{")?;
         f.write_str("proj=[")?;
-        write_refs(f, self.proj.iter().map(|(e, _)| e), ", ")?;
+        write_refs(f, self.proj.iter().map(|c| &c.expr), ", ")?;
         f.write_str("]}")
     }
 }
@@ -240,23 +240,23 @@ impl Explain for Expr {
                 if args.is_empty() {
                     return f.write_char(')');
                 }
-                write_refs(f, args.as_ref(), ", ")?;
+                write_refs(f, args, ", ")?;
                 f.write_char(')')
             }
             ExprKind::Case { op, acts, fallback } => {
                 f.write_str("case ")?;
-                if op.kind != ExprKind::Farg(Farg::None) {
+                if let Some(op) = op {
                     op.explain(f)?;
                     f.write_char(' ')?
                 }
-                for branch in acts.as_ref().chunks_exact(2) {
+                for (when, then) in acts {
                     f.write_str("when ")?;
-                    branch[0].explain(f)?;
+                    when.explain(f)?;
                     f.write_str(" then ")?;
-                    branch[1].explain(f)?;
+                    then.explain(f)?;
                     f.write_char(' ')?
                 }
-                if fallback.kind != ExprKind::Farg(Farg::None) {
+                if let Some(fallback) = fallback {
                     f.write_str("else ")?;
                     fallback.explain(f)?;
                     f.write_char(' ')?
@@ -309,10 +309,29 @@ impl Explain for Const {
 
 impl Explain for Col {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        match self {
-            Col::TableCol(table_id, idx) => write!(f, "t{}.{}", table_id.value(), idx),
-            Col::QueryCol(query_id, idx) => write!(f, "q{}.{}", **query_id, idx),
-            Col::CorrelatedCol(query_id, idx) => write!(f, "cq{}.{}", **query_id, idx),
+        match &self.kind {
+            ColKind::TableCol(table_id, alias) => write!(
+                f,
+                "t{}.{}[{}]#{}",
+                table_id.value(),
+                alias,
+                self.idx.value(),
+                self.gid.value()
+            ),
+            ColKind::QueryCol(query_id) => write!(
+                f,
+                "q{}[{}]#{}",
+                query_id.value(),
+                self.idx.value(),
+                self.gid.value()
+            ),
+            ColKind::CorrelatedCol(query_id) => write!(
+                f,
+                "cq{}[{}]#{}",
+                query_id.value(),
+                self.idx.value(),
+                self.gid.value()
+            ),
         }
     }
 }
@@ -326,7 +345,7 @@ impl Explain for Pred {
             Pred::Func { kind, args } => {
                 f.write_str(kind.to_lower())?;
                 f.write_char('(')?;
-                write_refs(f, args.as_ref(), ", ")?;
+                write_refs(f, args, ", ")?;
                 f.write_char(')')
             }
             Pred::Not(e) => {

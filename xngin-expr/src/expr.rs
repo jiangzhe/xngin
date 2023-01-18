@@ -2,6 +2,7 @@ use crate::controlflow::ControlFlow;
 use crate::func::FuncKind;
 use crate::pred::{Pred, PredFuncKind};
 use smallvec::{smallvec, SmallVec};
+use smol_str::SmolStr;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -9,12 +10,10 @@ use std::sync::Arc;
 use xngin_catalog::TableID;
 pub use xngin_datatype::{Const, ValidF64};
 use xngin_datatype::{Date, Datetime, Decimal, Interval, PreciseType, Time, TimeUnit};
-// pub type ExprType = Box<PreciseType>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Expr {
     pub kind: ExprKind,
-    // pub ty: Option<ExprType>,
     pub ty: PreciseType,
 }
 
@@ -192,6 +191,11 @@ impl Expr {
     }
 
     #[inline]
+    pub fn pred_not_exists(subq: Expr) -> Self {
+        Expr::new(ExprKind::Pred(Pred::NotExists(Box::new(subq))))
+    }
+
+    #[inline]
     pub fn pred_func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
         Expr::new(ExprKind::Pred(Pred::func(kind, args)))
     }
@@ -218,39 +222,54 @@ impl Expr {
     /// This differs from other expressions, as the precise type is passed
     /// as input argument.
     #[inline]
-    pub fn table_col(table_id: TableID, idx: u32, ty: PreciseType) -> Self {
+    pub fn table_col(
+        gid: GlobalID,
+        table_id: TableID,
+        idx: ColIndex,
+        ty: PreciseType,
+        col_name: SmolStr,
+    ) -> Self {
         Expr {
-            kind: ExprKind::Col(Col::TableCol(table_id, idx)),
+            kind: ExprKind::Col(Col {
+                gid,
+                kind: ColKind::TableCol(table_id, col_name),
+                idx,
+            }),
             ty,
         }
     }
 
     #[inline]
-    pub fn query_col(query_id: QueryID, idx: u32) -> Self {
-        Expr::new(ExprKind::Col(Col::QueryCol(query_id, idx)))
+    pub fn query_col(gid: GlobalID, query_id: QueryID, idx: ColIndex) -> Self {
+        Expr::new(ExprKind::Col(Col {
+            gid,
+            kind: ColKind::QueryCol(query_id),
+            idx,
+        }))
     }
 
     #[inline]
-    pub fn correlated_col(query_id: QueryID, idx: u32) -> Self {
-        Expr::new(ExprKind::Col(Col::CorrelatedCol(query_id, idx)))
+    pub fn correlated_col(gid: GlobalID, query_id: QueryID, idx: ColIndex) -> Self {
+        Expr::new(ExprKind::Col(Col {
+            gid,
+            kind: ColKind::CorrelatedCol(query_id),
+            idx,
+        }))
     }
 
     #[inline]
     pub fn func(kind: FuncKind, args: Vec<Expr>) -> Self {
         debug_assert_eq!(kind.n_args(), args.len());
-        Expr::new(ExprKind::Func {
-            kind,
-            args: args.into_boxed_slice(),
-        })
+        Expr::new(ExprKind::Func { kind, args })
     }
 
     #[inline]
-    pub fn new_case(op: Expr, acts: Vec<Expr>, fallback: Expr) -> Self {
-        Expr::new(ExprKind::Case {
-            op: Box::new(op),
-            acts: acts.into_boxed_slice(),
-            fallback: Box::new(fallback),
-        })
+    pub fn new_case(
+        op: Option<Box<Expr>>,
+        acts: Vec<(Expr, Expr)>,
+        fallback: Option<Box<Expr>>,
+    ) -> Self {
+        Expr::new(ExprKind::Case { op, acts, fallback })
     }
 
     /// Cast a given expression to specific data type.
@@ -339,10 +358,15 @@ impl Expr {
             }
             ExprKind::Aggf { arg, .. } | ExprKind::Cast { arg, .. } => smallvec![arg.as_ref()],
             ExprKind::Func { args, .. } => args.iter().collect(),
-            ExprKind::Case { op, acts, fallback } => std::iter::once(op.as_ref())
-                .chain(acts.iter())
-                .chain(std::iter::once(fallback.as_ref()))
-                .collect(),
+            ExprKind::Case { op, acts, fallback } => {
+                op.iter()
+                    .map(|e| e.as_ref())
+                    .chain(acts.iter().flat_map(|(when, then)| {
+                        std::iter::once(when).chain(std::iter::once(then))
+                    }))
+                    .chain(fallback.iter().map(|e| e.as_ref()))
+                    .collect()
+            }
             ExprKind::Pred(p) => match p {
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => SmallVec::from_iter(es.iter()),
                 Pred::Not(e) => smallvec![e.as_ref()],
@@ -370,10 +394,15 @@ impl Expr {
             }
             ExprKind::Aggf { arg, .. } | ExprKind::Cast { arg, .. } => smallvec![arg.as_mut()],
             ExprKind::Func { args, .. } => args.iter_mut().collect(),
-            ExprKind::Case { op, acts, fallback } => std::iter::once(op.as_mut())
-                .chain(acts.iter_mut())
-                .chain(std::iter::once(fallback.as_mut()))
-                .collect(),
+            ExprKind::Case { op, acts, fallback } => {
+                op.iter_mut()
+                    .map(|e| e.as_mut())
+                    .chain(acts.iter_mut().flat_map(|(when, then)| {
+                        std::iter::once(when).chain(std::iter::once(then))
+                    }))
+                    .chain(fallback.iter_mut().map(|e| e.as_mut()))
+                    .collect()
+            }
             ExprKind::Pred(p) => match p {
                 Pred::Conj(es) | Pred::Disj(es) | Pred::Xor(es) => {
                     SmallVec::from_iter(es.iter_mut())
@@ -440,7 +469,7 @@ impl Expr {
                     }
                     ExprKind::Col(col) => {
                         if self.aggr_lvl == 0 {
-                            self.cols.push(*col)
+                            self.cols.push(col.clone())
                         }
                     }
                     _ => (),
@@ -545,12 +574,12 @@ pub enum ExprKind {
     },
     Func {
         kind: FuncKind,
-        args: Box<[Expr]>,
+        args: Vec<Expr>,
     },
     Case {
-        op: Box<Expr>,
-        acts: Box<[Expr]>,
-        fallback: Box<Expr>,
+        op: Option<Box<Expr>>,
+        acts: Vec<(Expr, Expr)>,
+        fallback: Option<Box<Expr>>,
     },
     Cast {
         arg: Box<Expr>,
@@ -582,11 +611,19 @@ impl Default for ExprKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Col {
-    TableCol(TableID, u32),
-    QueryCol(QueryID, u32),
-    CorrelatedCol(QueryID, u32),
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Col {
+    pub gid: GlobalID,
+    pub kind: ColKind,
+    pub idx: ColIndex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ColKind {
+    // table id and column name
+    TableCol(TableID, SmolStr),
+    QueryCol(QueryID),
+    CorrelatedCol(QueryID),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -631,7 +668,9 @@ pub enum Plhd {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Farg {
-    /// indicates there is no argument present in this position of the argument list
+    /// Indicates there is no argument present in this position of the argument list.
+    /// This is important for function with variable arguments.
+    /// We fix the number of arguments and use None to be the placeholder.
     None,
     TimeUnit(TimeUnit),
 }
@@ -640,10 +679,24 @@ pub enum Farg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QueryID(u32);
 
+impl QueryID {
+    #[inline]
+    pub fn value(&self) -> u32 {
+        self.0
+    }
+}
+
 impl From<u32> for QueryID {
     fn from(src: u32) -> Self {
         debug_assert!(src != !0, "Constructing QueryID from !0 is not allowed");
         QueryID(src)
+    }
+}
+
+impl std::fmt::Display for QueryID {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "q{}", self.0)
     }
 }
 
@@ -656,16 +709,56 @@ impl Deref for QueryID {
     }
 }
 
-impl std::fmt::Display for QueryID {
+pub const INVALID_QUERY_ID: QueryID = QueryID(!0);
+
+/// ColIndex wraps u32 to be the index of column in current table/subquery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ColIndex(u32);
+
+impl ColIndex {
     #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "q{}", self.0)
+    pub fn value(&self) -> u32 {
+        self.0
     }
 }
 
-pub const INVALID_QUERY_ID: QueryID = QueryID(!0);
+impl From<u32> for ColIndex {
+    fn from(src: u32) -> Self {
+        ColIndex(src)
+    }
+}
 
-pub type QueryCol = (QueryID, u32);
+impl std::fmt::Display for ColIndex {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "c{}", self.0)
+    }
+}
+
+pub type QueryCol = (QueryID, ColIndex);
+
+/// ColIndex wraps u32 to be the index of column in current table/subquery.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GlobalID(u32);
+
+impl GlobalID {
+    /// Returns next id.
+    #[inline]
+    pub fn next(self) -> Self {
+        GlobalID(self.0 + 1)
+    }
+
+    #[inline]
+    pub fn value(&self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for GlobalID {
+    fn from(src: u32) -> Self {
+        GlobalID(src)
+    }
+}
 
 pub trait Effect: Default {
     fn merge(&mut self, other: Self);
@@ -715,7 +808,11 @@ impl<'a> ExprVisitor<'a> for CollectQryIDs<'_> {
     type Break = ();
     #[inline]
     fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
-        if let ExprKind::Col(Col::QueryCol(qry_id, _)) = &e.kind {
+        if let ExprKind::Col(Col {
+            kind: ColKind::QueryCol(qry_id),
+            ..
+        }) = &e.kind
+        {
             self.0.insert(*qry_id);
         }
         ControlFlow::Continue(())
@@ -729,6 +826,8 @@ mod tests {
     #[test]
     fn test_size_of_smallvec_expr_ref() {
         use std::mem::size_of;
+        println!("size of Expr is {}", size_of::<Expr>());
+        println!("size of ExprKind is {}", size_of::<ExprKind>());
         println!(
             "size of SmallVec<[&Expr; 2]> is {}",
             size_of::<SmallVec<[&ExprKind; 2]>>()

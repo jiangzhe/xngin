@@ -102,6 +102,15 @@ mod tests {
     use crate::parser::dialect::MySQL;
     use nom::error::Error;
 
+    macro_rules! aliased_expr {
+        ( $expr:expr => $lit:literal ) => {
+            DerivedCol::new($expr, Ident::regular($lit))
+        };
+        ( $expr:expr , $lit:literal ) => {
+            DerivedCol::new($expr, Ident::auto_alias($lit))
+        };
+    }
+
     #[test]
     fn test_parse_insert() -> anyhow::Result<()> {
         for c in vec![
@@ -152,10 +161,7 @@ mod tests {
                     cols: vec![],
                     source: InsertSource::query(QueryExpr {
                         with: None,
-                        query: Query::row(vec![DerivedCol::auto_alias(
-                            Expr::numeric_lit("1"),
-                            "1",
-                        )]),
+                        query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                     }),
                 },
             ),
@@ -166,10 +172,7 @@ mod tests {
                     cols: vec!["c0".into()],
                     source: InsertSource::query(QueryExpr {
                         with: None,
-                        query: Query::row(vec![DerivedCol::auto_alias(
-                            Expr::numeric_lit("1"),
-                            "1",
-                        )]),
+                        query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                     }),
                 },
             ),

@@ -1,16 +1,16 @@
+use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::{QryIDs, QuerySet};
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
-use smol_str::SmolStr;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::Fold;
-use xngin_expr::{Col, Const, Expr, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
+use xngin_expr::{Col, ColKind, Const, Expr, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Pushdown predicates.
 #[inline]
@@ -105,7 +105,10 @@ impl<'a> ExprVisitor<'a> for ExprAttr {
     fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
         match &e.kind {
             ExprKind::Aggf { .. } => self.has_aggf = true,
-            ExprKind::Col(Col::QueryCol(qry_id, _)) => match &mut self.qry_ids {
+            ExprKind::Col(Col {
+                kind: ColKind::QueryCol(qry_id),
+                ..
+            }) => match &mut self.qry_ids {
                 QryIDs::Empty => {
                     self.qry_ids = QryIDs::Single(*qry_id);
                 }
@@ -165,7 +168,10 @@ impl ExprItem {
                 Entry::Occupied(occ) => *occ.get(),
                 Entry::Vacant(vac) => {
                     let rn = self.e.clone().reject_null(|e| match &e.kind {
-                        ExprKind::Col(Col::QueryCol(qid, _)) if *qid == qry_id => {
+                        ExprKind::Col(Col {
+                            kind: ColKind::QueryCol(qid),
+                            ..
+                        }) if *qid == qry_id => {
                             *e = Expr::const_null();
                         }
                         _ => (),
@@ -178,7 +184,10 @@ impl ExprItem {
         } else {
             let mut reject_nulls = HashMap::new();
             let rn = self.e.clone().reject_null(|e| match &e.kind {
-                ExprKind::Col(Col::QueryCol(qid, _)) if *qid == qry_id => {
+                ExprKind::Col(Col {
+                    kind: ColKind::QueryCol(qid),
+                    ..
+                }) if *qid == qry_id => {
                     *e = Expr::const_null();
                 }
                 _ => (),
@@ -190,7 +199,7 @@ impl ExprItem {
     }
 
     #[inline]
-    fn rewrite(&mut self, qry_id: QueryID, out: &[(Expr, SmolStr)]) {
+    fn rewrite(&mut self, qry_id: QueryID, out: &[ProjCol]) {
         let mut roe = RewriteOutExpr { qry_id, out };
         let _ = self.e.walk_mut(&mut roe);
         // must reset lazy field as the expression changed
@@ -696,7 +705,7 @@ fn push_or_accept(
 
 struct RewriteOutExpr<'a> {
     qry_id: QueryID,
-    out: &'a [(Expr, SmolStr)],
+    out: &'a [ProjCol],
 }
 
 impl ExprMutVisitor for RewriteOutExpr<'_> {
@@ -704,10 +713,15 @@ impl ExprMutVisitor for RewriteOutExpr<'_> {
     type Break = ();
     #[inline]
     fn leave(&mut self, e: &mut Expr) -> ControlFlow<()> {
-        if let ExprKind::Col(Col::QueryCol(qry_id, idx)) = &e.kind {
+        if let ExprKind::Col(Col {
+            kind: ColKind::QueryCol(qry_id),
+            idx,
+            ..
+        }) = &e.kind
+        {
             if *qry_id == self.qry_id {
-                let (new_e, _) = &self.out[*idx as usize];
-                *e = new_e.clone();
+                let new_c = &self.out[idx.value() as usize];
+                *e = new_c.expr.clone();
             }
         }
         ControlFlow::Continue(())

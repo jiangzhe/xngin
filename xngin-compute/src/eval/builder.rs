@@ -6,11 +6,11 @@ use crate::logic::LogicKind;
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
 use xngin_datatype::PreciseType;
-use xngin_expr::{DataSourceID, Expr, ExprKind, FuncKind, Pred};
+use xngin_expr::{ColIndex, DataSourceID, Expr, ExprKind, FuncKind, Pred};
 
 #[derive(Debug)]
 pub(super) struct Builder<'a, T> {
-    input: Vec<(T, u32)>,
+    input: Vec<(T, ColIndex)>,
     input_map: HashMap<InputKey<T>, (usize, PreciseType)>,
     // The third parameter is the base condition for current evaluation.
     cache: Vec<(Eval, usize)>,
@@ -223,7 +223,7 @@ impl<'a, T: DataSourceID> Builder<'a, T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct InputKey<T>(T, u32);
+struct InputKey<T>(T, ColIndex);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ExprKey<'a> {

@@ -8,10 +8,7 @@ pub enum Pred {
     Xor(Vec<Expr>),
     // Wrapped expression must return bool.
     // It can be achieved by adding cast function.
-    Func {
-        kind: PredFuncKind,
-        args: Box<[Expr]>,
-    },
+    Func { kind: PredFuncKind, args: Vec<Expr> },
     Not(Box<Expr>),
     InSubquery(Box<Expr>, Box<Expr>),
     NotInSubquery(Box<Expr>, Box<Expr>),
@@ -23,10 +20,7 @@ impl Pred {
     #[inline]
     pub fn func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
         debug_assert_eq!(kind.n_args(), args.len());
-        Pred::Func {
-            kind,
-            args: args.into_boxed_slice(),
-        }
+        Pred::Func { kind, args }
     }
 }
 

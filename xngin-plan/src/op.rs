@@ -7,11 +7,11 @@
 //! with schema validated.
 //!
 //! Each table/column is lookuped from catalog and assigned a unique id.
+use crate::col::ProjCol;
 use crate::error::Error;
 use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
 use crate::setop::{Setop, SetopKind, SubqOp};
 use smallvec::{smallvec, SmallVec};
-use smol_str::SmolStr;
 use std::collections::HashSet;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
@@ -39,10 +39,7 @@ pub enum OpKind {
 #[derive(Debug, Clone)]
 pub enum Op {
     /// Projection node.
-    Proj {
-        cols: Vec<(Expr, SmolStr)>,
-        input: Box<Op>,
-    },
+    Proj { cols: Vec<ProjCol>, input: Box<Op> },
     /// Filter node.
     Filt { pred: Vec<Expr>, input: Box<Op> },
     /// Aggregation node.
@@ -69,7 +66,7 @@ pub enum Op {
     /// This node is converted from a non-correlated scalar subquery.
     Attach(Box<Op>, QueryID),
     /// Row represents a single select without source table. e.g. "SELECT 1"
-    Row(Vec<(Expr, SmolStr)>),
+    Row(Vec<ProjCol>),
     /// Query node represents a single row, a concrete table or
     /// a sub-tree containing one or more operators.
     Query(QueryID),
@@ -110,7 +107,7 @@ impl Op {
     }
 
     #[inline]
-    pub fn proj(cols: Vec<(Expr, SmolStr)>, input: Op) -> Self {
+    pub fn proj(cols: Vec<ProjCol>, input: Op) -> Self {
         Op::Proj {
             cols,
             input: Box::new(input),
@@ -196,7 +193,7 @@ impl Op {
     }
 
     #[inline]
-    pub fn out_cols(&self) -> Option<&[(Expr, SmolStr)]> {
+    pub fn out_cols(&self) -> Option<&[ProjCol]> {
         let mut op = self;
         loop {
             match op {
@@ -218,7 +215,7 @@ impl Op {
     }
 
     #[inline]
-    pub fn out_cols_mut(&mut self) -> Option<&mut [(Expr, SmolStr)]> {
+    pub fn out_cols_mut(&mut self) -> Option<&mut [ProjCol]> {
         let mut op = self;
         loop {
             match op {
@@ -311,12 +308,12 @@ impl Op {
     #[inline]
     pub fn exprs(&self) -> SmallVec<[&Expr; 2]> {
         match self {
-            Op::Proj { cols, .. } => cols.iter().map(|(e, _)| e).collect(),
+            Op::Proj { cols, .. } => cols.iter().map(|c| &c.expr).collect(),
             Op::Filt { pred, .. } => pred.iter().collect(),
             Op::Aggr(aggr) => aggr
                 .groups
                 .iter()
-                .chain(aggr.proj.iter().map(|(e, _)| e))
+                .chain(aggr.proj.iter().map(|c| &c.expr))
                 .collect(),
             Op::Sort { items, .. } => items.iter().map(|si| &si.expr).collect(),
             Op::Limit { .. }
@@ -334,19 +331,19 @@ impl Op {
                 }
             },
             Op::JoinGraph(graph) => graph.exprs().into_iter().collect(),
-            Op::Row(row) => row.iter().map(|(e, _)| e).collect(),
+            Op::Row(row) => row.iter().map(|c| &c.expr).collect(),
         }
     }
 
     #[inline]
     pub fn exprs_mut(&mut self) -> SmallVec<[&mut Expr; 2]> {
         match self {
-            Op::Proj { cols, .. } => cols.iter_mut().map(|(e, _)| e).collect(),
+            Op::Proj { cols, .. } => cols.iter_mut().map(|c| &mut c.expr).collect(),
             Op::Filt { pred, .. } => pred.iter_mut().collect(),
             Op::Aggr(aggr) => aggr
                 .groups
                 .iter_mut()
-                .chain(aggr.proj.iter_mut().map(|(e, _)| e))
+                .chain(aggr.proj.iter_mut().map(|c| &mut c.expr))
                 .collect(),
             Op::Sort { items, .. } => items.iter_mut().map(|si| &mut si.expr).collect(),
             Op::Limit { .. }
@@ -364,7 +361,7 @@ impl Op {
                 }
             },
             Op::JoinGraph(graph) => graph.exprs_mut().into_iter().collect(),
-            Op::Row(row) => row.iter_mut().map(|(e, _)| e).collect(),
+            Op::Row(row) => row.iter_mut().map(|c| &mut c.expr).collect(),
         }
     }
 
@@ -417,7 +414,7 @@ pub enum AggrKind {
 #[derive(Debug, Clone)]
 pub struct Aggr {
     pub groups: Vec<Expr>,
-    pub proj: Vec<(Expr, SmolStr)>,
+    pub proj: Vec<ProjCol>,
     pub input: Op,
     // The filter applied after aggregation
     pub filt: Vec<Expr>,

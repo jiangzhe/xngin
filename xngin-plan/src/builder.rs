@@ -2,6 +2,7 @@
 pub(crate) mod tests;
 
 use crate::alias::QueryAliases;
+use crate::col::{AliasKind, ColGen, ProjCol};
 use crate::error::{Error, Result, ToResult};
 use crate::join::{JoinKind, JoinOp};
 use crate::lgc::LgcPlan;
@@ -14,7 +15,9 @@ use crate::setop::{SetopKind, SubqOp};
 use smol_str::SmolStr;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
-use xngin_expr::{self as expr, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind};
+use xngin_expr::{
+    self as expr, ColIndex, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind,
+};
 use xngin_frontend::ast::*;
 
 pub struct PlanBuilder<'a, C> {
@@ -45,7 +48,8 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
 
     #[inline]
     pub fn build_plan(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<LgcPlan> {
-        let (root, _) = self.build_subquery(with, query, false)?;
+        let mut colgen = ColGen::default();
+        let (root, _) = self.build_subquery(with, query, false, &mut colgen)?;
         Ok(LgcPlan {
             qry_set: self.qs,
             root,
@@ -59,19 +63,20 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         with: &'a Option<With<'a>>,
         query: &'a Query<'a>,
         transitive: bool,
+        colgen: &mut ColGen,
     ) -> Result<(QueryID, bool)> {
         // create new scope to collect aliases.
         self.scopes.push(Scope::new(transitive));
         if let Some(with) = with {
             // with clause is within current scope
-            self.setup_with(with, transitive)?
+            self.setup_with(with, transitive, colgen)?
         }
         let mut phc = PlaceholderCollector::new(transitive);
-        let (mut root, location) = self.setup_query(query, &mut phc)?;
+        let (mut root, location) = self.setup_query(query, &mut phc, colgen)?;
         // first setup subqueries
         for PlaceholderQuery { uid, kind, qry, .. } in phc.subqueries {
             let QueryExpr { with, query } = qry;
-            let (qry_id, correlated) = self.build_subquery(with, query, true)?;
+            let (qry_id, correlated) = self.build_subquery(with, query, true, colgen)?;
             let _ = root.walk_mut(&mut ReplaceSubq {
                 uid,
                 kind,
@@ -86,12 +91,14 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         }
         // then resolve correlated columns against outer scopes.
         let mut scope = self.scopes.pop().unwrap(); // won't fail
-        let cor_cols = self.setup_correlated_cols(&mut root, phc.idents)?;
+        let cor_cols = self.setup_correlated_cols(&mut root, phc.idents, colgen)?;
         // We can identify whether current subquery is correlated by check the size of cor_cols
         let correlated = !cor_cols.is_empty();
         scope.cor_cols = cor_cols;
-        let subquery = Subquery::new(root, scope, location);
-        let query_id = self.qs.insert(subquery);
+        let (query_id, subquery) = self.qs.insert_empty();
+        subquery.root = root;
+        subquery.scope = scope;
+        subquery.location = location;
         Ok((query_id, correlated))
     }
 
@@ -105,28 +112,30 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         &mut self,
         root: &mut Op,
         idents: Vec<(u32, Vec<SmolStr>, &'static str)>,
+        colgen: &mut ColGen,
     ) -> Result<Vec<expr::Expr>> {
         if idents.is_empty() {
             return Ok(vec![]);
         }
         let mut ccols = Vec::with_capacity(idents.len());
         for (uid, ident, location) in &idents {
-            let pair = match &ident[..] {
+            let e = match &ident[..] {
                 [schema_name, tbl_alias, col_alias] => self.find_correlated_schema_tbl_col(
                     schema_name,
                     tbl_alias,
                     col_alias,
                     location,
+                    colgen,
                 )?,
                 [tbl_alias, col_alias] => {
-                    self.find_correlated_tbl_col(tbl_alias, col_alias, location)?
+                    self.find_correlated_tbl_col(tbl_alias, col_alias, location, colgen)?
                 }
-                [col_alias] => self.find_correlated_col(col_alias, location)?,
+                [col_alias] => self.find_correlated_col(col_alias, location, colgen)?,
                 _ => return Err(Error::unknown_column_idents(ident, location)),
             };
-            ccols.push(pair.clone());
+            ccols.push(e.clone());
             // Replace placeholder with found correlated column
-            let _ = root.walk_mut(&mut ReplaceCorrelatedCol(*uid, pair));
+            let _ = root.walk_mut(&mut ReplaceCorrelatedCol(*uid, e));
         }
         Ok(ccols)
     }
@@ -138,6 +147,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         tbl_alias: &str,
         col_alias: &str,
         location: &'static str,
+        colgen: &mut ColGen,
     ) -> Result<expr::Expr> {
         let schema = self.catalog.find_schema_by_name(schema_name).must_ok()?;
         for s in self.scopes.iter_mut().rev() {
@@ -161,8 +171,10 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                     })?;
                     // mark cor_vars in the matched scope, so column pruning will also take them
                     // into consideration.
-                    s.cor_vars.insert((*query_id, idx as u32));
-                    return Ok(expr::Expr::correlated_col(*query_id, idx as u32));
+                    let idx = ColIndex::from(idx as u32);
+                    let ccol = colgen.gen_qry_col(*query_id, idx);
+                    s.cor_vars.insert((*query_id, idx));
+                    return Ok(ccol);
                 }
             }
             if !s.transitive {
@@ -183,6 +195,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         tbl_alias: &str,
         col_alias: &str,
         location: &'static str,
+        colgen: &mut ColGen,
     ) -> Result<expr::Expr> {
         for s in self.scopes.iter_mut().rev() {
             for (from_alias, query_id) in s.query_aliases.iter() {
@@ -194,8 +207,10 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                     })?;
                     // mark cor_vars in the matched scope, so column pruning will also take them
                     // into consideration.
-                    s.cor_vars.insert((*query_id, idx as u32));
-                    return Ok(expr::Expr::correlated_col(*query_id, idx as u32));
+                    let idx = ColIndex::from(idx as u32);
+                    let ccol = colgen.gen_qry_col(*query_id, idx);
+                    s.cor_vars.insert((*query_id, idx));
+                    return Ok(ccol);
                 }
             }
             if !s.transitive {
@@ -212,6 +227,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         &mut self,
         col_alias: &str,
         location: &'static str,
+        colgen: &mut ColGen,
     ) -> Result<expr::Expr> {
         for s in self.scopes.iter_mut().rev() {
             let mut matched = None;
@@ -221,8 +237,9 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                     if matched.is_some() {
                         return Err(Error::DuplicatedColumnAlias(col_alias.to_string()));
                     }
-                    let ccol = expr::Expr::correlated_col(*query_id, idx as u32);
-                    let cvar = (*query_id, idx as u32);
+                    let idx = ColIndex::from(idx as u32);
+                    let ccol = colgen.gen_qry_col(*query_id, idx);
+                    let cvar = (*query_id, idx);
                     matched = Some((ccol, cvar))
                 }
             }
@@ -246,7 +263,12 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
     ///
     /// if correlated is set to true, column can refer to sources in outer scopes.
     #[inline]
-    fn setup_with<'a>(&mut self, with: &With<'a>, allow_unknown_ident: bool) -> Result<()> {
+    fn setup_with<'a>(
+        &mut self,
+        with: &With<'a>,
+        allow_unknown_ident: bool,
+        colgen: &mut ColGen,
+    ) -> Result<()> {
         if with.recursive {
             return Err(Error::UnsupportedSqlSyntax("Recursive CTE".to_string()));
         }
@@ -260,7 +282,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
             // todo: handle correlated CTE
             let (query_id, _) = {
                 let QueryExpr { with, query } = &elem.query_expr;
-                self.build_subquery(with, query, allow_unknown_ident)?
+                self.build_subquery(with, query, allow_unknown_ident, colgen)?
             };
             if !elem.cols.is_empty() {
                 // as output columns aliases are explicit specified,
@@ -270,8 +292,10 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                     if elem.cols.len() != out_cols.len() {
                         return Err(Error::ColumnCountMismatch);
                     }
-                    for ((_, alias), new) in out_cols.iter_mut().zip(elem.cols.iter()) {
-                        *alias = new.to_lower();
+                    for (c, new) in out_cols.iter_mut().zip(elem.cols.iter()) {
+                        // update with new aliases defined by WITH statement.
+                        c.alias_kind = AliasKind::Explicit;
+                        c.alias = new.to_lower();
                     }
                     Ok(())
                 })??
@@ -290,6 +314,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         &mut self,
         query: &'a Query<'a>,
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<(Op, Location)> {
         match query {
             Query::Row(row) => {
@@ -303,16 +328,23 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                             ))
                         }
                         DerivedCol::Expr(expr, alias) => {
-                            let e = resolver.resolve_expr(expr, "field list", phc, false)?;
-                            cols.push((e.clone(), alias.to_lower()));
+                            let (e, _) =
+                                resolver.resolve_expr(expr, "field list", phc, false, colgen)?;
+                            let alias_kind = if alias.kind == IdentKind::AutoAlias {
+                                AliasKind::Implicit
+                            } else {
+                                AliasKind::Explicit
+                            };
+                            let alias = alias.to_lower();
+                            cols.push(ProjCol::new(e, alias, alias_kind));
                             // alias conflict is detected when referring, here no need to check duplication
                         }
                     }
                 }
                 Ok((Op::Row(cols), Location::Virtual))
             }
-            Query::Table(select_table) => self.setup_select_table(select_table, phc),
-            Query::Set(select_set) => self.setup_select_set(select_set, phc),
+            Query::Table(select_table) => self.setup_select_table(select_table, phc, colgen),
+            Query::Set(select_set) => self.setup_select_set(select_set, phc, colgen),
         }
     }
 
@@ -330,9 +362,10 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         &mut self,
         select_table: &'a SelectTable<'a>,
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<(Op, Location)> {
         // 1. translate FROM clause
-        let from = self.setup_table_refs(&select_table.from, phc)?;
+        let from = self.setup_table_refs(&select_table.from, phc, colgen)?;
         // After analyzing from clause, we have from aliases populated, then we need to make a copy
         // and pass it to other clauses, due to the limitation of borrowing on structual data.
         // We have to make sure the copy in sync with the source.
@@ -345,7 +378,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                 query_aliases,
             };
             let proj_cols =
-                self.setup_proj_cols(&resolver, &select_table.cols, "field list", phc)?;
+                self.setup_proj_cols(&resolver, &select_table.cols, "field list", phc, colgen)?;
             (proj_cols, select_table.q == SetQuantifier::Distinct)
         };
         // 3. translate WHERE clause
@@ -355,7 +388,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                 qs: &self.qs,
                 query_aliases,
             };
-            let pred = resolver.resolve_expr(filter, "where clause", phc, false)?;
+            let (pred, _) = resolver.resolve_expr(filter, "where clause", phc, false, colgen)?;
             Some(pred)
         } else {
             None
@@ -368,7 +401,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                 query_aliases,
                 proj_cols: &proj_cols,
             };
-            let gs = self.setup_group(&resolver, &select_table.group_by, phc)?;
+            let gs = self.setup_group(&resolver, &select_table.group_by, phc, colgen)?;
             let scalar_aggr = validate_proj_aggr(&proj_cols, &gs)?;
             (gs, scalar_aggr)
         } else {
@@ -376,7 +409,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         };
         if groups.is_empty() && !scalar_aggr && distinct {
             // convert DISTINCT to GROUP BY
-            groups.extend(proj_cols.iter().map(|(e, _)| e.clone()));
+            groups.extend(proj_cols.iter().map(|c| c.expr.clone()));
         }
         // 5. translate HAVING clause
         let having = if let Some(having) = &select_table.having {
@@ -392,7 +425,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                 proj_cols: &proj_cols,
                 group_cols,
             };
-            let having = resolver.resolve_expr(having, "having clause", phc, false)?;
+            let (having, _) = resolver.resolve_expr(having, "having clause", phc, false, colgen)?;
             validate_having(&proj_cols, &groups, scalar_aggr, &having)?;
             Some(having)
         } else {
@@ -407,7 +440,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                 proj_cols: &proj_cols,
                 group_cols: None,
             };
-            let order = self.setup_order(&resolver, &select_table.order_by, phc)?;
+            let order = self.setup_order(&resolver, &select_table.order_by, phc, colgen)?;
             validate_order(&groups, scalar_aggr, &order)?;
             order
         } else {
@@ -465,6 +498,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         &mut self,
         select_set: &'a SelectSet<'a>,
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<(Op, Location)> {
         let kind = match select_set.op {
             SetOp::Union => SetopKind::Union,
@@ -478,10 +512,10 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         };
         // todo: handle correlated subquery
         let (query_id, _) =
-            self.build_subquery(&None, &select_set.left, phc.allow_unknown_ident)?;
+            self.build_subquery(&None, &select_set.left, phc.allow_unknown_ident, colgen)?;
         let left = SubqOp::query(query_id);
         let (query_id, _) =
-            self.build_subquery(&None, &select_set.right, phc.allow_unknown_ident)?;
+            self.build_subquery(&None, &select_set.right, phc.allow_unknown_ident, colgen)?;
         let right = SubqOp::query(query_id);
         Ok((Op::setop(kind, q, left, right), Location::Intermediate))
     }
@@ -500,10 +534,11 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         resolver: &dyn ExprResolve,
         elems: &'a [OrderElement<'a>],
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<Vec<SortItem>> {
         let mut res = Vec::with_capacity(elems.len());
         for elem in elems {
-            let expr = resolver.resolve_expr(&elem.expr, "order by", phc, false)?;
+            let (expr, _) = resolver.resolve_expr(&elem.expr, "order by", phc, false, colgen)?;
             let item = SortItem {
                 expr,
                 desc: elem.desc,
@@ -544,7 +579,8 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         cols: &'a [DerivedCol<'a>],
         location: &'static str,
         phc: &mut PlaceholderCollector<'a>,
-    ) -> Result<Vec<(expr::Expr, SmolStr)>> {
+        colgen: &mut ColGen,
+    ) -> Result<Vec<ProjCol>> {
         let mut proj_cols = vec![];
         let mut wildcard = false; // multiple unqualified asterisk are not allowed in projection.
         for dc in cols {
@@ -558,12 +594,18 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                             wildcard = true;
                         }
                     }
-                    let es = resolver.resolve_asterisk(q, location)?;
+                    let es = resolver.resolve_asterisk(q, location, colgen)?;
                     proj_cols.extend(es);
                 }
                 DerivedCol::Expr(e, alias) => {
-                    let e = resolver.resolve_expr(e, location, phc, false)?;
-                    proj_cols.push((e, alias.to_lower()))
+                    let (e, _) = resolver.resolve_expr(e, location, phc, false, colgen)?;
+                    let alias_kind = if alias.kind == IdentKind::AutoAlias {
+                        AliasKind::Implicit
+                    } else {
+                        AliasKind::Explicit
+                    };
+                    let alias = alias.to_lower();
+                    proj_cols.push(ProjCol::new(e, alias, alias_kind));
                 }
             }
         }
@@ -588,10 +630,11 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         &mut self,
         table_refs: &'a [TableRef<'a>],
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<Vec<JoinOp>> {
         let mut jos = vec![];
         for tr in table_refs {
-            let (jo, _) = self.setup_table_ref(tr, phc)?;
+            let (jo, _) = self.setup_table_ref(tr, phc, colgen)?;
             jos.push(jo)
         }
         Ok(jos)
@@ -603,13 +646,15 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         &mut self,
         table_ref: &'a TableRef<'a>,
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<(JoinOp, Vec<SmolStr>)> {
         let (plan, aliases) = match table_ref {
-            TableRef::Primitive(tp) => self.setup_table_primitive(tp, phc)?,
+            TableRef::Primitive(tp) => self.setup_table_primitive(tp, phc, colgen)?,
             TableRef::Joined(tj) => match tj.as_ref() {
                 TableJoin::Cross(cj) => {
-                    let (left, mut aliases) = self.setup_table_ref(&cj.left, phc)?;
-                    let (right, right_aliases) = self.setup_table_primitive(&cj.right, phc)?;
+                    let (left, mut aliases) = self.setup_table_ref(&cj.left, phc, colgen)?;
+                    let (right, right_aliases) =
+                        self.setup_table_primitive(&cj.right, phc, colgen)?;
                     aliases.extend(right_aliases);
                     (JoinOp::cross(vec![left, right]), aliases)
                 }
@@ -630,8 +675,9 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                     ));
                 }
                 TableJoin::Qualified(qj) => {
-                    let (left, mut left_aliases) = self.setup_table_ref(&qj.left, phc)?;
-                    let (right, right_aliases) = self.setup_table_primitive(&qj.right, phc)?;
+                    let (left, mut left_aliases) = self.setup_table_ref(&qj.left, phc, colgen)?;
+                    let (right, right_aliases) =
+                        self.setup_table_primitive(&qj.right, phc, colgen)?;
                     let (cond, aliases) = if let Some(cond) = &qj.cond {
                         match cond {
                             JoinCondition::NamedCols(ncs) => {
@@ -670,8 +716,9 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                                                     col_alias.to_string(),
                                                 ));
                                             }
-                                            left_col =
-                                                Some(expr::Expr::query_col(*query_id, idx as u32));
+                                            let idx = ColIndex::from(idx as u32);
+                                            let col = colgen.gen_qry_col(*query_id, idx);
+                                            left_col = Some(col);
                                         }
                                     }
                                     if left_col.is_none() {
@@ -688,8 +735,9 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                                                     col_alias.to_string(),
                                                 ));
                                             }
-                                            right_col =
-                                                Some(expr::Expr::query_col(*query_id, idx as u32));
+                                            let idx = ColIndex::from(idx as u32);
+                                            let col = colgen.gen_qry_col(*query_id, idx);
+                                            right_col = Some(col);
                                         }
                                     }
                                     if right_col.is_none() {
@@ -717,8 +765,13 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                                     qs: &self.qs,
                                     query_aliases: &from_aliases,
                                 };
-                                let pred =
-                                    resolver.resolve_expr(e, "join condition", phc, false)?;
+                                let (pred, _) = resolver.resolve_expr(
+                                    e,
+                                    "join condition",
+                                    phc,
+                                    false,
+                                    colgen,
+                                )?;
                                 (pred.into_conj(), left_aliases)
                             }
                         }
@@ -756,6 +809,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         &mut self,
         tp: &TablePrimitive<'a>,
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<(JoinOp, Vec<SmolStr>)> {
         let (plan, alias) = match tp {
             TablePrimitive::Named(tn, alias) => {
@@ -782,7 +836,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                             )));
                         };
                     // now manually construct a subquery to expose all columns in the table
-                    self.table_to_subquery(schema_id, table_id)?
+                    self.table_to_subquery(schema_id, table_id, colgen)?
                 } else if let Some(query_id) = self.find_cte(&tbl_name) {
                     // schema not present, first check CTEs
                     let query_id = *query_id;
@@ -794,7 +848,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                     .catalog
                     .find_table_by_name(&self.default_schema, &tbl_name)
                 {
-                    self.table_to_subquery(t.schema_id, t.id)?
+                    self.table_to_subquery(t.schema_id, t.id, colgen)?
                 } else {
                     return Err(Error::TableNotExists(tbl_name.to_string()));
                 };
@@ -811,7 +865,8 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
                 // We need to inherit allow_unknown_ident flag in phc
                 let QueryExpr { with, query } = subq.as_ref();
                 // todo: handle correlated derived table in subquery
-                let (query_id, _) = self.build_subquery(with, query, phc.allow_unknown_ident)?;
+                let (query_id, _) =
+                    self.build_subquery(with, query, phc.allow_unknown_ident, colgen)?;
                 let alias = alias.to_lower();
                 self.scopes
                     .curr_scope_mut()
@@ -829,10 +884,11 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         resolver: &dyn ExprResolve,
         group_by: &'a [Expr<'a>],
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<Vec<expr::Expr>> {
         let mut items = Vec::with_capacity(group_by.len());
         for g in group_by {
-            let e = resolver.resolve_expr(g, "group by", phc, false)?;
+            let (e, _) = resolver.resolve_expr(g, "group by", phc, false, colgen)?;
             if e.contains_aggr_func() {
                 return Err(Error::InvalidUsageOfAggrFunc);
             }
@@ -843,17 +899,26 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
     }
 
     #[inline]
-    fn table_to_subquery(&mut self, schema_id: SchemaID, table_id: TableID) -> Result<QueryID> {
+    fn table_to_subquery(
+        &mut self,
+        schema_id: SchemaID,
+        table_id: TableID,
+        colgen: &mut ColGen,
+    ) -> Result<QueryID> {
         let all_cols = self.catalog.all_columns_in_table(&table_id);
+        // placeholder for table query.
+        let (qry_id, subquery) = self.qs.insert_empty();
         let mut proj_cols = Vec::with_capacity(all_cols.len());
         for c in all_cols {
-            proj_cols.push((expr::Expr::table_col(table_id, c.idx as u32, c.pty), c.name))
+            let idx = ColIndex::from(c.idx as u32);
+            let col = colgen.gen_tbl_col(qry_id, table_id, idx, c.pty, c.name.clone());
+            proj_cols.push(ProjCol::implicit_alias(col, c.name))
         }
         let proj = Op::proj(proj_cols, Op::Table(schema_id, table_id));
+        subquery.root = proj;
         // todo: currently we assume all tables are located on disk.
-        let subquery = Subquery::new(proj, Scope::default(), Location::Disk);
-        let query_id = self.qs.insert(subquery);
-        Ok(query_id)
+        subquery.location = Location::Disk;
+        Ok(qry_id)
     }
 
     // CTE is like scoped view, we need to search from current scope until top
@@ -864,6 +929,22 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
             .rev()
             .find_map(|s| s.cte_aliases.get(alias))
     }
+
+    // Increment cid and return it.
+    // #[inline]
+    // fn next_cid(&self) -> GlobalID {
+    //     let cid = self.cid.get().next();
+    //     self.cid.set(cid);
+    //     cid
+    // }
+
+    // Increment tid and return it.
+    // #[inline]
+    // fn next_tid(&mut self) -> GlobalID {
+    //     let tid = self.tid.get().next();
+    //     self.tid.set(tid);
+    //     tid
+    // }
 }
 
 /// Validate proj and aggr.
@@ -873,10 +954,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
 /// 3. proj can have constant values, can also eliminate group items in aggr.
 /// Returns true if the aggregation is scalar aggregation.
 #[inline]
-fn validate_proj_aggr(
-    proj_cols: &[(expr::Expr, SmolStr)],
-    aggr_groups: &[expr::Expr],
-) -> Result<bool> {
+fn validate_proj_aggr(proj_cols: &[ProjCol], aggr_groups: &[expr::Expr]) -> Result<bool> {
     // Rule 1
     if aggr_groups.iter().any(|e| e.contains_aggr_func()) {
         return Err(Error::AggrFuncInGroupBy);
@@ -892,17 +970,17 @@ fn validate_proj_aggr(
     let mut proj_cols_outside_aggr = Vec::new();
     let mut proj_groups = Vec::new();
     let mut proj_has_aggr = false;
-    for (e, _) in proj_cols {
+    for c in proj_cols {
         // collect column outside aggr
-        let (cols, ag) = e.collect_non_aggr_cols();
+        let (cols, ag) = c.expr.collect_non_aggr_cols();
         if ag {
             proj_cols_outside_aggr.extend(cols)
         } else {
             // constants can also be present in SELECT list
-            let mut new_e = e.clone();
+            let mut new_e = c.expr.clone();
             simplify_nested(&mut new_e, NullCoalesce::Null)?;
             if !new_e.is_const() {
-                proj_groups.push(e);
+                proj_groups.push(&c.expr);
             }
         }
         proj_has_aggr |= ag;
@@ -940,7 +1018,7 @@ fn validate_proj_aggr(
 /// 3. For flat projection, aggr functions are disallowed.
 #[inline]
 fn validate_having(
-    proj_cols: &[(expr::Expr, SmolStr)],
+    proj_cols: &[ProjCol],
     aggr_groups: &[expr::Expr],
     scalar_aggr: bool,
     having: &expr::Expr,
@@ -969,7 +1047,7 @@ fn validate_having(
     }
     // columns must match projected expressions
     for c in non_aggr_cols {
-        if proj_cols.iter().all(|(e, _)| !e.is_col(&c)) {
+        if proj_cols.iter().all(|pc| !pc.expr.is_col(&c)) {
             // todo: notify column name
             return Err(Error::UnknownColumn("Unknown column".to_string()));
         }
@@ -1014,18 +1092,22 @@ fn validate_order(aggr_groups: &[expr::Expr], scalar_aggr: bool, order: &[SortIt
 pub struct ResolveNone;
 
 impl ExprResolve for ResolveNone {
+    #[inline]
     fn catalog(&self) -> Option<&dyn QueryCatalog> {
         None
     }
 
+    #[inline]
     fn find_query(&self, _tbl_alias: &str) -> Option<(QueryID, &Subquery)> {
         None
     }
 
+    #[inline]
     fn get_query(&self, _query_id: &QueryID) -> Option<&Subquery> {
         None
     }
 
+    #[inline]
     fn queries(&self) -> Vec<(SmolStr, QueryID)> {
         vec![]
     }
@@ -1039,20 +1121,24 @@ pub struct ResolveProjOrFilt<'a, C> {
 }
 
 impl<'a, C: QueryCatalog> ExprResolve for ResolveProjOrFilt<'a, C> {
+    #[inline]
     fn catalog(&self) -> Option<&dyn QueryCatalog> {
         Some(self.catalog)
     }
 
+    #[inline]
     fn find_query(&self, tbl_alias: &str) -> Option<(QueryID, &Subquery)> {
         self.query_aliases
             .get(tbl_alias)
             .and_then(|query_id| self.qs.get(query_id).map(|subq| (*query_id, subq)))
     }
 
+    #[inline]
     fn get_query(&self, query_id: &QueryID) -> Option<&Subquery> {
         self.qs.get(query_id)
     }
 
+    #[inline]
     fn queries(&self) -> Vec<(SmolStr, QueryID)> {
         self.query_aliases
             .iter()
@@ -1066,24 +1152,28 @@ pub struct ResolveGroup<'a> {
     catalog: &'a dyn QueryCatalog,
     qs: &'a QuerySet,
     query_aliases: &'a QueryAliases,
-    proj_cols: &'a [(expr::Expr, SmolStr)],
+    proj_cols: &'a [ProjCol],
 }
 
 impl ExprResolve for ResolveGroup<'_> {
+    #[inline]
     fn catalog(&self) -> Option<&dyn QueryCatalog> {
         Some(self.catalog)
     }
 
+    #[inline]
     fn find_query(&self, tbl_alias: &str) -> Option<(QueryID, &Subquery)> {
         self.query_aliases
             .get(tbl_alias)
             .and_then(|query_id| self.qs.get(query_id).map(|subq| (*query_id, subq)))
     }
 
+    #[inline]
     fn get_query(&self, query_id: &QueryID) -> Option<&Subquery> {
         self.qs.get(query_id)
     }
 
+    #[inline]
     fn queries(&self) -> Vec<(SmolStr, QueryID)> {
         self.query_aliases
             .iter()
@@ -1092,13 +1182,18 @@ impl ExprResolve for ResolveGroup<'_> {
     }
 
     /// try to match proj alias first.
-    fn find_col(&self, col_alias: SmolStr, _location: &str) -> Result<Resolution> {
-        for (e, a) in self.proj_cols {
-            if a == &col_alias {
-                return Ok(Resolution::Expr(e.clone()));
+    fn find_col(
+        &self,
+        col_alias: SmolStr,
+        _location: &str,
+        colgen: &mut ColGen,
+    ) -> Result<Resolution> {
+        for c in self.proj_cols {
+            if c.alias_kind != AliasKind::None && c.alias == col_alias {
+                return Ok(Resolution::Expr(c.expr.clone(), Some(col_alias)));
             }
         }
-        self.find_col_by_default(col_alias)
+        self.find_col_by_default(col_alias, colgen)
     }
 }
 
@@ -1109,25 +1204,29 @@ pub struct ResolveHavingOrOrder<'a> {
     catalog: &'a dyn QueryCatalog,
     qs: &'a QuerySet,
     query_aliases: &'a QueryAliases,
-    proj_cols: &'a [(expr::Expr, SmolStr)],
+    proj_cols: &'a [ProjCol],
     group_cols: Option<&'a [expr::Expr]>,
 }
 
 impl ExprResolve for ResolveHavingOrOrder<'_> {
+    #[inline]
     fn catalog(&self) -> Option<&dyn QueryCatalog> {
         Some(self.catalog)
     }
 
+    #[inline]
     fn find_query(&self, tbl_alias: &str) -> Option<(QueryID, &Subquery)> {
         self.query_aliases
             .get(tbl_alias)
             .and_then(|query_id| self.qs.get(query_id).map(|subq| (*query_id, subq)))
     }
 
+    #[inline]
     fn get_query(&self, query_id: &QueryID) -> Option<&Subquery> {
         self.qs.get(query_id)
     }
 
+    #[inline]
     fn queries(&self) -> Vec<(SmolStr, QueryID)> {
         self.query_aliases
             .iter()
@@ -1135,11 +1234,17 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
             .collect()
     }
 
-    fn find_col(&self, col_alias: SmolStr, _location: &str) -> Result<Resolution> {
+    #[inline]
+    fn find_col(
+        &self,
+        col_alias: SmolStr,
+        _location: &str,
+        colgen: &mut ColGen,
+    ) -> Result<Resolution> {
         // proj alias has higher priority
-        for (e, a) in self.proj_cols {
-            if a == &col_alias {
-                return Ok(Resolution::Expr(e.clone()));
+        for c in self.proj_cols {
+            if c.alias_kind != AliasKind::None && c.alias == col_alias {
+                return Ok(Resolution::Expr(c.expr.clone(), Some(col_alias)));
             }
         }
         // if we find no match in proj alias,
@@ -1149,29 +1254,31 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
         for (_, query_id) in self.query_aliases.iter() {
             let subquery = self.qs.get(query_id).must_ok()?;
             if let Some(idx) = subquery.position_out_col(&col_alias) {
-                let e = expr::Expr::query_col(*query_id, idx as u32);
+                let idx = ColIndex::from(idx as u32);
                 // check existence in proj aliases
-                for (pe, _) in self.proj_cols {
-                    if pe == &e {
-                        return Ok(Resolution::Expr(e));
+                for c in self.proj_cols {
+                    if expr_match_qry_col(&c.expr, *query_id, idx) {
+                        return Ok(Resolution::Expr(c.expr.clone(), Some(col_alias)));
                     }
                 }
                 // then try group cols if exists, this is only for HAVING case,
                 // which also respect GROUP BY clause for search
                 if let Some(group_cols) = self.group_cols {
                     for ge in group_cols {
-                        if ge == &e {
-                            return Ok(Resolution::Expr(e));
+                        if expr_match_qry_col(ge, *query_id, idx) {
+                            return Ok(Resolution::Expr(ge.clone(), Some(col_alias)));
                         }
                     }
                 }
                 // not exists, save to check uniqueness
-                matched.push(e);
+                // in this case we need to assign unique global id.
+                let col = colgen.gen_qry_col(*query_id, idx);
+                matched.push(col);
             }
         }
         match matched.len() {
             0 => Ok(Resolution::Unknown(vec![col_alias])),
-            1 => Ok(Resolution::Expr(matched.pop().unwrap())),
+            1 => Ok(Resolution::Expr(matched.pop().unwrap(), Some(col_alias))),
             _ => Err(Error::DuplicatedColumnAlias(col_alias.to_string())),
         }
     }
@@ -1185,11 +1292,23 @@ impl OpMutVisitor for ReplaceCorrelatedCol {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
         for e in op.exprs_mut() {
-            if let expr::ExprKind::Plhd(Plhd::Ident(uid)) = &e.kind {
-                if *uid == self.0 {
-                    *e = self.1.clone();
-                }
+            e.walk_mut(self)?
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+impl ExprMutVisitor for ReplaceCorrelatedCol {
+    type Cont = ();
+    type Break = ();
+    #[inline]
+    fn enter(&mut self, e: &mut expr::Expr) -> ControlFlow<()> {
+        match &e.kind {
+            expr::ExprKind::Plhd(Plhd::Ident(uid)) if *uid == self.0 => {
+                *e = self.1.clone();
+                return ControlFlow::Break(());
             }
+            _ => (),
         }
         ControlFlow::Continue(())
     }
@@ -1232,5 +1351,17 @@ impl ExprMutVisitor for ReplaceSubq {
             _ => (),
         }
         ControlFlow::Continue(())
+    }
+}
+
+#[inline]
+fn expr_match_qry_col(expr: &expr::Expr, query_id: QueryID, col_idx: ColIndex) -> bool {
+    match &expr.kind {
+        expr::ExprKind::Col(expr::Col {
+            kind: expr::ColKind::QueryCol(qry_id),
+            idx,
+            ..
+        }) => *qry_id == query_id && *idx == col_idx,
+        _ => false,
     }
 }

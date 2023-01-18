@@ -115,7 +115,7 @@ mod tests {
     use xngin_compute::eval::QueryEvalPlan;
     use xngin_datatype::PreciseType;
     use xngin_expr::infer::fix_rec;
-    use xngin_expr::{Const, Expr, FuncKind, QueryID};
+    use xngin_expr::{ColIndex, Const, Expr, FuncKind, GlobalID, QueryID};
     use xngin_storage::attr::Attr;
 
     #[test]
@@ -124,7 +124,7 @@ mod tests {
         let attr1 = Attr::from((0..size).into_iter().map(|i| i as i64));
         let attr2 = attr1.to_owned();
         let block = Block::new(1024, vec![attr1, attr2]);
-        let col1 = Expr::query_col(QueryID::from(0), 0);
+        let col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
         // select c1 + 1
         let es = vec![Expr::func(
             FuncKind::Add,

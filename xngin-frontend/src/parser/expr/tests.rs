@@ -8,6 +8,15 @@ macro_rules! col {
     }
 }
 
+macro_rules! aliased_expr {
+    ( $expr:expr => $lit:literal ) => {
+        DerivedCol::new($expr, Ident::regular($lit))
+    };
+    ( $expr:expr , $lit:literal ) => {
+        DerivedCol::new($expr, Ident::auto_alias($lit))
+    };
+}
+
 #[test]
 fn test_parse_column_ref() -> anyhow::Result<()> {
     for c in vec![
@@ -23,22 +32,22 @@ fn test_parse_column_ref() -> anyhow::Result<()> {
         ),
         (
             "\"a\". b .c",
-            Expr::column_ref(vec![Ident::Quoted("a"), "b".into(), "c".into()]),
+            Expr::column_ref(vec![Ident::quoted("a"), "b".into(), "c".into()]),
         ),
         (
             "\"a\". b .\"c\"",
-            Expr::column_ref(vec![Ident::Quoted("a"), "b".into(), Ident::Quoted("c")]),
+            Expr::column_ref(vec![Ident::quoted("a"), "b".into(), Ident::quoted("c")]),
         ),
         (
             "\"a\". \"b\" .c",
-            Expr::column_ref(vec![Ident::Quoted("a"), Ident::Quoted("b"), "c".into()]),
+            Expr::column_ref(vec![Ident::quoted("a"), Ident::quoted("b"), "c".into()]),
         ),
         (
             "\"a\". \"b\" .\"c\"",
             Expr::column_ref(vec![
-                Ident::Quoted("a"),
-                Ident::Quoted("b"),
-                Ident::Quoted("c"),
+                Ident::quoted("a"),
+                Ident::quoted("b"),
+                Ident::quoted("c"),
             ]),
         ),
     ] {
@@ -204,27 +213,6 @@ fn test_parse_aggr_func() -> anyhow::Result<()> {
         ("avg(a)", Expr::avg(Expr::ColumnRef(vec!["a".into()]))),
         ("min(a)", Expr::min(Expr::ColumnRef(vec!["a".into()]))),
         ("max(a)", Expr::max(Expr::ColumnRef(vec!["a".into()]))),
-    ] {
-        check_expr(c)?;
-    }
-    Ok(())
-}
-
-#[test]
-fn test_parse_func() -> anyhow::Result<()> {
-    for c in vec![
-        ("my_func()", Expr::func(vec!["my_func".into()], vec![])),
-        (
-            "my_func(1)",
-            Expr::func(vec!["my_func".into()], vec![Expr::numeric_lit("1")]),
-        ),
-        (
-            "my_func(a, 1)",
-            Expr::func(
-                vec!["my_func".into()],
-                vec![Expr::column_ref(vec!["a".into()]), Expr::numeric_lit("1")],
-            ),
-        ),
     ] {
         check_expr(c)?;
     }
@@ -419,7 +407,7 @@ fn test_parse_case_when() -> anyhow::Result<()> {
         (
             "case 1 when 2 then 3 end",
             Expr::case_when(
-                Some(Expr::numeric_lit("1")),
+                Some(Box::new(Expr::numeric_lit("1"))),
                 vec![(Expr::numeric_lit("2"), Expr::numeric_lit("3"))],
                 None,
             ),
@@ -427,20 +415,20 @@ fn test_parse_case_when() -> anyhow::Result<()> {
         (
             "case 1 when 2 then 3 else 4 end",
             Expr::case_when(
-                Some(Expr::numeric_lit("1")),
+                Some(Box::new(Expr::numeric_lit("1"))),
                 vec![(Expr::numeric_lit("2"), Expr::numeric_lit("3"))],
-                Some(Expr::numeric_lit("4")),
+                Some(Box::new(Expr::numeric_lit("4"))),
             ),
         ),
         (
             "case 1 when 2 then 3 when 4 then 5 else 6 end",
             Expr::case_when(
-                Some(Expr::numeric_lit("1")),
+                Some(Box::new(Expr::numeric_lit("1"))),
                 vec![
                     (Expr::numeric_lit("2"), Expr::numeric_lit("3")),
                     (Expr::numeric_lit("4"), Expr::numeric_lit("5")),
                 ],
-                Some(Expr::numeric_lit("6")),
+                Some(Box::new(Expr::numeric_lit("6"))),
             ),
         ),
         (
@@ -454,11 +442,11 @@ fn test_parse_case_when() -> anyhow::Result<()> {
         (
             "case case when 1 then 2 end when 3 then 4 end",
             Expr::case_when(
-                Some(Expr::case_when(
+                Some(Box::new(Expr::case_when(
                     None,
                     vec![(Expr::numeric_lit("1"), Expr::numeric_lit("2"))],
                     None,
-                )),
+                ))),
                 vec![(Expr::numeric_lit("3"), Expr::numeric_lit("4"))],
                 None,
             ),
@@ -592,14 +580,14 @@ fn test_parse_scalar_subquery() -> anyhow::Result<()> {
             "(select 1)",
             Expr::scalar_subquery(QueryExpr {
                 with: None,
-                query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
             }),
         ),
         (
             "(select distinct 1)",
             Expr::scalar_subquery(QueryExpr {
                 with: None,
-                query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
             }),
         ),
         (
@@ -608,7 +596,7 @@ fn test_parse_scalar_subquery() -> anyhow::Result<()> {
                 with: None,
                 query: Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")],
+                    cols: vec![aliased_expr!(Expr::numeric_lit("1"), "1")],
                     from: vec![TableRef::primitive(TablePrimitive::Named("a".into(), None))],
                     filter: None,
                     group_by: vec![],
@@ -624,10 +612,7 @@ fn test_parse_scalar_subquery() -> anyhow::Result<()> {
                 with: None,
                 query: Query::table(SelectTable {
                     q: SetQuantifier::Distinct,
-                    cols: vec![DerivedCol::auto_alias(
-                        Expr::column_ref(vec!["c0".into()]),
-                        "c0",
-                    )],
+                    cols: vec![aliased_expr!(Expr::column_ref(vec!["c0".into()]), "c0")],
                     from: vec![TableRef::primitive(TablePrimitive::Named("a".into(), None))],
                     filter: None,
                     group_by: vec![],
@@ -643,7 +628,7 @@ fn test_parse_scalar_subquery() -> anyhow::Result<()> {
                 Expr::numeric_lit("1"),
                 Expr::scalar_subquery(QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 }),
             ),
         ),
@@ -660,7 +645,7 @@ fn test_parse_exists_subquery() -> anyhow::Result<()> {
             "exists(select 1)",
             Expr::exists(QueryExpr {
                 with: None,
-                query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
             }),
         ),
         (
@@ -669,7 +654,7 @@ fn test_parse_exists_subquery() -> anyhow::Result<()> {
                 with: None,
                 query: Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")],
+                    cols: vec![aliased_expr!(Expr::numeric_lit("1"), "1")],
                     from: vec![TableRef::primitive(TablePrimitive::Named("a".into(), None))],
                     filter: None,
                     group_by: vec![],
@@ -685,7 +670,7 @@ fn test_parse_exists_subquery() -> anyhow::Result<()> {
                 with: None,
                 query: Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")],
+                    cols: vec![aliased_expr!(Expr::numeric_lit("1"), "1")],
                     from: vec![TableRef::primitive(TablePrimitive::Named("a".into(), None))],
                     filter: Some(Expr::cmp_eq(col!("c0"), col!("c1"))),
                     group_by: vec![],
@@ -699,7 +684,7 @@ fn test_parse_exists_subquery() -> anyhow::Result<()> {
             "not exists (select 1)",
             Expr::logical_not(Expr::exists(QueryExpr {
                 with: None,
-                query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
             })),
         ),
     ] {
@@ -771,7 +756,7 @@ fn test_parse_quant_cmp() -> anyhow::Result<()> {
                 Expr::numeric_lit("1"),
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
         ),
@@ -783,7 +768,7 @@ fn test_parse_quant_cmp() -> anyhow::Result<()> {
                 Expr::numeric_lit("1"),
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
         ),
@@ -795,7 +780,7 @@ fn test_parse_quant_cmp() -> anyhow::Result<()> {
                 Expr::numeric_lit("1"),
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
         ),
@@ -807,7 +792,7 @@ fn test_parse_quant_cmp() -> anyhow::Result<()> {
                 Expr::numeric_lit("1"),
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
         ),
@@ -819,7 +804,7 @@ fn test_parse_quant_cmp() -> anyhow::Result<()> {
                 Expr::numeric_lit("1"),
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
         ),
@@ -831,7 +816,7 @@ fn test_parse_quant_cmp() -> anyhow::Result<()> {
                 Expr::numeric_lit("1"),
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
         ),
@@ -887,7 +872,7 @@ fn test_parse_in() -> anyhow::Result<()> {
                 Expr::column_ref(vec!["a".into()]),
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
         ),
@@ -897,7 +882,7 @@ fn test_parse_in() -> anyhow::Result<()> {
                 Expr::column_ref(vec!["a".into()]),
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
         ),
@@ -909,10 +894,7 @@ fn test_parse_in() -> anyhow::Result<()> {
                     with: None,
                     query: Query::table(SelectTable {
                         q: SetQuantifier::All,
-                        cols: vec![DerivedCol::auto_alias(
-                            Expr::column_ref(vec!["b".into()]),
-                            "b",
-                        )],
+                        cols: vec![aliased_expr!(Expr::column_ref(vec!["b".into()]), "b")],
                         from: vec![TableRef::primitive(TablePrimitive::Named("t".into(), None))],
                         filter: None,
                         group_by: vec![],
@@ -934,42 +916,57 @@ fn test_parse_builtin_func() -> anyhow::Result<()> {
     for c in vec![
         (
             "extract(year from a)",
-            Expr::builtin(Builtin::Extract(
-                DatetimeUnit::Year,
-                Box::new(Expr::column_ref(vec!["a".into()])),
-            )),
+            Expr::func(
+                FuncType::Extract,
+                vec![
+                    Expr::FuncArg(ConstArg::DatetimeUnit(DatetimeUnit::Year)),
+                    Expr::column_ref(vec!["a".into()]),
+                ],
+            ),
         ),
         (
             "substring(a, 1)",
-            Expr::builtin(Builtin::Substring(
-                Box::new(Expr::column_ref(vec!["a".into()])),
-                Box::new(Expr::numeric_lit("1")),
-                None,
-            )),
+            Expr::func(
+                FuncType::Substring,
+                vec![
+                    Expr::column_ref(vec!["a".into()]),
+                    Expr::numeric_lit("1"),
+                    Expr::FuncArg(ConstArg::None),
+                ],
+            ),
         ),
         (
             "substring(a, 1, 3)",
-            Expr::builtin(Builtin::Substring(
-                Box::new(Expr::column_ref(vec!["a".into()])),
-                Box::new(Expr::numeric_lit("1")),
-                Some(Box::new(Expr::numeric_lit("3"))),
-            )),
+            Expr::func(
+                FuncType::Substring,
+                vec![
+                    Expr::column_ref(vec!["a".into()]),
+                    Expr::numeric_lit("1"),
+                    Expr::numeric_lit("3"),
+                ],
+            ),
         ),
         (
             "substring(a from 1)",
-            Expr::builtin(Builtin::Substring(
-                Box::new(Expr::column_ref(vec!["a".into()])),
-                Box::new(Expr::numeric_lit("1")),
-                None,
-            )),
+            Expr::func(
+                FuncType::Substring,
+                vec![
+                    Expr::column_ref(vec!["a".into()]),
+                    Expr::numeric_lit("1"),
+                    Expr::FuncArg(ConstArg::None),
+                ],
+            ),
         ),
         (
             "substring(a from 1 for 3)",
-            Expr::builtin(Builtin::Substring(
-                Box::new(Expr::column_ref(vec!["a".into()])),
-                Box::new(Expr::numeric_lit("1")),
-                Some(Box::new(Expr::numeric_lit("3"))),
-            )),
+            Expr::func(
+                FuncType::Substring,
+                vec![
+                    Expr::column_ref(vec!["a".into()]),
+                    Expr::numeric_lit("1"),
+                    Expr::numeric_lit("3"),
+                ],
+            ),
         ),
     ] {
         check_expr(c)?;

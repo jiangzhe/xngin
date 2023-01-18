@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use xngin_datatype::PreciseType;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::infer::{fix_bools, fix_rec};
-use xngin_expr::{Expr, QueryID};
+use xngin_expr::{ColIndex, Expr, QueryID};
 
 /// Fix types of all expressions.
 /// In initialization of logical plan, all type info, except table columns, are left as empty.
@@ -22,7 +22,7 @@ pub fn type_fix(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
 fn fix_type(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
-    types: &mut HashMap<(QueryID, u32), PreciseType>,
+    types: &mut HashMap<(QueryID, ColIndex), PreciseType>,
 ) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
         let mut ft = FixType { qry_set, types };
@@ -32,7 +32,7 @@ fn fix_type(
 
 struct FixType<'a> {
     qry_set: &'a mut QuerySet,
-    types: &'a mut HashMap<(QueryID, u32), PreciseType>,
+    types: &'a mut HashMap<(QueryID, ColIndex), PreciseType>,
 }
 
 impl FixType<'_> {
@@ -54,11 +54,12 @@ impl OpMutVisitor for FixType<'_> {
                 fix_type(self.qry_set, qry_id, self.types).branch()?;
                 // then populate type map with out columns
                 if let Some(subq) = self.qry_set.get(&qry_id) {
-                    for (i, (e, _)) in subq.out_cols().iter().enumerate() {
-                        if e.ty.is_unknown() {
+                    for (i, c) in subq.out_cols().iter().enumerate() {
+                        if c.expr.ty.is_unknown() {
                             return ControlFlow::Break(Error::TypeInferFailed);
                         } else {
-                            self.types.insert((qry_id, i as u32), e.ty);
+                            self.types
+                                .insert((qry_id, ColIndex::from(i as u32)), c.expr.ty);
                         }
                     }
                 }
@@ -94,8 +95,8 @@ impl OpMutVisitor for FixType<'_> {
                 for e in groups.iter_mut() {
                     self.fix(e).branch()?
                 }
-                for (e, _) in proj.iter_mut() {
-                    self.fix(e).branch()?
+                for c in proj.iter_mut() {
+                    self.fix(&mut c.expr).branch()?
                 }
                 for e in filt.iter_mut() {
                     self.fix(e).branch()?
@@ -516,7 +517,7 @@ mod tests {
     #[inline]
     fn extract_proj_types(p: &LgcPlan) -> Vec<PreciseType> {
         if let Some(subq) = p.root_query() {
-            subq.out_cols().iter().map(|(e, _)| e.ty).collect()
+            subq.out_cols().iter().map(|c| c.expr.ty).collect()
         } else {
             vec![]
         }
@@ -527,7 +528,7 @@ mod tests {
         if let Some(subq) = p.root_query() {
             subq.out_cols()
                 .iter()
-                .map(|(e, _)| e.args().into_iter().map(|arg| arg.ty).collect())
+                .map(|c| c.expr.args().into_iter().map(|arg| arg.ty).collect())
                 .collect()
         } else {
             vec![]
