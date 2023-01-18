@@ -3,7 +3,7 @@ use crate::eval::{Builder, Eval, EvalRef};
 
 use std::mem;
 use xngin_catalog::TableID;
-use xngin_expr::{DataSourceID, Expr, QueryID};
+use xngin_expr::{ColIndex, DataSourceID, Expr, QueryID};
 use xngin_storage::attr::Attr;
 use xngin_storage::block::Block;
 use xngin_storage::sel::Sel;
@@ -30,7 +30,7 @@ pub type QueryEvalPlan = EvalPlan<QueryID>;
 /// Currently, all expressions are considered as deterministic.
 #[derive(Debug)]
 pub struct EvalPlan<T> {
-    pub(super) input: Vec<(T, u32)>,
+    pub(super) input: Vec<(T, ColIndex)>,
     pub(super) evals: Vec<(Eval, usize)>,
     pub(super) output: Vec<EvalRef>,
     // selection index

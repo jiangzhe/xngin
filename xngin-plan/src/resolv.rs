@@ -1,15 +1,18 @@
+use crate::col::{ColGen, ProjCol};
 use crate::error::{Error, Result, ToResult};
 use crate::query::Subquery;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use xngin_catalog::QueryCatalog;
 use xngin_datatype::{Date, Decimal, TimeUnit, DEFAULT_DATE_FORMAT};
-use xngin_expr::{self as expr, Farg, FuncKind, Pred, PredFuncKind, QueryID, SubqKind};
+use xngin_expr::{
+    self as expr, ColIndex, ExprKind, Farg, FuncKind, Pred, PredFuncKind, QueryID, SubqKind,
+};
 use xngin_frontend::ast::*;
 
 #[derive(Debug)]
 pub enum Resolution {
-    Expr(expr::Expr),
+    Expr(expr::Expr, Option<SmolStr>),
     Unknown(Vec<SmolStr>),
 }
 
@@ -34,8 +37,13 @@ pub trait ExprResolve {
     /// Find column by alias, this may result in a column or a aliased expression,
     /// depends on the context.
     /// Default implementation should be overriden for GROUP BY, HAVING, ORDER BY.
-    fn find_col(&self, col_alias: SmolStr, _location: &'static str) -> Result<Resolution> {
-        self.find_col_by_default(col_alias)
+    fn find_col(
+        &self,
+        col_alias: SmolStr,
+        _location: &'static str,
+        colgen: &mut ColGen,
+    ) -> Result<Resolution> {
+        self.find_col_by_default(col_alias, colgen)
     }
 
     /// Find column by partial qualified alias.
@@ -45,8 +53,9 @@ pub trait ExprResolve {
         tbl_alias: SmolStr,
         col_alias: SmolStr,
         location: &'static str,
+        colgen: &mut ColGen,
     ) -> Result<Resolution> {
-        self.find_tbl_col_by_default(tbl_alias, col_alias, location)
+        self.find_tbl_col_by_default(tbl_alias, col_alias, location, colgen)
     }
 
     /// Find column by full qualified alias.
@@ -57,12 +66,13 @@ pub trait ExprResolve {
         tbl_alias: SmolStr,
         col_alias: SmolStr,
         location: &'static str,
+        colgen: &mut ColGen,
     ) -> Result<Resolution> {
-        self.find_schema_tbl_col_by_default(schema_name, tbl_alias, col_alias, location)
+        self.find_schema_tbl_col_by_default(schema_name, tbl_alias, col_alias, location, colgen)
     }
 
     #[inline]
-    fn find_col_by_default(&self, col_alias: SmolStr) -> Result<Resolution> {
+    fn find_col_by_default(&self, col_alias: SmolStr, colgen: &mut ColGen) -> Result<Resolution> {
         let queries = self.queries();
         if queries.is_empty() {
             return Ok(Resolution::Unknown(vec![col_alias]));
@@ -74,11 +84,11 @@ pub trait ExprResolve {
                 if col.is_some() {
                     return Err(Error::DuplicatedColumnAlias(col_alias.to_string()));
                 }
-                col = Some(expr::Expr::query_col(query_id, idx as u32))
+                col = Some(colgen.gen_qry_col(query_id, ColIndex::from(idx as u32)));
             }
         }
         match col {
-            Some(e) => Ok(Resolution::Expr(e)),
+            Some(e) => Ok(Resolution::Expr(e, Some(col_alias))),
             None => Ok(Resolution::Unknown(vec![col_alias])),
         }
     }
@@ -89,15 +99,16 @@ pub trait ExprResolve {
         tbl_alias: SmolStr,
         col_alias: SmolStr,
         location: &'static str,
+        colgen: &mut ColGen,
     ) -> Result<Resolution> {
         let (query_id, subquery) = match self.find_query(&tbl_alias) {
             Some(query_id) => query_id,
             None => return Ok(Resolution::Unknown(vec![tbl_alias, col_alias])),
         };
         if let Some(idx) = subquery.position_out_col(&col_alias) {
-            Ok(Resolution::Expr(expr::Expr::query_col(
-                query_id, idx as u32,
-            )))
+            let idx = ColIndex::from(idx as u32);
+            let e = colgen.gen_qry_col(query_id, idx);
+            Ok(Resolution::Expr(e, Some(col_alias)))
         } else {
             Err(Error::unknown_column_partial_name(
                 &tbl_alias, &col_alias, location,
@@ -112,6 +123,7 @@ pub trait ExprResolve {
         tbl_alias: SmolStr,
         col_alias: SmolStr,
         location: &'static str,
+        colgen: &mut ColGen,
     ) -> Result<Resolution> {
         let schema = self
             .catalog()
@@ -133,9 +145,9 @@ pub trait ExprResolve {
                 ));
             }
             if let Some(idx) = subquery.position_out_col(&col_alias) {
-                return Ok(Resolution::Expr(expr::Expr::query_col(
-                    query_id, idx as u32,
-                )));
+                let idx = ColIndex::from(idx as u32);
+                let e = colgen.gen_qry_col(query_id, idx);
+                return Ok(Resolution::Expr(e, Some(col_alias)));
             }
         }
         Err(Error::unknown_column_full_name(
@@ -168,7 +180,12 @@ pub trait ExprResolve {
     ///        If no matched column, fail.
     ///        If any duplicates found, fail.
     #[inline]
-    fn resolve_col_ref(&self, cr: &[Ident<'_>], location: &'static str) -> Result<Resolution> {
+    fn resolve_col_ref(
+        &self,
+        cr: &[Ident<'_>],
+        location: &'static str,
+        colgen: &mut ColGen,
+    ) -> Result<Resolution> {
         match cr {
             [schema_name, tbl_alias, col_alias] => {
                 // full qualified column reference
@@ -177,15 +194,16 @@ pub trait ExprResolve {
                     tbl_alias.to_lower(),
                     col_alias.to_lower(),
                     location,
+                    colgen,
                 )
             }
             [tbl_alias, col_alias] => {
                 // partial qualified column reference
-                self.find_tbl_col(tbl_alias.to_lower(), col_alias.to_lower(), location)
+                self.find_tbl_col(tbl_alias.to_lower(), col_alias.to_lower(), location, colgen)
             }
             [col_alias] => {
                 // non-qualified column reference
-                self.find_col(col_alias.to_lower(), location)
+                self.find_col(col_alias.to_lower(), location, colgen)
             }
             _ => Err(Error::unknown_column(cr, location)),
         }
@@ -197,7 +215,8 @@ pub trait ExprResolve {
         &self,
         q: &[Ident<'_>],
         location: &'static str,
-    ) -> Result<Vec<(expr::Expr, SmolStr)>> {
+        colgen: &mut ColGen,
+    ) -> Result<Vec<ProjCol>> {
         let res = match q {
             [schema_name, tbl_alias] => {
                 let schema_name = schema_name.to_lower();
@@ -219,9 +238,11 @@ pub trait ExprResolve {
                     // match table to simple projection, use its output list to resolve asterisk
                     let out_cols = subquery.out_cols();
                     let mut res = Vec::with_capacity(out_cols.len());
-                    for (i, (_, alias)) in out_cols.iter().enumerate() {
-                        let e = expr::Expr::query_col(query_id, i as u32);
-                        res.push((e, alias.clone()))
+                    for (i, c) in out_cols.iter().enumerate() {
+                        let idx = ColIndex::from(i as u32);
+                        let e = colgen.gen_qry_col(query_id, idx);
+                        // inherit alias of table column.
+                        res.push(ProjCol::new(e, c.alias.clone(), c.alias_kind))
                     }
                     res
                 } else {
@@ -238,9 +259,10 @@ pub trait ExprResolve {
                     .ok_or_else(|| Error::unknown_asterisk_column(q, location))?;
                 let out_cols = subquery.out_cols();
                 let mut res = Vec::with_capacity(out_cols.len());
-                for (i, (_, alias)) in out_cols.iter().enumerate() {
-                    let col = expr::Expr::query_col(query_id, i as u32);
-                    res.push((col, alias.clone()))
+                for (i, c) in out_cols.iter().enumerate() {
+                    let idx = ColIndex::from(i as u32);
+                    let col = colgen.gen_qry_col(query_id, idx);
+                    res.push(ProjCol::new(col, c.alias.clone(), c.alias_kind))
                 }
                 res
             }
@@ -253,9 +275,10 @@ pub trait ExprResolve {
                 let mut res = vec![];
                 for (_, query_id) in qrs {
                     let subquery = self.get_query(&query_id).must_ok()?;
-                    for (i, (_, alias)) in subquery.out_cols().iter().enumerate() {
-                        let col = expr::Expr::query_col(query_id, i as u32);
-                        res.push((col, alias.clone()))
+                    for (i, c) in subquery.out_cols().iter().enumerate() {
+                        let idx = ColIndex::from(i as u32);
+                        let col = colgen.gen_qry_col(query_id, idx);
+                        res.push(ProjCol::new(col, c.alias.clone(), c.alias_kind))
                     }
                 }
                 res
@@ -272,8 +295,9 @@ pub trait ExprResolve {
         location: &'static str,
         phc: &mut PlaceholderCollector<'a>,
         within_aggr: bool,
-    ) -> Result<expr::Expr> {
-        self.resolve_expr_by_default(e, location, phc, within_aggr)
+        colgen: &mut ColGen,
+    ) -> Result<(expr::Expr, Option<SmolStr>)> {
+        self.resolve_expr_by_default(e, location, phc, within_aggr, colgen)
     }
 
     #[inline]
@@ -283,11 +307,12 @@ pub trait ExprResolve {
         location: &'static str,
         phc: &mut PlaceholderCollector<'a>,
         within_aggr: bool,
-    ) -> Result<expr::Expr> {
+        colgen: &mut ColGen,
+    ) -> Result<(expr::Expr, Option<SmolStr>)> {
         let res = match e {
             Expr::Literal(lit) => self.resolve_lit(lit)?,
-            Expr::ColumnRef(cr) => match self.resolve_col_ref(cr, location)? {
-                Resolution::Expr(e) => e,
+            Expr::ColumnRef(cr) => match self.resolve_col_ref(cr, location, colgen)? {
+                Resolution::Expr(e, alias) => return Ok((e, alias)),
                 Resolution::Unknown(ident) => {
                     if phc.allow_unknown_ident {
                         phc.add_ident(ident, location)
@@ -300,26 +325,50 @@ pub trait ExprResolve {
                 if within_aggr {
                     return Err(Error::InvalidUsageOfAggrFunc);
                 } else {
-                    self.resolve_aggr_func(af, location, phc)?
+                    self.resolve_aggr_func(af, location, phc, colgen)?
                 }
             }
             Expr::Unary(ue) => match ue.op {
                 UnaryOp::Neg => {
-                    let e = self.resolve_expr(&ue.arg, location, phc, within_aggr)?;
+                    let (e, _) = self.resolve_expr(&ue.arg, location, phc, within_aggr, colgen)?;
                     expr::Expr::func(FuncKind::Neg, vec![e])
                 }
                 UnaryOp::BitInv => {
-                    let e = self.resolve_expr(&ue.arg, location, phc, within_aggr)?;
+                    let (e, _) = self.resolve_expr(&ue.arg, location, phc, within_aggr, colgen)?;
                     expr::Expr::func(FuncKind::BitInv, vec![e])
                 }
                 UnaryOp::LogicalNot => {
-                    let e = self.resolve_expr(&ue.arg, location, phc, within_aggr)?;
-                    expr::Expr::pred_not(e)
+                    let (e, _) = self.resolve_expr(&ue.arg, location, phc, within_aggr, colgen)?;
+                    // here we check if expression can be inversed.
+                    match e.kind {
+                        ExprKind::Pred(Pred::Exists(subq)) => {
+                            expr::Expr::pred(Pred::NotExists(subq))
+                        }
+                        ExprKind::Pred(Pred::NotExists(subq)) => {
+                            expr::Expr::pred(Pred::Exists(subq))
+                        }
+                        ExprKind::Pred(Pred::InSubquery(lhs, subq)) => {
+                            expr::Expr::pred(Pred::NotInSubquery(lhs, subq))
+                        }
+                        ExprKind::Pred(Pred::NotInSubquery(lhs, subq)) => {
+                            expr::Expr::pred(Pred::InSubquery(lhs, subq))
+                        }
+                        ExprKind::Pred(Pred::Not(arg)) => *arg,
+                        ExprKind::Pred(Pred::Func {
+                            kind: PredFuncKind::InValues,
+                            args,
+                        }) => expr::Expr::pred(Pred::func(PredFuncKind::NotInValues, args)),
+                        ExprKind::Pred(Pred::Func {
+                            kind: PredFuncKind::NotInValues,
+                            args,
+                        }) => expr::Expr::pred(Pred::func(PredFuncKind::InValues, args)),
+                        _ => expr::Expr::pred_not(e),
+                    }
                 }
             },
             Expr::Binary(be) => {
-                let lhs = self.resolve_expr(&be.lhs, location, phc, within_aggr)?;
-                let rhs = self.resolve_expr(&be.rhs, location, phc, within_aggr)?;
+                let (lhs, _) = self.resolve_expr(&be.lhs, location, phc, within_aggr, colgen)?;
+                let (rhs, _) = self.resolve_expr(&be.rhs, location, phc, within_aggr, colgen)?;
                 let kind = match be.op {
                     BinaryOp::Add => FuncKind::Add,
                     BinaryOp::Sub => FuncKind::Sub,
@@ -335,8 +384,8 @@ pub trait ExprResolve {
             }
             Expr::Predicate(pred) => match pred.as_ref() {
                 Predicate::Cmp(op, lhs, rhs) => {
-                    let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
-                    let rhs = self.resolve_expr(rhs, location, phc, within_aggr)?;
+                    let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
+                    let (rhs, _) = self.resolve_expr(rhs, location, phc, within_aggr, colgen)?;
                     let kind = match op {
                         CompareOp::Equal => PredFuncKind::Equal,
                         CompareOp::Greater => PredFuncKind::Greater,
@@ -349,7 +398,7 @@ pub trait ExprResolve {
                 }
                 Predicate::QuantCmp(..) => todo!(),
                 Predicate::Is(op, arg) => {
-                    let arg = self.resolve_expr(arg, location, phc, within_aggr)?;
+                    let (arg, _) = self.resolve_expr(arg, location, phc, within_aggr, colgen)?;
                     let kind = match op {
                         IsOp::Null => PredFuncKind::IsNull,
                         IsOp::NotNull => PredFuncKind::IsNotNull,
@@ -361,8 +410,8 @@ pub trait ExprResolve {
                     expr::Expr::pred_func(kind, vec![arg])
                 }
                 Predicate::Match(op, lhs, rhs) => {
-                    let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
-                    let rhs = self.resolve_expr(rhs, location, phc, within_aggr)?;
+                    let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
+                    let (rhs, _) = self.resolve_expr(rhs, location, phc, within_aggr, colgen)?;
                     let kind = match op {
                         MatchOp::SafeEqual => PredFuncKind::SafeEqual,
                         MatchOp::Like => PredFuncKind::Like,
@@ -373,10 +422,10 @@ pub trait ExprResolve {
                     expr::Expr::pred_func(kind, vec![lhs, rhs])
                 }
                 Predicate::InValues(lhs, vals) => {
-                    let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
+                    let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
                     let mut list = Vec::with_capacity(vals.len());
                     for v in vals {
-                        let e = self.resolve_expr(v, location, phc, within_aggr)?;
+                        let (e, _) = self.resolve_expr(v, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
                     expr::Expr::pred_func(
@@ -385,10 +434,10 @@ pub trait ExprResolve {
                     )
                 }
                 Predicate::NotInValues(lhs, vals) => {
-                    let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
+                    let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
                     let mut list = Vec::with_capacity(vals.len());
                     for v in vals {
-                        let e = self.resolve_expr(v, location, phc, within_aggr)?;
+                        let (e, _) = self.resolve_expr(v, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
                     expr::Expr::pred_func(
@@ -397,25 +446,25 @@ pub trait ExprResolve {
                     )
                 }
                 Predicate::InSubquery(lhs, subq) => {
-                    let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
+                    let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
                     let ph = phc.add_subquery(SubqKind::In, subq.as_ref(), location);
                     expr::Expr::pred_in_subq(lhs, ph)
                 }
                 Predicate::NotInSubquery(lhs, subq) => {
-                    let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
+                    let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
                     let ph = phc.add_subquery(SubqKind::In, subq.as_ref(), location);
                     expr::Expr::pred_not_in_subq(lhs, ph)
                 }
                 Predicate::Between(lhs, mhs, rhs) => {
-                    let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
-                    let mhs = self.resolve_expr(mhs, location, phc, within_aggr)?;
-                    let rhs = self.resolve_expr(rhs, location, phc, within_aggr)?;
+                    let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
+                    let (mhs, _) = self.resolve_expr(mhs, location, phc, within_aggr, colgen)?;
+                    let (rhs, _) = self.resolve_expr(rhs, location, phc, within_aggr, colgen)?;
                     expr::Expr::pred_func(PredFuncKind::Between, vec![lhs, mhs, rhs])
                 }
                 Predicate::NotBetween(lhs, mhs, rhs) => {
-                    let lhs = self.resolve_expr(lhs, location, phc, within_aggr)?;
-                    let mhs = self.resolve_expr(mhs, location, phc, within_aggr)?;
-                    let rhs = self.resolve_expr(rhs, location, phc, within_aggr)?;
+                    let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
+                    let (mhs, _) = self.resolve_expr(mhs, location, phc, within_aggr, colgen)?;
+                    let (rhs, _) = self.resolve_expr(rhs, location, phc, within_aggr, colgen)?;
                     expr::Expr::pred_func(PredFuncKind::NotBetween, vec![lhs, mhs, rhs])
                 }
                 Predicate::Exists(subq) => {
@@ -425,7 +474,7 @@ pub trait ExprResolve {
                 Predicate::Conj(cs) => {
                     let mut list = Vec::with_capacity(cs.len());
                     for c in cs {
-                        let e = self.resolve_expr(c, location, phc, within_aggr)?;
+                        let (e, _) = self.resolve_expr(c, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
                     expr::Expr::pred(Pred::Conj(list))
@@ -433,7 +482,7 @@ pub trait ExprResolve {
                 Predicate::Disj(ds) => {
                     let mut list = Vec::with_capacity(ds.len());
                     for d in ds {
-                        let e = self.resolve_expr(d, location, phc, within_aggr)?;
+                        let (e, _) = self.resolve_expr(d, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
                     expr::Expr::pred(Pred::Disj(list))
@@ -441,7 +490,7 @@ pub trait ExprResolve {
                 Predicate::LogicalXor(xs) => {
                     let mut list = Vec::with_capacity(xs.len());
                     for x in xs {
-                        let e = self.resolve_expr(x, location, phc, within_aggr)?;
+                        let (e, _) = self.resolve_expr(x, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
                     expr::Expr::pred(Pred::Xor(list))
@@ -450,23 +499,32 @@ pub trait ExprResolve {
             Expr::ScalarSubquery(subq) => {
                 phc.add_subquery(expr::SubqKind::Scalar, subq.as_ref(), location)
             }
-            Expr::Builtin(bi) => match bi {
-                Builtin::Extract(unit, arg) => {
-                    let unit = time_unit_from_ast(*unit);
-                    let e = self.resolve_expr(arg, location, phc, within_aggr)?;
+            Expr::Func(f) => match f.ty {
+                FuncType::Extract => {
+                    let unit = f.args[0].func_arg().unwrap().datetime_unit().unwrap(); // won't fail
+                    let unit = time_unit_from_ast(unit);
+                    let (e, _) =
+                        self.resolve_expr(&f.args[1], location, phc, within_aggr, colgen)?;
                     expr::Expr::func(
                         expr::FuncKind::Extract,
                         vec![expr::Expr::farg(Farg::TimeUnit(unit)), e],
                     )
                 }
-                Builtin::Substring(arg, start, end) => {
-                    let arg = self.resolve_expr(arg, location, phc, within_aggr)?;
-                    let start = self.resolve_expr(start, location, phc, within_aggr)?;
-                    let end = match end {
-                        Some(e) => self.resolve_expr(e, location, phc, within_aggr)?,
-                        None => expr::Expr::farg_none(),
-                    };
+                FuncType::Substring => {
+                    let (arg, _) =
+                        self.resolve_expr(&f.args[0], location, phc, within_aggr, colgen)?;
+                    let (start, _) =
+                        self.resolve_expr(&f.args[1], location, phc, within_aggr, colgen)?;
+                    let (end, _) =
+                        self.resolve_expr(&f.args[2], location, phc, within_aggr, colgen)?;
                     expr::Expr::func(expr::FuncKind::Substring, vec![arg, start, end])
+                }
+            },
+            Expr::FuncArg(arg) => match arg {
+                ConstArg::None => expr::Expr::farg(Farg::None),
+                ConstArg::DatetimeUnit(unit) => {
+                    let unit = time_unit_from_ast(*unit);
+                    expr::Expr::farg(Farg::TimeUnit(unit))
                 }
             },
             Expr::CaseWhen(CaseWhen {
@@ -474,27 +532,35 @@ pub trait ExprResolve {
                 branches,
                 fallback,
             }) => {
-                // let mut args = Vec::with_capacity(branches.len() * 2 + 2);
-                let op = match operand {
-                    Some(e) => self.resolve_expr(e, location, phc, within_aggr)?,
-                    None => expr::Expr::farg_none(),
-                };
-                let fallback = match fallback {
-                    Some(e) => self.resolve_expr(e, location, phc, within_aggr)?,
-                    None => expr::Expr::farg_none(),
-                };
+                let op = operand
+                    .as_ref()
+                    .map(|e| self.resolve_expr(e, location, phc, within_aggr, colgen))
+                    .transpose()?
+                    .map(|(e, _)| Box::new(e));
+
+                let fallback = fallback
+                    .as_ref()
+                    .map(|e| self.resolve_expr(e, location, phc, within_aggr, colgen))
+                    .transpose()?
+                    .map(|(e, _)| Box::new(e));
                 let mut acts = Vec::with_capacity(branches.len() * 2);
                 for (when, then) in branches {
-                    let when = self.resolve_expr(when, location, phc, within_aggr)?;
-                    acts.push(when);
-                    let then = self.resolve_expr(then, location, phc, within_aggr)?;
-                    acts.push(then);
+                    let (when, _) = self.resolve_expr(when, location, phc, within_aggr, colgen)?;
+                    let (then, _) = self.resolve_expr(then, location, phc, within_aggr, colgen)?;
+                    acts.push((when, then));
                 }
                 expr::Expr::new_case(op, acts, fallback)
             }
-            _ => todo!("exprs"),
+            Expr::Tuple(es) => {
+                let mut list = Vec::with_capacity(es.len());
+                for e in es {
+                    let (e, _) = self.resolve_expr(e, location, phc, within_aggr, colgen)?;
+                    list.push(e);
+                }
+                expr::Expr::tuple(list)
+            }
         };
-        Ok(res)
+        Ok((res, None))
     }
 
     /// Map SQL literal to constant value of storage type.
@@ -558,8 +624,9 @@ pub trait ExprResolve {
         af: &'a AggrFunc<'a>,
         location: &'static str,
         phc: &mut PlaceholderCollector<'a>,
+        colgen: &mut ColGen,
     ) -> Result<expr::Expr> {
-        let e = self.resolve_expr(&af.expr, location, phc, true)?;
+        let (e, _) = self.resolve_expr(&af.expr, location, phc, true, colgen)?;
         let q = match af.q {
             SetQuantifier::All => expr::Setq::All,
             SetQuantifier::Distinct => expr::Setq::Distinct,

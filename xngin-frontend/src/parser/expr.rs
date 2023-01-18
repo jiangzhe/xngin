@@ -27,7 +27,7 @@ use nom::bytes::complete::{tag, tag_no_case, take_till1};
 use nom::character::complete::{alphanumeric1, char, hex_digit0, one_of};
 use nom::combinator::{cut, map, map_opt, not, opt, peek, recognize, value};
 use nom::error::{ErrorKind, ParseError};
-use nom::multi::{fold_many0, many0, many1, separated_list0, separated_list1};
+use nom::multi::{fold_many0, many0, many1, separated_list1};
 use nom::number::complete::recognize_float;
 use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::IResult;
@@ -35,7 +35,7 @@ use nom::IResult;
 use crate::parser::query::{query_expr, subquery};
 use crate::parser::ParseInput;
 use crate::parser::{
-    ident, ident_tag, match_builtin_keyword, match_reserved_keyword, next, next_cut, quoted_ident,
+    ident, ident_tag, match_builtin_keyword, match_reserved_keyword, next_cut, quoted_ident,
     regular_ident, set_quantifier, spcmt0, spcmt1, BuiltinKeyword, ReservedKeyword,
 };
 
@@ -173,11 +173,44 @@ fn pratt_expr<'a, I: ParseInput<'a>, E: ParseError<I>>(
                 match op {
                     InfixOp::Call => {
                         if let Expr::ColumnRef(f) = lhs {
+                            // let (ri, _) = spcmt0(i)?; // remove spaces after the operator
+                            // let (ri, rhs) = separated_list0(char_sp0(','), expr_sp0)(ri)?;
+                            // let (ri, _) = char_sp0(')')(ri)?; // must terminated with ')'
+                            // lhs = Expr::func(f, rhs);
+
                             let (ri, _) = spcmt0(i)?; // remove spaces after the operator
-                            let (ri, rhs) = separated_list0(char_sp0(','), expr_sp0)(ri)?;
-                            let (ri, _) = char_sp0(')')(ri)?; // must terminated with ')'
-                            lhs = Expr::func(f, rhs);
-                            i = ri;
+                                                      // currently we do not support <package>.<function>
+                                                      // and UDF is disabled.
+                            if f.len() != 1 {
+                                return Err(nom::Err::Error(E::from_error_kind(
+                                    ri,
+                                    ErrorKind::Tag,
+                                )));
+                            }
+                            // deal with different functions
+                            let kw = match_builtin_keyword(f[0].s).ok_or_else(|| {
+                                nom::Err::Error(E::from_error_kind(ri, ErrorKind::Tag))
+                            })?;
+                            match kw {
+                                BuiltinKeyword::Extract => {
+                                    let (ri, (unit, expr)) = cut(builtin_args_extract)(ri)?;
+                                    let (ri, _) = char_sp0(')')(ri)?; // must terminated with ')'
+                                    lhs = Expr::func(
+                                        FuncType::Extract,
+                                        vec![Expr::FuncArg(ConstArg::DatetimeUnit(unit)), expr],
+                                    );
+                                    i = ri;
+                                }
+                                BuiltinKeyword::Substring => {
+                                    let (ri, (expr, (start, end))) =
+                                        cut(builtin_args_substring)(ri)?;
+                                    let (ri, _) = char_sp0(')')(ri)?; // must terminated with ')'
+                                    let end = end.unwrap_or_else(|| Expr::FuncArg(ConstArg::None));
+                                    lhs = Expr::func(FuncType::Substring, vec![expr, start, end]);
+                                    i = ri;
+                                }
+                                BuiltinKeyword::NoKeyword => unreachable!(),
+                            };
                             continue;
                         }
                         return Err(nom::Err::Error(E::from_error_kind(i, ErrorKind::Tag)));
@@ -394,8 +427,6 @@ parse!(
                 }
             }),
             map(aggr_func, Expr::AggrFunc),
-            // builtin functions, which does not allow space between keyword and paren
-            map(builtin, Expr::Builtin),
             // preceded with regular identifier
             next_cut(terminated(regular_ident, spcmt0), |pi, i: I, id| {
                 // literals starting with keyword
@@ -427,13 +458,13 @@ parse!(
                             if ident_tag::<'_, I, E>("when")(i).is_ok() { // precheck when is ok
                                 return map(
                                     pair(many1(case_branch), case_end),
-                                    |(branches, fallback)| Expr::case_when(None, branches, fallback),
+                                    |(branches, fallback)| Expr::case_when(None, branches, fallback.map(Box::new)),
                                 )(i)
                             }
                             // switch-like structure
                             let (i, operand) = expr_sp0(i)?;
                             let (i, (branches, fallback)) = pair(many1(case_branch), case_end)(i)?;
-                            return Ok((i, Expr::case_when(Some(operand), branches, fallback)))
+                            return Ok((i, Expr::case_when(Some(Box::new(operand)), branches, fallback.map(Box::new))))
                         }
                         _ => return Err(nom::Err::Error(E::from_error_kind(pi, ErrorKind::Tag)))
                     }
@@ -560,7 +591,7 @@ parse!(
             terminated(
                 alt((
                     map_opt(regular_ident, |id: I| if is_reserved_keyword(&id) { None } else { Some(Ident::regular(id))} ),
-                    map(quoted_ident, Ident::quoted),
+                    map(quoted_ident, |id: I| Ident::quoted(id)),
                 )),
                 spcmt0,
             )
@@ -617,31 +648,6 @@ parse!(
             value(AggrFuncKind::Min, ident_tag("min")),
             value(AggrFuncKind::Max, ident_tag("max")),
         ))
-    }
-);
-
-parse!(
-    /// Parse a builtin function
-    fn builtin -> 'a Builtin<'a> = {
-        next(regular_ident, |i: I, id| {
-            if let Some(kw) = match_builtin_keyword(&id) {
-                let (i, _) = cut(char_sp0('('))(i)?;
-                let (i, res) = match kw {
-                    BuiltinKeyword::Extract => {
-                        let (i, (unit, expr)) = cut(builtin_args_extract)(i)?;
-                        (i, Builtin::Extract(unit, Box::new(expr)))
-                    }
-                    BuiltinKeyword::Substring => {
-                        let (i, (expr, (start, end))) = cut(builtin_args_substring)(i)?;
-                        (i, Builtin::Substring(Box::new(expr), Box::new(start), end.map(Box::new)))
-                    }
-                    BuiltinKeyword::NoKeyword => unreachable!(),
-                };
-                let (i, _) = cut(sp0_char(')'))(i)?;
-                return Ok((i, res))
-            }
-            Err(nom::Err::Error(E::from_error_kind(i, nom::error::ErrorKind::Tag)))
-        })
     }
 );
 

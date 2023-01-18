@@ -1,13 +1,13 @@
+use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::op::{Op, OpMutVisitor, OpVisitor};
 use crate::query::{Location, QuerySet, Subquery};
 use crate::rule::RuleEffect;
 use fnv::FnvHashMap;
-use smol_str::SmolStr;
 use std::collections::BTreeMap;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, Expr, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
+use xngin_expr::{Col, ColIndex, ColKind, Expr, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Column pruning will remove unnecessary columns from the given plan.
 /// It is invoked top down. First collect all output columns from current
@@ -22,25 +22,31 @@ pub fn col_prune(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> 
 fn prune_col(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
-    use_set: &mut FnvHashMap<QueryID, BTreeMap<u32, u32>>,
+    use_set: &mut FnvHashMap<QueryID, BTreeMap<ColIndex, ColIndex>>,
 ) -> Result<RuleEffect> {
     if let Some(subq) = qry_set.get_mut(&qry_id) {
         if subq.location != Location::Intermediate {
             // skip other types of queries
             return Ok(RuleEffect::NONE);
         }
-        let mut curr_use_set = FnvHashMap::default();
-        let mut c = Collect(&mut curr_use_set);
+        // let mut curr_use_set = FnvHashMap::default();
+        // let mut c = Collect(&mut curr_use_set);
+        let mut c = Collect(use_set);
         let _ = subq.root.walk(&mut c);
         // add variables used in correlated subqueries
         for (query_id, idx) in &subq.scope.cor_vars {
-            curr_use_set.entry(*query_id).or_default().insert(*idx, 0);
+            // curr_use_set.entry(*query_id).or_default().insert(*idx, ColIndex::from(0));
+            use_set
+                .entry(*query_id)
+                .or_default()
+                .insert(*idx, ColIndex::from(0));
         }
-        update_use_set(&mut curr_use_set);
+        // update_use_set(&mut curr_use_set);
+        update_use_set(use_set);
         // merge into global use set
-        for (k, v) in curr_use_set {
-            use_set.insert(k, v);
-        }
+        // for (k, v) in curr_use_set {
+        //     use_set.insert(k, v);
+        // }
         let mut op = mem::take(&mut subq.root);
         let mut m = Modify { qry_set, use_set };
         let res = op.walk_mut(&mut m).unbranch();
@@ -51,7 +57,7 @@ fn prune_col(
     }
 }
 
-struct Collect<'a>(&'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>);
+struct Collect<'a>(&'a mut FnvHashMap<QueryID, BTreeMap<ColIndex, ColIndex>>);
 impl OpVisitor for Collect<'_> {
     type Cont = ();
     type Break = ();
@@ -68,8 +74,16 @@ impl<'a> ExprVisitor<'a> for Collect<'_> {
     type Break = ();
     #[inline]
     fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
-        if let ExprKind::Col(Col::QueryCol(qry_id, idx)) = &e.kind {
-            self.0.entry(*qry_id).or_default().insert(*idx, 0);
+        if let ExprKind::Col(Col {
+            kind: ColKind::QueryCol(qry_id),
+            idx,
+            ..
+        }) = &e.kind
+        {
+            self.0
+                .entry(*qry_id)
+                .or_default()
+                .insert(*idx, ColIndex::from(0));
         }
         ControlFlow::Continue(())
     }
@@ -77,7 +91,7 @@ impl<'a> ExprVisitor<'a> for Collect<'_> {
 
 struct Modify<'a> {
     qry_set: &'a mut QuerySet,
-    use_set: &'a mut FnvHashMap<QueryID, BTreeMap<u32, u32>>,
+    use_set: &'a mut FnvHashMap<QueryID, BTreeMap<ColIndex, ColIndex>>,
 }
 
 impl OpMutVisitor for Modify<'_> {
@@ -89,6 +103,7 @@ impl OpMutVisitor for Modify<'_> {
             Op::Query(qry_id) => {
                 // modify child query, we do not count the deletion of expression as effect
                 let mapping = self.use_set.get(qry_id);
+                println!("use_set in modify is {:?}", self.use_set);
                 self.qry_set
                     .transform_subq(*qry_id, |subq| modify_subq(subq, mapping))
                     .branch()?;
@@ -113,8 +128,16 @@ impl ExprMutVisitor for Modify<'_> {
     fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
         match &mut e.kind {
-            ExprKind::Col(Col::QueryCol(qry_id, idx))
-            | ExprKind::Col(Col::CorrelatedCol(qry_id, idx)) => {
+            ExprKind::Col(Col {
+                kind: ColKind::QueryCol(qry_id),
+                idx,
+                ..
+            })
+            | ExprKind::Col(Col {
+                kind: ColKind::CorrelatedCol(qry_id),
+                idx,
+                ..
+            }) => {
                 if let Some(new) = self.use_set.get(qry_id).and_then(|m| m.get(idx).cloned()) {
                     *idx = new;
                     // expression change
@@ -131,7 +154,7 @@ impl ExprMutVisitor for Modify<'_> {
 }
 
 #[inline]
-fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<u32, u32>>) {
+fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<ColIndex, ColIndex>>) {
     match &mut subq.root {
         Op::Proj { cols, .. } => {
             *cols = retain(mem::take(cols), mapping);
@@ -147,9 +170,10 @@ fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<u32, u32>>) {
                 subq.out_cols()
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, (expr, alias))| {
-                        if mapping.contains_key(&(i as u32)) {
-                            Some((expr.clone(), alias.clone()))
+                    .filter_map(|(i, c)| {
+                        let idx = ColIndex::from(i as u32);
+                        if mapping.contains_key(&idx) {
+                            Some(c.clone())
                         } else {
                             None
                         }
@@ -165,15 +189,16 @@ fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<u32, u32>>) {
 }
 
 /// retain outputs in provided mapping
-fn retain<I>(cols: I, mapping: Option<&BTreeMap<u32, u32>>) -> Vec<(Expr, SmolStr)>
+fn retain<I>(cols: I, mapping: Option<&BTreeMap<ColIndex, ColIndex>>) -> Vec<ProjCol>
 where
-    I: IntoIterator<Item = (Expr, SmolStr)>,
+    I: IntoIterator<Item = ProjCol>,
 {
     if let Some(mapping) = mapping {
         cols.into_iter()
             .enumerate()
             .filter_map(|(i, e)| {
-                if mapping.contains_key(&(i as u32)) {
+                let idx = ColIndex::from(i as u32);
+                if mapping.contains_key(&idx) {
                     Some(e)
                 } else {
                     None
@@ -186,10 +211,10 @@ where
 }
 
 #[inline]
-fn update_use_set(use_set: &mut FnvHashMap<QueryID, BTreeMap<u32, u32>>) {
+fn update_use_set(use_set: &mut FnvHashMap<QueryID, BTreeMap<ColIndex, ColIndex>>) {
     for mapping in use_set.values_mut() {
         for (i, old) in mapping.values_mut().enumerate() {
-            *old = i as u32;
+            *old = ColIndex::from(i as u32);
         }
     }
 }

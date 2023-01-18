@@ -1,15 +1,15 @@
+use crate::col::{AliasKind, ProjCol};
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinOp};
 use crate::op::{Op, OpMutVisitor, OpVisitor};
 use crate::scope::Scope;
 use fnv::FnvHashMap;
-use slab::Slab;
-use smol_str::SmolStr;
 use std::collections::HashSet;
 use std::mem;
 use std::ops::ControlFlow;
+use std::ops::Deref;
 use xngin_catalog::{SchemaID, TableID};
-use xngin_expr::{Expr, QueryID};
+use xngin_expr::QueryID;
 
 /// Query wraps logical operator with additional syntax information.
 /// group operators as a tree, with output column list.
@@ -36,6 +36,15 @@ pub struct Subquery {
 }
 
 impl Subquery {
+    /// Construct an empty subquery, which will be updated immediately.
+    pub fn empty() -> Self {
+        Subquery {
+            root: Op::Empty,
+            scope: Scope::default(),
+            location: Location::Disk,
+        }
+    }
+
     /// Construct a subquery using given root operator and scope.
     #[inline]
     pub fn new(root: Op, scope: Scope, location: Location) -> Self {
@@ -47,18 +56,21 @@ impl Subquery {
     }
 
     #[inline]
-    pub fn out_cols(&self) -> &[(Expr, SmolStr)] {
+    pub fn out_cols(&self) -> &[ProjCol] {
         self.root.out_cols().unwrap()
     }
 
     #[inline]
-    pub fn out_cols_mut(&mut self) -> &mut [(Expr, SmolStr)] {
+    pub fn out_cols_mut(&mut self) -> &mut [ProjCol] {
         self.root.out_cols_mut().unwrap()
     }
 
     #[inline]
     pub fn position_out_col(&self, alias: &str) -> Option<usize> {
-        self.out_cols().iter().position(|(_, a)| a == alias)
+        self.out_cols().iter().position(|c| match c.alias_kind {
+            AliasKind::Explicit | AliasKind::Implicit => c.alias == alias,
+            AliasKind::None => false,
+        })
     }
 
     #[inline]
@@ -80,6 +92,15 @@ impl Subquery {
         let mut ft = FindTable(None);
         let _ = self.root.walk(&mut ft);
         ft.0
+    }
+
+    #[inline]
+    pub fn find_out_col(&self, idx: usize) -> Option<&ProjCol> {
+        let out_cols = self.out_cols();
+        if idx >= out_cols.len() {
+            return None;
+        }
+        Some(&out_cols[idx])
     }
 }
 
@@ -108,13 +129,15 @@ impl Default for QryIDs {
 
 /// QuerySet stores all sub-subqeries and provide lookup and update methods.
 #[derive(Debug, Default)]
-pub struct QuerySet(Slab<Subquery>);
+pub struct QuerySet(Vec<Subquery>);
 
 impl QuerySet {
     #[inline]
-    pub fn insert(&mut self, query: Subquery) -> QueryID {
-        let qry_id = self.0.insert(query);
-        QueryID::from(qry_id as u32)
+    pub fn insert_empty(&mut self) -> (QueryID, &mut Subquery) {
+        // let query = Subquery::default();
+        let qry_id = self.0.len();
+        self.0.push(Subquery::empty());
+        (QueryID::from(qry_id as u32), &mut self.0[qry_id])
     }
 
     #[inline]
@@ -184,7 +207,18 @@ impl QuerySet {
                 *query_id = *new_query_id;
             }
         }
-        self.insert(sq)
+        // self.insert(sq)
+        let (qry_id, tgt) = self.insert_empty();
+        *tgt = sq;
+        qry_id
+    }
+}
+
+impl Deref for QuerySet {
+    type Target = [Subquery];
+    #[inline]
+    fn deref(&self) -> &[Subquery] {
+        &self.0
     }
 }
 

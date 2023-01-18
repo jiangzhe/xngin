@@ -273,12 +273,12 @@ parse!(
                 terminated(table_name, spcmt0),
                 |i, table| {
                     match ident::<'_, I, E>(i) {
-                        Ok((ri, Ident::Regular(alias))) => {
-                            if alias.eq_ignore_ascii_case("as") {
+                        Ok((ri, Ident{kind: IdentKind::Regular, s})) => {
+                            if s.eq_ignore_ascii_case("as") {
                                 let (ri, alias) = cut(preceded(spcmt0, ident))(ri)?;
                                 Ok((ri, TablePrimitive::Named(table, Some(alias))))
-                            } else if !is_reserved_keyword(alias) {
-                                Ok((ri, TablePrimitive::Named(table, Some(alias.into()))))
+                            } else if !is_reserved_keyword(s) {
+                                Ok((ri, TablePrimitive::Named(table, Some(s.into()))))
                             } else {
                                 // reserved keyword found, break this branch
                                 Ok((i, TablePrimitive::Named(table, None)))
@@ -450,6 +450,21 @@ mod tests {
     use super::*;
     use crate::parser::dialect::Ansi;
     use nom::error::Error;
+
+    macro_rules! named_col {
+        ( $lit:literal ) => {
+            DerivedCol::new(Expr::column_ref(vec![$lit.into()]), Ident::auto_alias($lit))
+        };
+    }
+
+    macro_rules! aliased_expr {
+        ( $expr:expr => $lit:literal ) => {
+            DerivedCol::new($expr, Ident::regular($lit))
+        };
+        ( $expr:expr , $lit:literal ) => {
+            DerivedCol::new($expr, Ident::auto_alias($lit))
+        };
+    }
 
     #[test]
     fn test_parse_where() -> anyhow::Result<()> {
@@ -685,10 +700,7 @@ mod tests {
                 TableRef::primitive(TablePrimitive::derived(
                     QueryExpr {
                         with: None,
-                        query: Query::row(vec![DerivedCol::auto_alias(
-                            Expr::numeric_lit("1"),
-                            "1",
-                        )]),
+                        query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                     },
                     "a".into(),
                 )),
@@ -706,20 +718,17 @@ mod tests {
         for c in vec![
             (
                 "select 1",
-                Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
             ),
             (
                 "select 1 as a",
-                Query::row(vec![DerivedCol::new(Expr::numeric_lit("1"), "a".into())]),
+                Query::row(vec![aliased_expr!(Expr::numeric_lit("1") => "a")]),
             ),
             (
                 "select a from b",
                 Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(
-                        Expr::column_ref(vec!["a".into()]),
-                        "a",
-                    )],
+                    cols: vec![aliased_expr!(Expr::column_ref(vec!["a".into()]), "a")],
                     from: vec![TableRef::Primitive(Box::new(TablePrimitive::Named(
                         TableName::new(None, "b".into()),
                         None,
@@ -735,10 +744,7 @@ mod tests {
                 "select a from b where 1",
                 Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(
-                        Expr::column_ref(vec!["a".into()]),
-                        "a",
-                    )],
+                    cols: vec![aliased_expr!(Expr::column_ref(vec!["a".into()]), "a")],
                     from: vec![TableRef::Primitive(Box::new(TablePrimitive::Named(
                         TableName::new(None, "b".into()),
                         None,
@@ -754,10 +760,7 @@ mod tests {
                 "select a from b group by a",
                 Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(
-                        Expr::column_ref(vec!["a".into()]),
-                        "a",
-                    )],
+                    cols: vec![aliased_expr!(Expr::column_ref(vec!["a".into()]), "a")],
                     from: vec![TableRef::Primitive(Box::new(TablePrimitive::Named(
                         TableName::new(None, "b".into()),
                         None,
@@ -773,10 +776,7 @@ mod tests {
                 "select a from b having a > 1",
                 Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(
-                        Expr::column_ref(vec!["a".into()]),
-                        "a",
-                    )],
+                    cols: vec![aliased_expr!(Expr::column_ref(vec!["a".into()]), "a")],
                     from: vec![TableRef::Primitive(Box::new(TablePrimitive::Named(
                         TableName::new(None, "b".into()),
                         None,
@@ -795,10 +795,7 @@ mod tests {
                 "select a from b order by a",
                 Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(
-                        Expr::column_ref(vec!["a".into()]),
-                        "a",
-                    )],
+                    cols: vec![aliased_expr!(Expr::column_ref(vec!["a".into()]), "a")],
                     from: vec![TableRef::Primitive(Box::new(TablePrimitive::Named(
                         TableName::new(None, "b".into()),
                         None,
@@ -814,10 +811,7 @@ mod tests {
                 "select a from b limit 1",
                 Query::table(SelectTable {
                     q: SetQuantifier::All,
-                    cols: vec![DerivedCol::auto_alias(
-                        Expr::column_ref(vec!["a".into()]),
-                        "a",
-                    )],
+                    cols: vec![aliased_expr!(Expr::column_ref(vec!["a".into()]), "a")],
                     from: vec![TableRef::Primitive(Box::new(TablePrimitive::Named(
                         TableName::new(None, "b".into()),
                         None,
@@ -862,21 +856,21 @@ mod tests {
                 "select 1",
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
             (
                 "select distinct 1",
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                 },
             ),
             (
                 "select 1 as a",
                 QueryExpr {
                     with: None,
-                    query: Query::row(vec![DerivedCol::new(Expr::numeric_lit("1"), "a".into())]),
+                    query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1") => "a")]),
                 },
             ),
             (
@@ -884,10 +878,7 @@ mod tests {
                 QueryExpr {
                     with: None,
                     query: Query::table(SelectTable {
-                        cols: vec![DerivedCol::auto_alias(
-                            Expr::column_ref(vec!["a".into()]),
-                            "a",
-                        )],
+                        cols: vec![named_col!("a")],
                         ..simple_select()
                     }),
                 },
@@ -898,10 +889,7 @@ mod tests {
                     with: None,
                     query: Query::table(SelectTable {
                         q: SetQuantifier::Distinct,
-                        cols: vec![DerivedCol::auto_alias(
-                            Expr::column_ref(vec!["a".into()]),
-                            "a",
-                        )],
+                        cols: vec![named_col!("a")],
                         ..simple_select()
                     }),
                 },
@@ -916,18 +904,12 @@ mod tests {
                             cols: vec![],
                             query_expr: QueryExpr {
                                 with: None,
-                                query: Query::row(vec![DerivedCol::auto_alias(
-                                    Expr::numeric_lit("1"),
-                                    "1",
-                                )]),
+                                query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                             },
                         }],
                     }),
                     query: Query::table(SelectTable {
-                        cols: vec![DerivedCol::auto_alias(
-                            Expr::column_ref(vec!["a".into()]),
-                            "a",
-                        )],
+                        cols: vec![named_col!("a")],
                         ..simple_select()
                     }),
                 },
@@ -942,18 +924,12 @@ mod tests {
                             cols: vec!["y".into()],
                             query_expr: QueryExpr {
                                 with: None,
-                                query: Query::row(vec![DerivedCol::auto_alias(
-                                    Expr::numeric_lit("1"),
-                                    "1",
-                                )]),
+                                query: Query::row(vec![aliased_expr!(Expr::numeric_lit("1"), "1")]),
                             },
                         }],
                     }),
                     query: Query::table(SelectTable {
-                        cols: vec![DerivedCol::auto_alias(
-                            Expr::column_ref(vec!["a".into()]),
-                            "a",
-                        )],
+                        cols: vec![named_col!("a")],
                         ..simple_select()
                     }),
                 },
@@ -966,17 +942,11 @@ mod tests {
                         op: SetOp::Union,
                         distinct: true,
                         left: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["a".into()]),
-                                "a",
-                            )],
+                            cols: vec![named_col!("a")],
                             ..simple_select()
                         })),
                         right: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["b".into()]),
-                                "b",
-                            )],
+                            cols: vec![named_col!("b")],
                             ..simple_select()
                         })),
                     }),
@@ -990,17 +960,11 @@ mod tests {
                         op: SetOp::Union,
                         distinct: false,
                         left: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["a".into()]),
-                                "a",
-                            )],
+                            cols: vec![named_col!("a")],
                             ..simple_select()
                         })),
                         right: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["b".into()]),
-                                "b",
-                            )],
+                            cols: vec![named_col!("b")],
                             ..simple_select()
                         })),
                     }),
@@ -1014,17 +978,11 @@ mod tests {
                         op: SetOp::Except,
                         distinct: true,
                         left: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["a".into()]),
-                                "a",
-                            )],
+                            cols: vec![named_col!("a")],
                             ..simple_select()
                         })),
                         right: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["b".into()]),
-                                "b",
-                            )],
+                            cols: vec![named_col!("b")],
                             ..simple_select()
                         })),
                     }),
@@ -1038,17 +996,11 @@ mod tests {
                         op: SetOp::Except,
                         distinct: false,
                         left: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["a".into()]),
-                                "a",
-                            )],
+                            cols: vec![named_col!("a")],
                             ..simple_select()
                         })),
                         right: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["b".into()]),
-                                "b",
-                            )],
+                            cols: vec![named_col!("b")],
                             ..simple_select()
                         })),
                     }),
@@ -1062,17 +1014,11 @@ mod tests {
                         op: SetOp::Intersect,
                         distinct: true,
                         left: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["a".into()]),
-                                "a",
-                            )],
+                            cols: vec![named_col!("a")],
                             ..simple_select()
                         })),
                         right: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["b".into()]),
-                                "b",
-                            )],
+                            cols: vec![named_col!("b")],
                             ..simple_select()
                         })),
                     }),
@@ -1086,17 +1032,11 @@ mod tests {
                         op: SetOp::Intersect,
                         distinct: false,
                         left: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["a".into()]),
-                                "a",
-                            )],
+                            cols: vec![named_col!("a")],
                             ..simple_select()
                         })),
                         right: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["b".into()]),
-                                "b",
-                            )],
+                            cols: vec![named_col!("b")],
                             ..simple_select()
                         })),
                     }),
@@ -1113,25 +1053,16 @@ mod tests {
                             op: SetOp::Union,
                             distinct: false,
                             left: Box::new(Query::table(SelectTable {
-                                cols: vec![DerivedCol::auto_alias(
-                                    Expr::column_ref(vec!["a".into()]),
-                                    "a",
-                                )],
+                                cols: vec![named_col!("a")],
                                 ..simple_select()
                             })),
                             right: Box::new(Query::table(SelectTable {
-                                cols: vec![DerivedCol::auto_alias(
-                                    Expr::column_ref(vec!["b".into()]),
-                                    "b",
-                                )],
+                                cols: vec![named_col!("b")],
                                 ..simple_select()
                             })),
                         })),
                         right: Box::new(Query::table(SelectTable {
-                            cols: vec![DerivedCol::auto_alias(
-                                Expr::column_ref(vec!["c".into()]),
-                                "c",
-                            )],
+                            cols: vec![named_col!("c")],
                             ..simple_select()
                         })),
                     }),

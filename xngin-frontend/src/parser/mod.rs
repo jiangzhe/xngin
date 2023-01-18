@@ -595,22 +595,16 @@ parse!(
                     }
                     _ => match alias::<'_, I, E>(i) {
                         Ok((i, alias)) => Ok((i, DerivedCol::new(expr, alias))),
-
-                        _ => {
-                            // auto alias the expression with itself text if no alias exists.
-                            // if expression is column reference, just use its name.
-                            if let Expr::ColumnRef(cr) = &expr {
-                                let col_name = match cr.last() {
-                                    Some(Ident::Regular(s)) | Some(Ident::Quoted(s)) => *s,
-                                    _ => unreachable!(),
-                                };
-                                Ok((i, DerivedCol::auto_alias(expr, col_name)))
-                            } else {
-                                // trim whitespaces at end
-                                let expr_i: &str = expr_i.into();
-                                Ok((i, DerivedCol::auto_alias(expr, expr_i.trim_end())))
-                            }
+                        // no alias avaiable, use auto-aliasing.
+                        _ => if let Expr::ColumnRef(cr) = &expr {
+                            let col_name = cr.last().expect("column name is not empty").s;
+                            Ok((i, DerivedCol::new(expr, Ident::auto_alias(col_name))))
+                        } else {
+                            // trim whitespaces at end
+                            let expr_i: &str = expr_i.into();
+                            Ok((i, DerivedCol::new(expr, Ident::auto_alias(expr_i.trim_end()))))
                         }
+
                     }
                 }
             })
@@ -652,7 +646,7 @@ parse!(
     /// Parse alias.
     fn alias -> 'a Ident<'a> = {
         alt((
-            next(regular_ident, |i: I, id| {
+            next(regular_ident, |i: I, id: I| {
                 if is_reserved_keyword(&id) {
                     Err(nom::Err::Error(E::from_error_kind(i, nom::error::ErrorKind::Verify)))
                 } else {
@@ -847,18 +841,27 @@ mod tests {
     use crate::parser::dialect::Ansi;
     use nom::error::{convert_error, Error, VerboseError};
 
+    macro_rules! aliased_expr {
+        ( $expr:expr => $lit:literal ) => {
+            DerivedCol::new($expr, Ident::regular($lit))
+        };
+        ( $expr:expr , $lit:literal ) => {
+            DerivedCol::new($expr, Ident::auto_alias($lit))
+        };
+    }
+
     #[test]
     fn test_parse_identifier() -> anyhow::Result<()> {
         // success cases
         for c in vec![
-            ("a", ("", Ident::Regular("a"))),
-            ("abc", ("", Ident::Regular("abc"))),
-            ("abc123", ("", Ident::Regular("abc123"))),
-            ("user_info", ("", Ident::Regular("user_info"))),
-            ("X", ("", Ident::Regular("X"))),
-            ("\"\"", ("", Ident::Quoted(""))),
-            ("\"abc\"", ("", Ident::Quoted("abc"))),
-            ("\"abc\"\"def\"", ("", Ident::Quoted("abc\"\"def"))),
+            ("a", ("", Ident::regular("a"))),
+            ("abc", ("", Ident::regular("abc"))),
+            ("abc123", ("", Ident::regular("abc123"))),
+            ("user_info", ("", Ident::regular("user_info"))),
+            ("X", ("", Ident::regular("X"))),
+            ("\"\"", ("", Ident::quoted(""))),
+            ("\"abc\"", ("", Ident::quoted("abc"))),
+            ("\"abc\"\"def\"", ("", Ident::quoted("abc\"\"def"))),
         ] {
             let res = match ident::<'_, _, VerboseError<_>>(Ansi(c.0)) {
                 Ok(res) => res,
@@ -888,21 +891,21 @@ mod tests {
         for c in vec![
             ("a", ("", TableName::new(None, "a".into()))),
             ("a1", ("", TableName::new(None, "a1".into()))),
-            ("\"a\"", ("", TableName::new(None, Ident::Quoted("a")))),
+            ("\"a\"", ("", TableName::new(None, Ident::quoted("a")))),
             (
                 "\"a\"\"b\"",
-                ("", TableName::new(None, Ident::Quoted("a\"\"b"))),
+                ("", TableName::new(None, Ident::quoted("a\"\"b"))),
             ),
             ("a.a", ("", TableName::new(Some("a".into()), "a".into()))),
             (
                 "\"a\".a",
-                ("", TableName::new(Some(Ident::Quoted("a")), "a".into())),
+                ("", TableName::new(Some(Ident::quoted("a")), "a".into())),
             ),
             (
                 "\"a\".\"a\"",
                 (
                     "",
-                    TableName::new(Some(Ident::Quoted("a")), Ident::Quoted("a")),
+                    TableName::new(Some(Ident::quoted("a")), Ident::quoted("a")),
                 ),
             ),
         ] {
@@ -916,14 +919,8 @@ mod tests {
     #[test]
     fn test_parse_derived_column() -> anyhow::Result<()> {
         for c in vec![
-            (
-                "1",
-                ("", DerivedCol::auto_alias(Expr::numeric_lit("1"), "1")),
-            ),
-            (
-                "1 as a",
-                ("", DerivedCol::new(Expr::numeric_lit("1"), "a".into())),
-            ),
+            ("1", ("", aliased_expr!(Expr::numeric_lit("1"), "1"))),
+            ("1 as a", ("", aliased_expr!(Expr::numeric_lit("1") => "a"))),
             // todo
         ] {
             let res = derived_col::<'_, _, Error<_>>(Ansi(c.0))?;
@@ -1001,7 +998,7 @@ mod tests {
                 "a.\"b\".*",
                 (
                     "",
-                    DerivedCol::Asterisk(vec!["a".into(), Ident::Quoted("b")]),
+                    DerivedCol::Asterisk(vec!["a".into(), Ident::quoted("b")]),
                 ),
             ),
         ] {

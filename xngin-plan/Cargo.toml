@@ -14,6 +14,7 @@ xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
 xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
 xngin-expr = { version = "0.1.0", path = "../xngin-expr" }
+aosa = "0.1"
 
 slab = "0.4"
 thiserror = "1.0"

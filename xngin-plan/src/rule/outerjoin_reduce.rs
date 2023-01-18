@@ -1,15 +1,15 @@
+use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, QualifiedJoin};
 use crate::op::{Op, OpMutVisitor};
 use crate::query::{Location, QuerySet};
 use crate::rule::expr_simplify::{simplify_single, NullCoalesce};
 use crate::rule::RuleEffect;
-use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::Fold;
-use xngin_expr::{Col, Expr, ExprKind, ExprMutVisitor, QueryID};
+use xngin_expr::{Col, ColKind, Expr, ExprKind, ExprMutVisitor, QueryID};
 
 /// Reduce outer join based on predicate analysis.
 /// This rule recognize null rejecting predicates in advance
@@ -202,7 +202,7 @@ fn analyze_conj_preds(exprs: &[Expr], rn_map: &mut HashMap<QueryID, Vec<Expr>>) 
 fn translate_rn_exprs(
     qry_id: QueryID,
     exprs: &[Expr],
-    mapping: &[(Expr, SmolStr)],
+    mapping: &[ProjCol],
 ) -> Result<HashMap<QueryID, Vec<Expr>>> {
     let mut res = HashMap::new();
     let mut tmp = HashSet::new();
@@ -234,7 +234,11 @@ fn translate_rn_exprs(
 pub(crate) fn reject_null_single(expr: &Expr, qry_id: QueryID) -> Result<bool> {
     expr.clone()
         .reject_null(|e| {
-            if let ExprKind::Col(Col::QueryCol(qid, _)) = &e.kind {
+            if let ExprKind::Col(Col {
+                kind: ColKind::QueryCol(qid),
+                ..
+            }) = &e.kind
+            {
                 if *qid == qry_id {
                     *e = Expr::const_null();
                 }
@@ -250,7 +254,7 @@ pub(crate) fn reject_null_single(expr: &Expr, qry_id: QueryID) -> Result<bool> {
 struct TransformCollectSimplify<'a> {
     old: QueryID,
     new_ids: &'a mut HashSet<QueryID>,
-    mapping: &'a [(Expr, SmolStr)],
+    mapping: &'a [ProjCol],
 }
 
 impl ExprMutVisitor for TransformCollectSimplify<'_> {
@@ -259,9 +263,14 @@ impl ExprMutVisitor for TransformCollectSimplify<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error> {
-        if let ExprKind::Col(Col::QueryCol(qry_id, idx)) = &e.kind {
+        if let ExprKind::Col(Col {
+            kind: ColKind::QueryCol(qry_id),
+            idx,
+            ..
+        }) = &e.kind
+        {
             if *qry_id == self.old {
-                let mut new_e = self.mapping[*idx as usize].0.clone();
+                let mut new_e = self.mapping[idx.value() as usize].expr.clone();
                 simplify_single(&mut new_e, NullCoalesce::Null).branch()?;
                 *e = new_e;
             }
@@ -272,7 +281,10 @@ impl ExprMutVisitor for TransformCollectSimplify<'_> {
     #[inline]
     fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
         match &e.kind {
-            ExprKind::Col(Col::QueryCol(qry_id, _)) => {
+            ExprKind::Col(Col {
+                kind: ColKind::QueryCol(qry_id),
+                ..
+            }) => {
                 self.new_ids.insert(*qry_id);
             }
             _ => {

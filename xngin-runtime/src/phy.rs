@@ -78,7 +78,7 @@ impl<'a> Builder<'a> {
         match root {
             Op::Proj { cols, input } => {
                 let input_idx = self.build_intermediate(input)?;
-                let eval_plan = QueryEvalPlan::new(cols.iter().map(|(e, _)| e))?;
+                let eval_plan = QueryEvalPlan::new(cols.iter().map(|c| &c.expr))?;
                 let proj = Phy {
                     kind: PhyKind::Project(eval_plan),
                 };
@@ -102,7 +102,7 @@ impl<'a> Builder<'a> {
         loop {
             match root {
                 Op::Proj { cols, input } => {
-                    let eval_plan = TableEvalPlan::new(cols.iter().map(|(e, _)| e))?;
+                    let eval_plan = TableEvalPlan::new(cols.iter().map(|c| &c.expr))?;
                     proj = Some(eval_plan);
                     root = &**input;
                 }

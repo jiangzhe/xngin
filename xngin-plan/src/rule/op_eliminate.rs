@@ -8,7 +8,7 @@ use crate::setop::{Setop, SetopKind};
 use std::collections::HashSet;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, Const, Expr, ExprKind, QueryID, Setq};
+use xngin_expr::{Col, ColKind, Const, Expr, ExprKind, QueryID, Setq};
 
 /// Eliminate redundant operators.
 /// 1. Filter with true predicate can be removed.
@@ -182,7 +182,11 @@ impl<'a> EliminateOp<'a> {
             let qs = &self.empty_qs;
             for e in op.exprs_mut() {
                 eff |= update_simplify_nested(e, NullCoalesce::Null, |e| {
-                    if let ExprKind::Col(Col::QueryCol(qry_id, _)) = &e.kind {
+                    if let ExprKind::Col(Col {
+                        kind: ColKind::QueryCol(qry_id),
+                        ..
+                    }) = &e.kind
+                    {
                         if qs.contains(qry_id) {
                             *e = Expr::const_null();
                         }
@@ -576,7 +580,7 @@ mod tests {
                     _ => (),
                 }));
                 if let Op::Proj { cols, .. } = &subq.root {
-                    assert_eq!(&cols[0].0, &Expr::const_null());
+                    assert_eq!(&cols[0].expr, &Expr::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -600,7 +604,7 @@ mod tests {
                     _ => (),
                 }));
                 if let Op::Proj { cols, .. } = &subq.root {
-                    assert_ne!(&cols[0].0, &Expr::const_null());
+                    assert_ne!(&cols[0].expr, &Expr::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -629,8 +633,8 @@ mod tests {
                     _ => (),
                 }));
                 if let Op::Proj{cols, ..} = &subq.root {
-                    assert_eq!(&cols[0].0, &Expr::const_null());
-                    assert_ne!(&cols[1].0, &Expr::const_null());
+                    assert_eq!(&cols[0].expr, &Expr::const_null());
+                    assert_ne!(&cols[1].expr, &Expr::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -648,8 +652,8 @@ mod tests {
                     _ => (),
                 }));
                 if let Op::Proj{cols, ..} = &subq.root {
-                    assert_ne!(&cols[0].0, &Expr::const_null());
-                    assert_eq!(&cols[1].0, &Expr::const_null());
+                    assert_ne!(&cols[0].expr, &Expr::const_null());
+                    assert_eq!(&cols[1].expr, &Expr::const_null());
                 } else {
                     panic!("fail")
                 }

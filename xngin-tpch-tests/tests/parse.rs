@@ -9,9 +9,18 @@ macro_rules! col {
     }
 }
 
-macro_rules! auto_derived {
+macro_rules! named_col {
     ( $lit:literal ) => {
-        DerivedCol::auto_alias(Expr::column_ref(vec![$lit.into()]), $lit)
+        DerivedCol::new(Expr::column_ref(vec![$lit.into()]), Ident::auto_alias($lit))
+    };
+}
+
+macro_rules! aliased_expr {
+    ( $expr:expr => $lit:literal ) => {
+        DerivedCol::new($expr, Ident::regular($lit))
+    };
+    ( $expr:expr , $lit:literal ) => {
+        DerivedCol::new($expr, Ident::auto_alias($lit))
     };
 }
 
@@ -53,31 +62,29 @@ fn parse_tpch1() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                DerivedCol::auto_alias(col!("l_returnflag"), "l_returnflag"),
-                DerivedCol::auto_alias(col!("l_linestatus"), "l_linestatus"),
-                DerivedCol::new(Expr::sum(col!("l_quantity")), "sum_qty".into()),
-                DerivedCol::new(Expr::sum(col!("l_extendedprice")), "sum_base_price".into()),
-                DerivedCol::new(
+                named_col!("l_returnflag"),
+                named_col!("l_linestatus"),
+                aliased_expr!(Expr::sum(col!("l_quantity")) => "sum_qty"),
+                aliased_expr!(Expr::sum(col!("l_extendedprice")) => "sum_base_price"),
+                aliased_expr!(
                     Expr::sum(Expr::mul(
                         col!("l_extendedprice"),
                         Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
-                    )),
-                    "sum_disc_price".into(),
+                    )) => "sum_disc_price"
                 ),
-                DerivedCol::new(
+                aliased_expr!(
                     Expr::sum(Expr::mul(
                         Expr::mul(
                             col!("l_extendedprice"),
                             Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
                         ),
                         Expr::add(Expr::numeric_lit("1"), col!("l_tax")),
-                    )),
-                    "sum_charge".into(),
+                    )) => "sum_charge"
                 ),
-                DerivedCol::new(Expr::avg(col!("l_quantity")), "avg_qty".into()),
-                DerivedCol::new(Expr::avg(col!("l_extendedprice")), "avg_price".into()),
-                DerivedCol::new(Expr::avg(col!("l_discount")), "avg_disc".into()),
-                DerivedCol::new(Expr::count_asterisk(), "count_order".into()),
+                aliased_expr!(Expr::avg(col!("l_quantity")) => "avg_qty"),
+                aliased_expr!(Expr::avg(col!("l_extendedprice")) => "avg_price"),
+                aliased_expr!(Expr::avg(col!("l_discount")) => "avg_disc"),
+                aliased_expr!(Expr::count_asterisk() => "count_order"),
             ],
             from: vec![table!("lineitem")],
             filter: Some(Expr::cmp_le(
@@ -106,14 +113,14 @@ fn parse_tpch2() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("s_acctbal"),
-                auto_derived!("s_name"),
-                auto_derived!("n_name"),
-                auto_derived!("p_partkey"),
-                auto_derived!("p_mfgr"),
-                auto_derived!("s_address"),
-                auto_derived!("s_phone"),
-                auto_derived!("s_comment"),
+                named_col!("s_acctbal"),
+                named_col!("s_name"),
+                named_col!("n_name"),
+                named_col!("p_partkey"),
+                named_col!("p_mfgr"),
+                named_col!("s_address"),
+                named_col!("s_phone"),
+                named_col!("s_comment"),
             ],
             from: vec![
                 table!("part"),
@@ -136,9 +143,9 @@ fn parse_tpch2() {
                         with: None,
                         query: Query::table(SelectTable {
                             q: SetQuantifier::All,
-                            cols: vec![DerivedCol::auto_alias(
+                            cols: vec![aliased_expr!(
                                 Expr::min(col!("ps_supplycost")),
-                                "min(ps_supplycost)",
+                                "min(ps_supplycost)"
                             )],
                             from: vec![
                                 table!("partsupp"),
@@ -185,16 +192,15 @@ fn parse_tpch3() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("l_orderkey"),
-                DerivedCol::new(
+                named_col!("l_orderkey"),
+                aliased_expr!(
                     Expr::sum(Expr::mul(
                         col!("l_extendedprice"),
                         Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
-                    )),
-                    "revenue".into(),
+                    )) => "revenue"
                 ),
-                auto_derived!("o_orderdate"),
-                auto_derived!("o_shippriority"),
+                named_col!("o_orderdate"),
+                named_col!("o_shippriority"),
             ],
             from: vec![table!("customer"), table!("orders"), table!("lineitem")],
             filter: Some(Expr::pred_conj(vec![
@@ -230,8 +236,8 @@ fn parse_tpch4() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("o_orderpriority"),
-                DerivedCol::new(Expr::count_asterisk(), "order_count".into()),
+                named_col!("o_orderpriority"),
+                aliased_expr!(Expr::count_asterisk() => "order_count"),
             ],
             from: vec![table!("orders")],
             filter: Some(Expr::pred_conj(vec![
@@ -270,13 +276,12 @@ fn parse_tpch5() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("n_name"),
-                DerivedCol::new(
+                named_col!("n_name"),
+                aliased_expr!(
                     Expr::sum(Expr::mul(
                         col!("l_extendedprice"),
                         Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
-                    )),
-                    "revenue".into(),
+                    )) => "revenue"
                 ),
             ],
             from: vec![
@@ -313,9 +318,8 @@ fn parse_tpch6() {
         with: None,
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
-            cols: vec![DerivedCol::new(
-                Expr::sum(Expr::mul(col!("l_extendedprice"), col!("l_discount"))),
-                "revenue".into(),
+            cols: vec![aliased_expr!(
+                Expr::sum(Expr::mul(col!("l_extendedprice"), col!("l_discount"))) => "revenue"
             )],
             from: vec![table!("lineitem")],
             filter: Some(Expr::pred_conj(vec![
@@ -344,10 +348,10 @@ fn parse_tpch7() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("supp_nation"),
-                auto_derived!("cust_nation"),
-                auto_derived!("l_year"),
-                DerivedCol::new(Expr::sum(col!("volume")), "revenue".into()),
+                named_col!("supp_nation"),
+                named_col!("cust_nation"),
+                named_col!("l_year"),
+                aliased_expr!(Expr::sum(col!("volume")) => "revenue"),
             ],
             from: vec![TableRef::primitive(TablePrimitive::derived(
                 QueryExpr {
@@ -355,21 +359,17 @@ fn parse_tpch7() {
                     query: Query::table(SelectTable {
                         q: SetQuantifier::All,
                         cols: vec![
-                            DerivedCol::new(col!("n1"."n_name"), "supp_nation".into()),
-                            DerivedCol::new(col!("n2"."n_name"), "cust_nation".into()),
-                            DerivedCol::new(
-                                Expr::Builtin(Builtin::Extract(
-                                    DatetimeUnit::Year,
-                                    Box::new(col!("l_shipdate")),
-                                )),
-                                "l_year".into(),
+                            aliased_expr!(col!("n1"."n_name") => "supp_nation"),
+                            aliased_expr!(col!("n2"."n_name") => "cust_nation"),
+                            aliased_expr!(
+                                Expr::func(FuncType::Extract,vec![Expr::FuncArg(ConstArg::DatetimeUnit(DatetimeUnit::Year)), col!("l_shipdate")])
+                                => "l_year"
                             ),
-                            DerivedCol::new(
+                            aliased_expr!(
                                 Expr::mul(
                                     col!("l_extendedprice"),
                                     Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
-                                ),
-                                "volume".into(),
+                                ) => "volume"
                             ),
                         ],
                         from: vec![
@@ -443,8 +443,8 @@ fn parse_tpch8() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("o_year"),
-                DerivedCol::new(
+                named_col!("o_year"),
+                aliased_expr!(
                     Expr::div(
                         Expr::sum(Expr::case_when(
                             None,
@@ -452,11 +452,10 @@ fn parse_tpch8() {
                                 Expr::cmp_eq(col!("nation"), Expr::charstr_lit("BRAZIL".into())),
                                 col!("volume"),
                             )],
-                            Some(Expr::numeric_lit("0")),
+                            Some(Box::new(Expr::numeric_lit("0"))),
                         )),
                         Expr::sum(col!("volume")),
-                    ),
-                    "mkt_share".into(),
+                    ) => "mkt_share"
                 ),
             ],
             from: vec![TableRef::primitive(TablePrimitive::derived(
@@ -465,21 +464,17 @@ fn parse_tpch8() {
                     query: Query::table(SelectTable {
                         q: SetQuantifier::All,
                         cols: vec![
-                            DerivedCol::new(
-                                Expr::Builtin(Builtin::Extract(
-                                    DatetimeUnit::Year,
-                                    Box::new(col!("o_orderdate")),
-                                )),
-                                "o_year".into(),
+                            aliased_expr!(
+                                Expr::func(FuncType::Extract,vec![Expr::FuncArg(ConstArg::DatetimeUnit(DatetimeUnit::Year)), col!("o_orderdate")])
+                                => "o_year"
                             ),
-                            DerivedCol::new(
+                            aliased_expr!(
                                 Expr::mul(
                                     col!("l_extendedprice"),
                                     Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
-                                ),
-                                "volume".into(),
+                                ) => "volume"
                             ),
-                            DerivedCol::new(col!("n2"."n_name"), "nation".into()),
+                            aliased_expr!(col!("n2"."n_name") => "nation"),
                         ],
                         from: vec![
                             table!("part"),
@@ -535,9 +530,9 @@ fn parse_tpch9() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("nation"),
-                auto_derived!("o_year"),
-                DerivedCol::new(Expr::sum(col!("amount")), "sum_profit".into()),
+                named_col!("nation"),
+                named_col!("o_year"),
+                aliased_expr!(Expr::sum(col!("amount")) => "sum_profit"),
             ],
             from: vec![TableRef::primitive(TablePrimitive::derived(
                 QueryExpr {
@@ -545,23 +540,19 @@ fn parse_tpch9() {
                     query: Query::table(SelectTable {
                         q: SetQuantifier::All,
                         cols: vec![
-                            DerivedCol::new(col!("n_name"), "nation".into()),
-                            DerivedCol::new(
-                                Expr::builtin(Builtin::Extract(
-                                    DatetimeUnit::Year,
-                                    Box::new(col!("o_orderdate")),
-                                )),
-                                "o_year".into(),
+                            aliased_expr!(col!("n_name") => "nation"),
+                            aliased_expr!(
+                                Expr::func(FuncType::Extract,vec![Expr::FuncArg(ConstArg::DatetimeUnit(DatetimeUnit::Year)), col!("o_orderdate")])
+                                => "o_year"
                             ),
-                            DerivedCol::new(
+                            aliased_expr!(
                                 Expr::sub(
                                     Expr::mul(
                                         col!("l_extendedprice"),
                                         Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
                                     ),
                                     Expr::mul(col!("ps_supplycost"), col!("l_quantity")),
-                                ),
-                                "amount".into(),
+                                ) => "amount"
                             ),
                         ],
                         from: vec![
@@ -609,20 +600,19 @@ fn parse_tpch10() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("c_custkey"),
-                auto_derived!("c_name"),
-                DerivedCol::new(
+                named_col!("c_custkey"),
+                named_col!("c_name"),
+                aliased_expr!(
                     Expr::sum(Expr::mul(
                         col!("l_extendedprice"),
                         Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
-                    )),
-                    "revenue".into(),
+                    )) => "revenue"
                 ),
-                auto_derived!("c_acctbal"),
-                auto_derived!("n_name"),
-                auto_derived!("c_address"),
-                auto_derived!("c_phone"),
-                auto_derived!("c_comment"),
+                named_col!("c_acctbal"),
+                named_col!("n_name"),
+                named_col!("c_address"),
+                named_col!("c_phone"),
+                named_col!("c_comment"),
             ],
             from: vec![
                 table!("customer"),
@@ -665,10 +655,10 @@ fn parse_tpch11() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("ps_partkey"),
+                named_col!("ps_partkey"),
                 DerivedCol::new(
                     Expr::sum(Expr::mul(col!("ps_supplycost"), col!("ps_availqty"))),
-                    Ident::Quoted("value"),
+                    Ident::quoted("value"),
                 ),
             ],
             from: vec![table!("partsupp"), table!("supplier"), table!("nation")],
@@ -684,12 +674,12 @@ fn parse_tpch11() {
                     with: None,
                     query: Query::table(SelectTable {
                         q: SetQuantifier::All,
-                        cols: vec![DerivedCol::auto_alias(
+                        cols: vec![aliased_expr!(
                             Expr::mul(
                                 Expr::sum(Expr::mul(col!("ps_supplycost"), col!("ps_availqty"))),
                                 Expr::numeric_lit("0.0001"),
                             ),
-                            "sum(ps_supplycost * ps_availqty) * 0.0001",
+                            "sum(ps_supplycost * ps_availqty) * 0.0001"
                         )],
                         from: vec![table!("partsupp"), table!("supplier"), table!("nation")],
                         filter: Some(Expr::pred_conj(vec![
@@ -704,7 +694,7 @@ fn parse_tpch11() {
                     }),
                 }),
             )),
-            order_by: vec![OrderElement::desc(Expr::column_ref(vec![Ident::Quoted(
+            order_by: vec![OrderElement::desc(Expr::column_ref(vec![Ident::quoted(
                 "value",
             )]))],
             limit: None,
@@ -720,8 +710,8 @@ fn parse_tpch12() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("l_shipmode"),
-                DerivedCol::new(
+                named_col!("l_shipmode"),
+                aliased_expr!(
                     Expr::sum(Expr::case_when(
                         None,
                         vec![(
@@ -737,11 +727,10 @@ fn parse_tpch12() {
                             ]),
                             Expr::numeric_lit("1"),
                         )],
-                        Some(Expr::numeric_lit("0")),
-                    )),
-                    "high_line_count".into(),
+                        Some(Box::new(Expr::numeric_lit("0"))),
+                    )) => "high_line_count"
                 ),
-                DerivedCol::new(
+                aliased_expr!(
                     Expr::sum(Expr::case_when(
                         None,
                         vec![(
@@ -757,9 +746,8 @@ fn parse_tpch12() {
                             ]),
                             Expr::numeric_lit("1"),
                         )],
-                        Some(Expr::numeric_lit("0")),
-                    )),
-                    "low_line_count".into(),
+                        Some(Box::new(Expr::numeric_lit("0"))),
+                    )) => "low_line_count"
                 ),
             ],
             from: vec![table!("orders"), table!("lineitem")],
@@ -793,8 +781,8 @@ fn parse_tpch13() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("c_count"),
-                DerivedCol::new(Expr::count_asterisk(), "custdist".into()),
+                named_col!("c_count"),
+                aliased_expr!(Expr::count_asterisk() => "custdist"),
             ],
             from: vec![TableRef::primitive(TablePrimitive::derived(
                 QueryExpr {
@@ -802,8 +790,8 @@ fn parse_tpch13() {
                     query: Query::table(SelectTable {
                         q: SetQuantifier::All,
                         cols: vec![
-                            auto_derived!("c_custkey"),
-                            DerivedCol::new(Expr::count(col!("o_orderkey")), "c_count".into()),
+                            named_col!("c_custkey"),
+                            aliased_expr!(Expr::count(col!("o_orderkey")) => "c_count"),
                         ],
                         from: vec![TableRef::joined(TableJoin::qualified(
                             table!("customer"),
@@ -845,7 +833,7 @@ fn parse_tpch14() {
         with: None,
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
-            cols: vec![DerivedCol::new(
+            cols: vec![aliased_expr!(
                 Expr::div(
                     Expr::mul(
                         Expr::numeric_lit("100.00"),
@@ -858,15 +846,14 @@ fn parse_tpch14() {
                                     Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
                                 ),
                             )],
-                            Some(Expr::numeric_lit("0")),
+                            Some(Box::new(Expr::numeric_lit("0"))),
                         )),
                     ),
                     Expr::sum(Expr::mul(
                         col!("l_extendedprice"),
                         Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
                     )),
-                ),
-                "promo_revenue".into(),
+                ) => "promo_revenue"
             )],
             from: vec![table!("lineitem"), table!("part")],
             filter: Some(Expr::pred_conj(vec![
@@ -896,13 +883,12 @@ fn parse_tpch15() {
                     query: Query::table(SelectTable {
                         q: SetQuantifier::All,
                         cols: vec![
-                            DerivedCol::new(col!("l_suppkey"), "supplier_no".into()),
-                            DerivedCol::new(
+                            aliased_expr!(col!("l_suppkey") => "supplier_no"),
+                            aliased_expr!(
                                 Expr::sum(Expr::mul(
                                     col!("l_extendedprice"),
                                     Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
-                                )),
-                                "total_revenue".into(),
+                                )) => "total_revenue"
                             ),
                         ],
                         from: vec![table!("lineitem")],
@@ -921,11 +907,11 @@ fn parse_tpch15() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("s_suppkey"),
-                auto_derived!("s_name"),
-                auto_derived!("s_address"),
-                auto_derived!("s_phone"),
-                auto_derived!("total_revenue"),
+                named_col!("s_suppkey"),
+                named_col!("s_name"),
+                named_col!("s_address"),
+                named_col!("s_phone"),
+                named_col!("total_revenue"),
             ],
             from: vec![table!("supplier"), table!("revenue")],
             filter: Some(Expr::logical_and(
@@ -936,9 +922,9 @@ fn parse_tpch15() {
                         with: None,
                         query: Query::table(SelectTable {
                             q: SetQuantifier::All,
-                            cols: vec![DerivedCol::auto_alias(
+                            cols: vec![aliased_expr!(
                                 Expr::max(col!("total_revenue")),
-                                "max(total_revenue)",
+                                "max(total_revenue)"
                             )],
                             from: vec![table!("revenue")],
                             filter: None,
@@ -966,12 +952,11 @@ fn parse_tpch16() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("p_brand"),
-                auto_derived!("p_type"),
-                auto_derived!("p_size"),
-                DerivedCol::new(
-                    Expr::count_distinct(col!("ps_suppkey")),
-                    "supplier_cnt".into(),
+                named_col!("p_brand"),
+                named_col!("p_type"),
+                named_col!("p_size"),
+                aliased_expr!(
+                    Expr::count_distinct(col!("ps_suppkey")) => "supplier_cnt"
                 ),
             ],
             from: vec![table!("partsupp"), table!("part")],
@@ -998,7 +983,7 @@ fn parse_tpch16() {
                         with: None,
                         query: Query::table(SelectTable {
                             q: SetQuantifier::All,
-                            cols: vec![auto_derived!("s_suppkey")],
+                            cols: vec![named_col!("s_suppkey")],
                             from: vec![table!("supplier")],
                             filter: Some(Expr::pred_like(
                                 col!("s_comment"),
@@ -1032,9 +1017,9 @@ fn parse_tpch17() {
         with: None,
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
-            cols: vec![DerivedCol::new(
-                Expr::div(Expr::sum(col!("l_extendedprice")), Expr::numeric_lit("7.0")),
-                "avg_yearly".into(),
+            cols: vec![aliased_expr!(
+                Expr::div(Expr::sum(col!("l_extendedprice")), Expr::numeric_lit("7.0"))
+                => "avg_yearly"
             )],
             from: vec![table!("lineitem"), table!("part")],
             filter: Some(Expr::pred_conj(vec![
@@ -1047,9 +1032,9 @@ fn parse_tpch17() {
                         with: None,
                         query: Query::table(SelectTable {
                             q: SetQuantifier::All,
-                            cols: vec![DerivedCol::auto_alias(
+                            cols: vec![aliased_expr!(
                                 Expr::mul(Expr::numeric_lit("0.2"), Expr::avg(col!("l_quantity"))),
-                                "0.2 * avg(l_quantity)",
+                                "0.2 * avg(l_quantity)"
                             )],
                             from: vec![table!("lineitem")],
                             filter: Some(Expr::cmp_eq(col!("l_partkey"), col!("p_partkey"))),
@@ -1077,12 +1062,12 @@ fn parse_tpch18() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("c_name"),
-                auto_derived!("c_custkey"),
-                auto_derived!("o_orderkey"),
-                auto_derived!("o_orderdate"),
-                auto_derived!("o_totalprice"),
-                DerivedCol::auto_alias(Expr::sum(col!("l_quantity")), "sum(l_quantity)"),
+                named_col!("c_name"),
+                named_col!("c_custkey"),
+                named_col!("o_orderkey"),
+                named_col!("o_orderdate"),
+                named_col!("o_totalprice"),
+                aliased_expr!(Expr::sum(col!("l_quantity")), "sum(l_quantity)"),
             ],
             from: vec![table!("customer"), table!("orders"), table!("lineitem")],
             filter: Some(Expr::pred_conj(vec![
@@ -1092,7 +1077,7 @@ fn parse_tpch18() {
                         with: None,
                         query: Query::table(SelectTable {
                             q: SetQuantifier::All,
-                            cols: vec![auto_derived!("l_orderkey")],
+                            cols: vec![named_col!("l_orderkey")],
                             from: vec![table!("lineitem")],
                             filter: None,
                             group_by: vec![col!("l_orderkey")],
@@ -1135,12 +1120,11 @@ fn parse_tpch19() {
         with: None,
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
-            cols: vec![DerivedCol::new(
+            cols: vec![aliased_expr!(
                 Expr::sum(Expr::mul(
                     col!("l_extendedprice"),
                     Expr::sub(Expr::numeric_lit("1"), col!("l_discount")),
-                )),
-                "revenue".into(),
+                )) => "revenue"
             )],
             from: vec![table!("lineitem"), table!("part")],
             filter: Some(Expr::pred_disj(vec![
@@ -1262,7 +1246,7 @@ fn parse_tpch20() {
         with: None,
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
-            cols: vec![auto_derived!("s_name"), auto_derived!("s_address")],
+            cols: vec![named_col!("s_name"), named_col!("s_address")],
             from: vec![table!("supplier"), table!("nation")],
             filter: Some(Expr::pred_conj(vec![
                 Expr::pred_in_subquery(
@@ -1271,7 +1255,7 @@ fn parse_tpch20() {
                         with: None,
                         query: Query::table(SelectTable {
                             q: SetQuantifier::All,
-                            cols: vec![auto_derived!("ps_suppkey")],
+                            cols: vec![named_col!("ps_suppkey")],
                             from: vec![table!("partsupp")],
                             filter: Some(Expr::logical_and(
                                 Expr::pred_in_subquery(
@@ -1280,7 +1264,7 @@ fn parse_tpch20() {
                                         with: None,
                                         query: Query::table(SelectTable {
                                             q: SetQuantifier::All,
-                                            cols: vec![auto_derived!("p_partkey")],
+                                            cols: vec![named_col!("p_partkey")],
                                             from: vec![table!("part")],
                                             filter: Some(Expr::pred_like(
                                                 col!("p_name"),
@@ -1299,12 +1283,12 @@ fn parse_tpch20() {
                                         with: None,
                                         query: Query::table(SelectTable {
                                             q: SetQuantifier::All,
-                                            cols: vec![DerivedCol::auto_alias(
+                                            cols: vec![aliased_expr!(
                                                 Expr::mul(
                                                     Expr::numeric_lit("0.5"),
                                                     Expr::sum(col!("l_quantity")),
                                                 ),
-                                                "0.5 * sum(l_quantity)",
+                                                "0.5 * sum(l_quantity)"
                                             )],
                                             from: vec![table!("lineitem")],
                                             filter: Some(Expr::pred_conj(vec![
@@ -1353,8 +1337,8 @@ fn parse_tpch21() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("s_name"),
-                DerivedCol::new(Expr::count_asterisk(), "numwait".into()),
+                named_col!("s_name"),
+                aliased_expr!(Expr::count_asterisk() =>  "numwait"),
             ],
             from: vec![
                 table!("supplier"),
@@ -1425,9 +1409,9 @@ fn parse_tpch22() {
         query: Query::table(SelectTable {
             q: SetQuantifier::All,
             cols: vec![
-                auto_derived!("cntrycode"),
-                DerivedCol::new(Expr::count_asterisk(), "numcust".into()),
-                DerivedCol::new(Expr::sum(col!("c_acctbal")), "totacctbal".into()),
+                named_col!("cntrycode"),
+                aliased_expr!(Expr::count_asterisk() => "numcust"),
+                aliased_expr!(Expr::sum(col!("c_acctbal")) => "totacctbal"),
             ],
             from: vec![TableRef::primitive(TablePrimitive::derived(
                 QueryExpr {
@@ -1435,24 +1419,23 @@ fn parse_tpch22() {
                     query: Query::table(SelectTable {
                         q: SetQuantifier::All,
                         cols: vec![
-                            DerivedCol::new(
-                                Expr::builtin(Builtin::Substring(
-                                    Box::new(col!("c_phone")),
-                                    Box::new(Expr::numeric_lit("1")),
-                                    Some(Box::new(Expr::numeric_lit("2"))),
-                                )),
-                                "cntrycode".into(),
+                            aliased_expr!(
+                                Expr::func(FuncType::Substring, vec![col!("c_phone"), Expr::numeric_lit("1"), Expr::numeric_lit("2")])
+                                => "cntrycode"
                             ),
-                            auto_derived!("c_acctbal"),
+                            named_col!("c_acctbal"),
                         ],
                         from: vec![table!("customer")],
                         filter: Some(Expr::pred_conj(vec![
                             Expr::pred_in_values(
-                                Expr::builtin(Builtin::Substring(
-                                    Box::new(col!("c_phone")),
-                                    Box::new(Expr::numeric_lit("1")),
-                                    Some(Box::new(Expr::numeric_lit("2"))),
-                                )),
+                                Expr::func(
+                                    FuncType::Substring,
+                                    vec![
+                                        col!("c_phone"),
+                                        Expr::numeric_lit("1"),
+                                        Expr::numeric_lit("2"),
+                                    ],
+                                ),
                                 vec![
                                     Expr::charstr_lit("13".into()),
                                     Expr::charstr_lit("31".into()),
@@ -1469,9 +1452,9 @@ fn parse_tpch22() {
                                     with: None,
                                     query: Query::table(SelectTable {
                                         q: SetQuantifier::All,
-                                        cols: vec![DerivedCol::auto_alias(
+                                        cols: vec![aliased_expr!(
                                             Expr::avg(col!("c_acctbal")),
-                                            "avg(c_acctbal)",
+                                            "avg(c_acctbal)"
                                         )],
                                         from: vec![table!("customer")],
                                         filter: Some(Expr::logical_and(
@@ -1480,11 +1463,14 @@ fn parse_tpch22() {
                                                 Expr::numeric_lit("0.00"),
                                             ),
                                             Expr::pred_in_values(
-                                                Expr::builtin(Builtin::Substring(
-                                                    Box::new(col!("c_phone")),
-                                                    Box::new(Expr::numeric_lit("1")),
-                                                    Some(Box::new(Expr::numeric_lit("2"))),
-                                                )),
+                                                Expr::func(
+                                                    FuncType::Substring,
+                                                    vec![
+                                                        col!("c_phone"),
+                                                        Expr::numeric_lit("1"),
+                                                        Expr::numeric_lit("2"),
+                                                    ],
+                                                ),
                                                 vec![
                                                     Expr::charstr_lit("13".into()),
                                                     Expr::charstr_lit("31".into()),

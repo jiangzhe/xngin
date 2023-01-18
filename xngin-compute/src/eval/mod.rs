@@ -195,15 +195,14 @@ impl EvalRef {
 mod tests {
     use super::*;
     use xngin_expr::infer::fix_rec;
-    use xngin_expr::{Expr, FuncKind};
-    use xngin_expr::{PredFuncKind, QueryID};
+    use xngin_expr::{ColIndex, Expr, FuncKind, GlobalID, PredFuncKind, QueryID};
     use xngin_storage::attr::Attr;
     use xngin_storage::block::Block;
 
     #[test]
     fn test_build_eval() {
-        let col1 = Expr::query_col(QueryID::from(0), 0);
-        let col2 = Expr::query_col(QueryID::from(0), 1);
+        let col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
+        let col2 = Expr::query_col(GlobalID::from(2), QueryID::from(0), ColIndex::from(1));
         for (exprs, (n_input, n_cache, n_output)) in vec![
             // select c1
             (vec![col1.clone()], (1, 0, 1)),
@@ -283,8 +282,8 @@ mod tests {
         let attr1 = Attr::from((0..size).map(|i| i as i64));
         let attr2 = attr1.to_owned();
         let block = Block::new(1024, vec![attr1, attr2]);
-        let col1 = Expr::query_col(QueryID::from(0), 0);
-        let col2 = Expr::query_col(QueryID::from(0), 1);
+        let col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
+        let col2 = Expr::query_col(GlobalID::from(2), QueryID::from(0), ColIndex::from(1));
         // select c1
         let es = vec![col1.clone()];
         let plan = build_plan(es);
@@ -388,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_sel_eval() {
-        let mut col1 = Expr::query_col(QueryID::from(0), 0);
+        let mut col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
         fix_ty(&mut col1);
         let mut filter =
             Expr::pred_func(PredFuncKind::Equal, vec![col1.clone(), Expr::const_i64(0)]);
@@ -410,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_conj_eval() {
-        let mut col1 = Expr::query_col(QueryID::from(0), 0);
+        let mut col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
         fix_ty(&mut col1);
         let f1 = Expr::pred_func(
             PredFuncKind::Greater,

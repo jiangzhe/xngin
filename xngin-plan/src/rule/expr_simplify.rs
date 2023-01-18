@@ -11,7 +11,8 @@ use xngin_datatype::AlignPartialOrd;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::*;
 use xngin_expr::{
-    Col, Const, Expr, ExprKind, ExprMutVisitor, FuncKind, Pred, PredFuncKind, QueryCol, QueryID,
+    Col, ColIndex, ColKind, Const, Expr, ExprKind, ExprMutVisitor, FuncKind, GlobalID, Pred,
+    PredFuncKind, QueryCol, QueryID,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,7 +150,7 @@ pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr) -> Result<()>>(
 pub(crate) fn normalize_single(e: &mut Expr) {
     if let ExprKind::Pred(Pred::Func { kind, args }) = &mut e.kind {
         if let Some(flipped_kind) = kind.pos_flip() {
-            match args.as_mut() {
+            match &mut args[..] {
                 [Expr {
                     kind: e1 @ ExprKind::Const(_),
                     ..
@@ -193,7 +194,7 @@ enum ConjCmpEffect {
 
 fn append_conj_cmp(
     cmps: &mut Vec<(PredFuncKind, Const)>,
-    (qry_id, idx): QueryCol,
+    (gid, qry_id, idx): (GlobalID, QueryID, ColIndex),
     new_k: PredFuncKind,
     new_c: Const,
     null_coalesce: NullCoalesce,
@@ -244,7 +245,7 @@ fn append_conj_cmp(
                             // so we can replace it with IsNull(col)
                             let e = Expr::pred_func(
                                 PredFuncKind::IsNull,
-                                vec![Expr::query_col(qry_id, idx)],
+                                vec![Expr::query_col(gid, qry_id, idx)],
                             );
                             conv.insert(e);
                             to_remove.push(i);
@@ -270,7 +271,7 @@ fn append_conj_cmp(
                                 // so we can replace it with IsNull(col)
                                 let e = Expr::pred_func(
                                     PredFuncKind::IsNull,
-                                    vec![Expr::query_col(qry_id, idx)],
+                                    vec![Expr::query_col(gid, qry_id, idx)],
                                 );
                                 conv.insert(e);
                                 to_remove.push(i);
@@ -321,7 +322,7 @@ fn append_conj_cmp(
                             // so we can replace it with IsNull(col)
                             let e = Expr::pred_func(
                                 PredFuncKind::IsNull,
-                                vec![Expr::query_col(qry_id, idx)],
+                                vec![Expr::query_col(gid, qry_id, idx)],
                             );
                             conv.insert(e);
                             to_remove.push(i);
@@ -347,7 +348,7 @@ fn append_conj_cmp(
                                 // so we can replace it with IsNull(col)
                                 let e = Expr::pred_func(
                                     PredFuncKind::IsNull,
-                                    vec![Expr::query_col(qry_id, idx)],
+                                    vec![Expr::query_col(gid, qry_id, idx)],
                                 );
                                 conv.insert(e);
                                 to_remove.push(i);
@@ -377,7 +378,7 @@ fn append_conj_cmp(
                             // so we can replace it with IsNull(col)
                             let e = Expr::pred_func(
                                 PredFuncKind::IsNull,
-                                vec![Expr::query_col(qry_id, idx)],
+                                vec![Expr::query_col(gid, qry_id, idx)],
                             );
                             conv.insert(e);
                             to_remove.push(i);
@@ -407,7 +408,7 @@ fn append_conj_cmp(
                             // so we can replace it with IsNull(col)
                             let e = Expr::pred_func(
                                 PredFuncKind::IsNull,
-                                vec![Expr::query_col(qry_id, idx)],
+                                vec![Expr::query_col(gid, qry_id, idx)],
                             );
                             conv.insert(e);
                             to_remove.push(i);
@@ -522,7 +523,7 @@ fn simplify_conj_short_circuit(
     eff: &mut RuleEffect,
 ) -> Option<Expr> {
     let mut eset = IndexSet::new();
-    let mut cmps: IndexMap<QueryCol, Vec<(PredFuncKind, Const)>> = IndexMap::new();
+    let mut cmps: IndexMap<QueryCol, QueryColPredicates> = IndexMap::new();
     for e in es.drain(..) {
         match &e.kind {
             ExprKind::Const(c) => {
@@ -549,7 +550,7 @@ fn simplify_conj_short_circuit(
             }
             _ => {
                 if let ExprKind::Pred(Pred::Func { kind: new_k, args }) = &e.kind {
-                    match (new_k, args.as_ref()) {
+                    match (new_k, &args[..]) {
                         (
                             PredFuncKind::Equal
                             | PredFuncKind::NotEqual
@@ -558,17 +559,27 @@ fn simplify_conj_short_circuit(
                             | PredFuncKind::Less
                             | PredFuncKind::LessEqual,
                             [Expr {
-                                kind: ExprKind::Col(Col::QueryCol(qry_id, idx)),
+                                kind:
+                                    ExprKind::Col(Col {
+                                        gid,
+                                        kind: ColKind::QueryCol(qry_id),
+                                        idx,
+                                    }),
                                 ..
                             }, Expr {
                                 kind: ExprKind::Const(new_c),
                                 ..
                             }],
                         ) => {
-                            let ent = cmps.entry((*qry_id, *idx)).or_default();
+                            let ent =
+                                cmps.entry((*qry_id, *idx))
+                                    .or_insert_with(|| QueryColPredicates {
+                                        gid: *gid,
+                                        preds: vec![],
+                                    });
                             match append_conj_cmp(
-                                ent,
-                                (*qry_id, *idx),
+                                &mut ent.preds,
+                                (*gid, *qry_id, *idx),
                                 *new_k,
                                 new_c.clone(),
                                 null_coalesce,
@@ -594,20 +605,23 @@ fn simplify_conj_short_circuit(
         }
     }
     for ((qid, idx), mut pes) in cmps {
-        if pes.len() == 1 {
+        if pes.preds.len() == 1 {
             // keep it as is
-            let (kind, c) = pes.into_iter().next().unwrap();
-            let e = Expr::pred_func(kind, vec![Expr::query_col(qid, idx), Expr::new_const(c)]);
+            let (kind, c) = pes.preds.pop().unwrap();
+            let e = Expr::pred_func(
+                kind,
+                vec![Expr::query_col(pes.gid, qid, idx), Expr::new_const(c)],
+            );
             eset.insert(e);
         } else {
             // iteratively simplify cmps
             loop {
                 let mut progress = false;
-                let tmp = mem::take(&mut pes);
+                let tmp = mem::take(&mut pes.preds);
                 for (new_k, new_c) in tmp {
                     match append_conj_cmp(
-                        &mut pes,
-                        (qid, idx),
+                        &mut pes.preds,
+                        (pes.gid, qid, idx),
                         new_k,
                         new_c,
                         null_coalesce,
@@ -624,8 +638,11 @@ fn simplify_conj_short_circuit(
                     break;
                 }
             }
-            for (k, c) in pes {
-                let e = Expr::pred_func(k, vec![Expr::query_col(qid, idx), Expr::new_const(c)]);
+            for (k, c) in pes.preds {
+                let e = Expr::pred_func(
+                    k,
+                    vec![Expr::query_col(pes.gid, qid, idx), Expr::new_const(c)],
+                );
                 eset.insert(e);
             }
         }
@@ -635,6 +652,12 @@ fn simplify_conj_short_circuit(
         es.push(e)
     }
     None
+}
+
+struct QueryColPredicates {
+    // global id of this query column.
+    gid: GlobalID,
+    preds: Vec<(PredFuncKind, Const)>,
 }
 
 #[inline]
@@ -752,7 +775,7 @@ fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
                     let e = mem::take(e);
                     Some(coerce_numeric(e))
                 } else if let ExprKind::Func { kind, args, .. } = &mut e.kind {
-                    match (kind, args.as_mut()) {
+                    match (kind, &mut args[..]) {
                         // rule 6: (e1+c2)+c1 => e1 + (c2+c1)
                         (
                             FuncKind::Add,
@@ -804,7 +827,7 @@ fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
                 } else {
                     match &mut e.kind {
                         ExprKind::Func { kind, args, .. } => {
-                            match (kind, args.as_mut()) {
+                            match (kind, &mut args[..]) {
                                 // rule 7: c1 + (e1+c2) => e1 + (c1+c2)
                                 (
                                     FuncKind::Add,
@@ -866,7 +889,7 @@ fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
                 },
                 ..
             }] => {
-                match (k1, k2, a1.as_mut(), a2.as_mut()) {
+                match (k1, k2, &mut a1[..], &mut a2[..]) {
                     // rule 8.1: (e1+c1)+(e2+c2) => (e1+e2) + (c1+c2)
                     (
                         FuncKind::Add,
@@ -1052,7 +1075,7 @@ fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
                     let e = mem::take(e);
                     Some(coerce_numeric(e))
                 } else if let ExprKind::Func { kind, args, .. } = &mut e.kind {
-                    match (kind, args.as_mut()) {
+                    match (kind, &mut args[..]) {
                         // rule 6: (e1+c2)-c1 => e1 + (c2-c1)
                         (
                             FuncKind::Add,
@@ -1097,7 +1120,7 @@ fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
                 ..
             }, e] => {
                 match &mut e.kind {
-                    ExprKind::Func { kind, args, .. } => match (kind, args.as_mut()) {
+                    ExprKind::Func { kind, args, .. } => match (kind, &mut args[..]) {
                         // rule 7: c1 - (e1+c2) => (c1-c2) - e1
                         (
                             FuncKind::Add,
@@ -1163,7 +1186,7 @@ fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
                 },
                 ..
             }] => {
-                match (k1, k2, a1.as_mut(), a2.as_mut()) {
+                match (k1, k2, &mut a1[..], &mut a2[..]) {
                     // rule 8.1: (e1+c1)-(e2+c2) => (e1-e2) + (c1-c2)
                     (
                         FuncKind::Add,
@@ -1455,7 +1478,7 @@ fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Exp
                     // already folded as constant
                     res
                 } else if let Some(flipped_kind) = kind.pos_flip() {
-                    match args.as_mut() {
+                    match &mut args[..] {
                         // 2.3: e1 + c1 cmp c2 => e1 cmp c3
                         [Expr {
                             kind:
@@ -1468,7 +1491,7 @@ fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Exp
                         }, Expr {
                             kind: ExprKind::Const(c2),
                             ..
-                        }] => match fargs.as_mut() {
+                        }] => match &mut fargs[..] {
                             [e1, Expr {
                                 kind: ExprKind::Const(c1),
                                 ..
@@ -1489,7 +1512,7 @@ fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Exp
                         }, Expr {
                             kind: ExprKind::Const(c2),
                             ..
-                        }] => match fargs.as_mut() {
+                        }] => match &mut fargs[..] {
                             // 2.3: e1 - c1 cmp c2
                             [e1, Expr {
                                 kind: ExprKind::Const(c1),
@@ -1523,7 +1546,7 @@ fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Exp
                                     ..
                                 },
                             ..
-                        }] => match fargs.as_mut() {
+                        }] => match &mut fargs[..] {
                             [e1, Expr {
                                 kind: ExprKind::Const(c2),
                                 ..
@@ -1544,7 +1567,7 @@ fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Exp
                                     ..
                                 },
                             ..
-                        }] => match fargs.as_mut() {
+                        }] => match &mut fargs[..] {
                             // 2.4: c1 cmp e1 - c2 => e1 flip_cmp (c1+c2)
                             [e1, Expr {
                                 kind: ExprKind::Const(c2),
@@ -1588,7 +1611,7 @@ fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Exp
                                     ..
                                 },
                             ..
-                        }] => match (kind1, kind2, args1.as_mut(), args2.as_mut()) {
+                        }] => match (kind1, kind2, &mut args1[..], &mut args2[..]) {
                             // 2.6: e1 + c1 cmp e2 + c2 => e1 cmp e2 + (c2-c1)
                             (
                                 FuncKind::Add,

@@ -5,6 +5,7 @@ pub mod reorder;
 use crate::error::{Error, Result};
 use crate::op::Op;
 use std::collections::HashSet;
+use std::ops::{Deref, DerefMut};
 use xngin_expr::{Expr, QueryID};
 
 // alias of join graph
@@ -184,6 +185,21 @@ impl AsRef<Op> for JoinOp {
 impl AsMut<Op> for JoinOp {
     #[inline]
     fn as_mut(&mut self) -> &mut Op {
+        &mut self.0
+    }
+}
+
+impl Deref for JoinOp {
+    type Target = Op;
+    #[inline]
+    fn deref(&self) -> &Op {
+        &self.0
+    }
+}
+
+impl DerefMut for JoinOp {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Op {
         &mut self.0
     }
 }

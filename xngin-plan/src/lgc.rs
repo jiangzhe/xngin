@@ -34,6 +34,7 @@ impl LgcPlan {
     }
 }
 
+#[inline]
 fn generate_shape(qs: &QuerySet, root: &QueryID, shape: &mut Vec<OpKind>) {
     if let Some(subq) = qs.get(root) {
         let mut sg = ShapeGen { qs, shape };

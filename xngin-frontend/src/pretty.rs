@@ -11,7 +11,6 @@ pub struct PrettyConf {
     pub newline: bool,
     pub tuple_newline: bool,
     pub enclose_multi_preds: bool,
-    pub elim_auto_alias: bool,
 }
 
 impl Default for PrettyConf {
@@ -23,7 +22,6 @@ impl Default for PrettyConf {
             newline: true,
             tuple_newline: false,
             enclose_multi_preds: true,
-            elim_auto_alias: true,
         }
     }
 }
@@ -44,13 +42,13 @@ pub trait PrettyFormat {
 
 impl PrettyFormat for Ident<'_> {
     fn pretty_fmt<F: Write>(&self, f: &mut F, conf: &PrettyConf, _indent: usize) -> fmt::Result {
-        match self {
-            Ident::Regular(s) => f.write_str(s),
-            Ident::Quoted(s) | Ident::AutoAlias(s) => {
+        match self.kind {
+            IdentKind::Regular => f.write_str(self.as_ref()),
+            IdentKind::Quoted | IdentKind::AutoAlias => {
                 // here treat auto-alias same as delimited.
                 // todo: should take care of escape characters.
                 f.write_char(conf.ident_delim)?;
-                f.write_str(s)?;
+                f.write_str(self.as_ref())?;
                 f.write_char(conf.ident_delim)
             }
         }
@@ -188,7 +186,7 @@ impl PrettyFormat for Expr<'_> {
             Expr::Binary(be) => be.pretty_fmt(f, conf, indent),
             Expr::Predicate(pred) => pred.pretty_fmt(f, conf, indent),
             Expr::Func(func) => func.pretty_fmt(f, conf, indent),
-            Expr::Builtin(bf) => bf.pretty_fmt(f, conf, indent),
+            Expr::FuncArg(arg) => arg.pretty_fmt(f, conf, indent),
             Expr::CaseWhen(cw) => cw.pretty_fmt(f, conf, indent),
             Expr::ScalarSubquery(sq) => {
                 f.write_char('(')?;
@@ -431,8 +429,40 @@ impl PrettyFormat for BinaryExpr<'_> {
 }
 
 impl PrettyFormat for FuncExpr<'_> {
-    fn pretty_fmt<F: Write>(&self, _f: &mut F, _conf: &PrettyConf, _indent: usize) -> fmt::Result {
-        unimplemented!()
+    fn pretty_fmt<F: Write>(&self, f: &mut F, conf: &PrettyConf, indent: usize) -> fmt::Result {
+        f.write_str(self.ty.kw_str(conf.upper_kw))?;
+        f.write_char('(')?;
+        match self.ty {
+            FuncType::Extract => {
+                self.args[0].pretty_fmt(f, conf, indent)?;
+                if conf.upper_kw {
+                    f.write_str(" FROM ")?;
+                } else {
+                    f.write_str(" from ")?;
+                }
+                self.args[1].pretty_fmt(f, conf, indent)?;
+            }
+            FuncType::Substring => {
+                self.args[0].pretty_fmt(f, conf, indent)?;
+                f.write_str(", ")?;
+                self.args[1].pretty_fmt(f, conf, indent)?;
+                if self.args[2] != Expr::FuncArg(ConstArg::None) {
+                    f.write_str(", ")?;
+                    self.args[2].pretty_fmt(f, conf, indent)?;
+                }
+            }
+        }
+        f.write_char(')')
+    }
+}
+
+impl PrettyFormat for ConstArg {
+    fn pretty_fmt<F: Write>(&self, f: &mut F, conf: &PrettyConf, _indent: usize) -> fmt::Result {
+        match self {
+            ConstArg::DatetimeUnit(unit) => f.write_str(unit.kw_str(conf.upper_kw)),
+            // absent argument should not be output.
+            ConstArg::None => unreachable!(),
+        }
     }
 }
 
@@ -442,7 +472,7 @@ impl PrettyFormat for Builtin<'_> {
         f.write_char('(')?;
         match self {
             Builtin::Extract(unit, value) => {
-                f.write_str(unit.kw_str(conf.upper_kw))?;
+                unit.pretty_fmt(f, conf, indent)?;
                 if conf.upper_kw {
                     f.write_str(" FROM ")?;
                 } else {
@@ -497,6 +527,15 @@ impl PrettyFormat for CaseWhen<'_> {
 
         f.write_char(' ')?;
         f.write_str(end_str)
+    }
+}
+
+impl PrettyFormat for Statement<'_> {
+    fn pretty_fmt<F: Write>(&self, f: &mut F, conf: &PrettyConf, indent: usize) -> fmt::Result {
+        match self {
+            Statement::Select(q) => q.pretty_fmt(f, conf, indent),
+            _ => todo!(),
+        }
     }
 }
 
@@ -587,7 +626,7 @@ impl PrettyFormat for DerivedCol<'_> {
             }
             DerivedCol::Expr(expr, alias) => {
                 expr.pretty_fmt(f, conf, indent)?;
-                if !conf.elim_auto_alias || !alias.auto_alias() {
+                if alias.kind != IdentKind::AutoAlias {
                     if conf.upper_kw {
                         f.write_str(" AS ")?;
                     } else {
