@@ -9,6 +9,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0.30-debian
+        ports:
+          - 13306:3306
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        options: --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=2s --health-retries=3
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2

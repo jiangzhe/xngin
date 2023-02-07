@@ -1,0 +1,29 @@
+[package]
+name = "xngin-protocol"
+version = "0.1.0"
+edition = "2021"
+authors = ["jiangzhe <nju.jiangzhe@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Protocol module of X-Engine"
+keywords = ["protocol", "mysql"]
+categories = ["database-implementations"]
+repository = "https://github.com/jiangzhe/xngin/xngin-protocol/"
+
+[dependencies]
+thiserror = "1.0"
+bitflags = "1.2"
+futures-lite = "1.12"
+crypto = {version = "0.4", features = ["digest"] }
+sha1 = "0.10"
+sha2 = "0.10"
+rsa = "0.8"
+spki = "0.6"
+rand = "0.8"
+log = "0.4"
+async-net = "1.7"
+async-io = "1.6"
+
+[dev-dependencies]
+async-executor = "1.4"
+async-task = "4.2"
+env_logger = "0.10"
