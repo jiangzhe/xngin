@@ -8,14 +8,17 @@ use std::borrow::{Borrow, Cow, ToOwned};
 /// See: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query.html
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComQuery<'a> {
-    pub code: CmdCode,
     pub query: Cow<'a, str>,
 }
 
 impl<'a> ComQuery<'a> {
+    #[inline]
+    pub fn code(&self) -> CmdCode {
+        CmdCode::Query
+    }
+
     pub fn new(query: impl Into<String>) -> Self {
         ComQuery {
-            code: CmdCode::Query,
             query: Cow::Owned(query.into()),
         }
     }
@@ -25,13 +28,12 @@ impl<'a> ComQuery<'a> {
         T: Borrow<str> + ?Sized,
     {
         ComQuery {
-            code: CmdCode::Query,
             query: Cow::Borrowed(query.borrow()),
         }
     }
 }
 
-impl_from_ref!(ComQuery: code; query);
+impl_from_ref!(ComQuery: ; query);
 
 impl<'a> NewMySer for ComQuery<'a> {
     type Ser<'s> = MySerPacket<'s, 2> where Self: 's;
@@ -41,7 +43,7 @@ impl<'a> NewMySer for ComQuery<'a> {
         MySerPacket::new(
             ctx,
             [
-                MySerElem::one_byte(self.code as u8),
+                MySerElem::one_byte(self.code() as u8),
                 MySerElem::slice(self.query.as_bytes()),
             ],
         )
@@ -58,7 +60,6 @@ impl<'a> MyDeser<'a> for ComQuery<'a> {
         let query = input.deser_to_end();
         let query = std::str::from_utf8(query).map_err(|_| Error::InvalidInput)?;
         let res = ComQuery {
-            code,
             query: Cow::Borrowed(query),
         };
         Ok((*input, res))

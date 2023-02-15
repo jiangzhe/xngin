@@ -9,6 +9,12 @@ use crate::mysql::flag::{CapabilityFlags, StatusFlags};
 pub use de::{my_deser_packet, MyDeser, MyDeserExt};
 pub use ser::{MySer, MySerElem, MySerExt, MySerKind, MySerPacket, NewMySer};
 
+/// Server and client modes have different behaviors.
+pub enum SerdeMode {
+    Server,
+    Client,
+}
+
 /// Context contains session level runtime status, user variables
 /// and buffer to store intermediate data.
 pub struct SerdeCtx {
@@ -31,6 +37,8 @@ pub struct SerdeCtx {
     /// It should not be changed once the context is used.
     /// Otherwise, the serializaion/deserialization may be wrong.
     pub(crate) max_payload_size: usize,
+
+    pub mode: SerdeMode,
 }
 
 unsafe impl Send for SerdeCtx {}
@@ -46,11 +54,18 @@ impl Default for SerdeCtx {
             curr_cmd: None,
             pkt_nr: 0,
             max_payload_size: 0xffffff,
+            mode: SerdeMode::Client, // by default use client mode
         }
     }
 }
 
 impl SerdeCtx {
+    #[inline]
+    pub fn with_mode(mut self, mode: SerdeMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     /// Update max payload size.
     /// This method is used only for test.
     #[cfg(test)]
@@ -68,7 +83,6 @@ impl SerdeCtx {
         self.pkt_nr = 0;
     }
 
-    /// Increment packet number by one.
     #[inline]
     pub fn check_and_inc_pkt_nr(&mut self, pkt_nr: u8) -> Result<()> {
         if self.pkt_nr != pkt_nr {

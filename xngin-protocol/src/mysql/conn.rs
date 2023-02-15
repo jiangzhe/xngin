@@ -1,14 +1,16 @@
 use crate::buf::{ByteBuffer, ByteBufferReadGuard};
-use crate::error::{Error, Result};
+use crate::error::{ensure_empty, Error, Result};
 use crate::mysql::auth::{AuthPlugin, AuthPluginImpl};
 use crate::mysql::cmd::{CmdCode, ComFieldList, ComQuery};
 use crate::mysql::col::ColumnDefinition;
 use crate::mysql::flag::{CapabilityFlags, StatusFlags};
 use crate::mysql::handshake::{
-    ConnectAttr, HandshakeCliResp41, HandshakeSvrResp, InitialHandshake,
+    ConnectAttr, HandshakeCliResp41, HandshakeSvrResp, InitialHandshake, AUTH_PLUGIN_DATA_LEN1,
 };
 use crate::mysql::packet::{EofPacket, ErrPacket, OkPacket};
-use crate::mysql::serde::{MyDeser, MyDeserExt, MySer, NewMySer, SerdeCtx};
+use crate::mysql::serde::{MyDeser, MyDeserExt, MySer, MySerElem, MySerPacket, NewMySer, SerdeCtx};
+use crate::mysql::server::principal::Principal;
+use crate::mysql::server::ServerSpec;
 use async_io::Timer;
 use async_net::{AsyncToSocketAddrs, TcpStream};
 use futures_lite::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, FutureExt};
@@ -16,17 +18,14 @@ use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
 
-const DEFAULT_WRITE_BUF_SIZE: usize = 4096;
-
 /// Options used to connect MySQL via TCP.
-pub struct TcpOpts<T> {
+pub struct TcpClientOpts<T> {
     addr: T,
-    write_buf_size: usize,
     login: HandshakeOpts,
     ctx: SerdeCtx,
 }
 
-impl<T> TcpOpts<T> {
+impl<T> TcpClientOpts<T> {
     #[inline]
     pub fn username(mut self, username: impl Into<String>) -> Self {
         self.login.username = username.into().into_bytes();
@@ -46,31 +45,17 @@ impl<T> TcpOpts<T> {
     }
 
     #[inline]
-    pub fn write_buf_size(mut self, write_buf_size: usize) -> Self {
-        self.write_buf_size = write_buf_size;
-        self
-    }
-
-    #[inline]
     pub fn connect_attr(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.login.connect_attrs.push((key.into(), value.into()));
         self
     }
-
-    // #[inline]
-    // pub fn auth_plugin(mut self, plugin_name: &str) -> Result<Self> {
-    //     let plugin = AuthPluginImpl::new(plugin_name.as_bytes())?;
-    //     self.login.auth_plugin.replace(plugin);
-    //     Ok(self)
-    // }
 }
 
-impl<T: AsyncToSocketAddrs> TcpOpts<T> {
+impl<T: AsyncToSocketAddrs> TcpClientOpts<T> {
     #[inline]
     pub fn new(addr: T) -> Self {
-        TcpOpts {
+        TcpClientOpts {
             addr,
-            write_buf_size: DEFAULT_WRITE_BUF_SIZE,
             login: HandshakeOpts::default(),
             ctx: SerdeCtx::default(),
         }
@@ -80,6 +65,7 @@ impl<T: AsyncToSocketAddrs> TcpOpts<T> {
     pub async fn connect(
         self,
         read_buf: &ByteBuffer,
+        write_buf: &mut [u8],
         connect_timeout: Option<Duration>,
     ) -> Result<MyConn<TcpStream>> {
         let conn = if let Some(timeout) = connect_timeout {
@@ -92,13 +78,8 @@ impl<T: AsyncToSocketAddrs> TcpOpts<T> {
         } else {
             TcpStream::connect(self.addr).await?
         };
-        let mut mc = MyConn {
-            id: 0,
-            conn,
-            ctx: self.ctx,
-            write_buf: vec![0; self.write_buf_size],
-        };
-        mc.handshake(read_buf, self.login).await?;
+        let mut mc = MyConn::new(0, conn, self.ctx);
+        mc.client_handshake(read_buf, write_buf, self.login).await?;
         Ok(mc)
     }
 }
@@ -109,7 +90,6 @@ struct HandshakeOpts {
     password: Vec<u8>,
     database: Vec<u8>,
     connect_attrs: Vec<(String, String)>,
-    // auth_plugin: Option<AuthPluginImpl>,
 }
 
 pub struct MyConn<T> {
@@ -117,28 +97,59 @@ pub struct MyConn<T> {
     id: u32,
     conn: T,
     ctx: SerdeCtx,
-    write_buf: Vec<u8>,
+}
+
+impl<T> MyConn<T> {
+    #[inline]
+    pub fn new(id: u32, conn: T, ctx: SerdeCtx) -> Self {
+        MyConn { id, conn, ctx }
+    }
+
+    #[inline]
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    #[inline]
+    pub fn reset_pkt_nr(&mut self) {
+        self.ctx.reset_pkt_nr()
+    }
+
+    #[inline]
+    pub fn ctx(&self) -> &SerdeCtx {
+        &self.ctx
+    }
+
+    #[inline]
+    pub fn ctx_mut(&mut self) -> &mut SerdeCtx {
+        &mut self.ctx
+    }
 }
 
 impl<T: AsyncWrite + Unpin> MyConn<T> {
     /// Send a packet to MySQL server.
     /// Reset packet number if necessary.
-    async fn send<M: NewMySer + ?Sized>(&mut self, msg: &M, reset_pkt_nr: bool) -> Result<()> {
-        if reset_pkt_nr {
-            self.ctx.reset_pkt_nr();
-        }
-        let mut ser = msg.new_my_ser(&mut self.ctx);
+    pub(crate) async fn send<const N: usize>(
+        &mut self,
+        mut ser: MySerPacket<'_, N>,
+        write_buf: &mut [u8],
+    ) -> Result<()> {
         let mut total_bytes = ser.my_len(&self.ctx);
-        while self.write_buf.len() < total_bytes {
-            ser.my_ser_partial(&mut self.ctx, &mut self.write_buf);
-            self.conn.write_all(&self.write_buf).await?;
-            total_bytes -= self.write_buf.len();
+        while write_buf.len() < total_bytes {
+            ser.my_ser_partial(&mut self.ctx, write_buf);
+            self.conn.write_all(write_buf).await?;
+            total_bytes -= write_buf.len();
         }
         if total_bytes > 0 {
-            ser.my_ser(&mut self.ctx, &mut self.write_buf[..total_bytes]);
-            self.conn.write_all(&self.write_buf[..total_bytes]).await?;
+            ser.my_ser(&mut self.ctx, &mut write_buf[..total_bytes]);
+            self.conn.write_all(&write_buf[..total_bytes]).await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn send_bytes(&mut self, b: &[u8], write_buf: &mut [u8]) -> Result<()> {
+        let ser = MySerPacket::new(&self.ctx, [MySerElem::slice(b)]);
+        self.send(ser, write_buf).await
     }
 }
 
@@ -151,7 +162,7 @@ impl<T: AsyncRead + Unpin> MyConn<T> {
     /// it off and once space is exhausted, a [`Error::BufferFull`] is
     /// returned.
     #[allow(clippy::uninit_vec)]
-    async fn recv<'a>(
+    pub(crate) async fn recv<'a>(
         &mut self,
         buf: &'a ByteBuffer,
         vacuum: bool,
@@ -422,9 +433,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
     /// should be called before any other commands
     /// this method will change the connect capability flags
     #[inline]
-    async fn handshake<'a>(&mut self, buf: &'a ByteBuffer, opts: HandshakeOpts) -> Result<()> {
-        buf.update()?.vacuum(); // vacuum before handshake
-        let (pkt, rg) = self.recv(buf, true).await?;
+    async fn client_handshake<'a>(
+        &mut self,
+        read_buf: &'a ByteBuffer,
+        write_buf: &mut [u8],
+        opts: HandshakeOpts,
+    ) -> Result<()> {
+        read_buf.update()?.vacuum(); // vacuum before handshake
+        self.ctx.reset_pkt_nr();
+        let (pkt, rg) = self.recv(read_buf, true).await?;
         let (next, handshake) = InitialHandshake::my_deser(&mut self.ctx, &pkt)?;
         ensure_empty(next)?;
         self.id = handshake.connection_id;
@@ -492,18 +509,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
             client_resp.cap_flags,
             client_resp.connect_attrs,
         );
-        self.send(&client_resp, false).await?;
+        let ser = client_resp.new_my_ser(&mut self.ctx);
+        self.send(ser, write_buf).await?;
         // here we can release read guard because previous contents in the buffer are not used any more.
         rg.advance(pkt.len());
         loop {
-            buf.update()?.vacuum();
-            let (pkt, rg) = self.recv(buf, false).await?;
-            match HandshakeSvrResp::my_deser(&mut self.ctx, &pkt)? {
+            read_buf.update()?.vacuum();
+            let (payload, rg) = self.recv(read_buf, false).await?;
+            match HandshakeSvrResp::my_deser(&mut self.ctx, &payload)? {
                 (next, HandshakeSvrResp::Ok(ok)) => {
                     ensure_empty(next)?;
                     log::debug!("handshake succeeded");
                     self.ctx.status_flags = ok.status_flags;
-                    rg.advance(pkt.len());
+                    rg.advance(payload.len());
                     // reset packet number for command phase
                     self.ctx.reset_pkt_nr();
                     break;
@@ -516,7 +534,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
                         String::from_utf8_lossy(&err.sql_state),
                         String::from_utf8_lossy(&err.error_message)
                     );
-                    rg.advance(pkt.len());
+                    rg.advance(payload.len());
                     return Err(err.into());
                 }
                 // Although we use auth plugin inferred by server initial handshake,
@@ -539,9 +557,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
                     // initialize auth response using new plugin.
                     let resp =
                         auth_plugin.gen_init_auth_resp(&opts.username, &opts.password, &seed)?;
-                    rg.advance(pkt.len()); // after this point, switch packet will not be used.
+                    rg.advance(payload.len()); // after this point, switch packet will not be used.
                     if !resp.is_empty() {
-                        self.send(&resp[..], false).await?;
+                        self.send_bytes(&resp[..], write_buf).await?;
                     }
                 }
                 (next, HandshakeSvrResp::More(more)) => {
@@ -550,16 +568,98 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
                         "auth more data={:?}",
                         String::from_utf8_lossy(&more.plugin_data)
                     );
-                    rg.advance(pkt.len());
+                    rg.advance(payload.len());
                     let mut resp = vec![];
                     auth_plugin.next(&more.plugin_data, &mut resp)?;
                     if !resp.is_empty() {
-                        self.send(&resp[..], false).await?;
+                        self.send_bytes(&resp[..], write_buf).await?;
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    /// handshake process initialized from server to client.
+    /// This is complement of client handshake.
+    pub(crate) async fn server_handshake(
+        &mut self,
+        spec: &ServerSpec,
+        status_flags: StatusFlags,
+        read_buf: &ByteBuffer,
+        write_buf: &mut [u8],
+    ) -> Result<Principal> {
+        const AUTH_PLUGIN_DATA_LEN: usize = 21; // 20 rand bytes with null end byte.
+        const DEFAULT_PLUGIN_NAME: &[u8] = b"mysql_native_password";
+        // todo: add credential storage.
+        const USERNAME: &[u8] = b"root";
+        const PASSWORD: &[u8] = b"password";
+        let mut seed = [0u8; AUTH_PLUGIN_DATA_LEN];
+        {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            // fix 20 byte seed, with null end.
+            for b in seed[..AUTH_PLUGIN_DATA_LEN - 1].iter_mut() {
+                *b = rng.gen();
+            }
+        }
+        self.ctx.reset_pkt_nr();
+        let ih = InitialHandshake {
+            protocol_version: spec.protocol_version,
+            server_version: Cow::Borrowed(spec.version.as_bytes()),
+            connection_id: self.id(),
+            auth_plugin_data_1: Cow::Borrowed(&seed[..AUTH_PLUGIN_DATA_LEN1]),
+            charset: 63,
+            status_flags: status_flags.bits(),
+            capability_flags: self.ctx.cap_flags.bits(),
+            auth_plugin_data_length: AUTH_PLUGIN_DATA_LEN as u8,
+            auth_plugin_data_2: Cow::Borrowed(&seed[AUTH_PLUGIN_DATA_LEN1..]),
+            auth_plugin_name: Cow::Borrowed(DEFAULT_PLUGIN_NAME),
+        };
+        let ser = ih.new_my_ser(&mut self.ctx);
+        self.send(ser, write_buf).await?;
+
+        let (payload, rg) = self.recv(read_buf, true).await?;
+        let (next, resp) = HandshakeCliResp41::my_deser(&mut self.ctx, &payload)?;
+        ensure_empty(next)?;
+        if &*resp.auth_plugin_name != DEFAULT_PLUGIN_NAME {
+            return Err(Error::Unimplemented("auth switch"));
+        }
+        // todo: check capabilities
+        check_cap_flags(resp.cap_flags)?;
+        self.ctx.cap_flags = resp.cap_flags; // update cap_flags
+        let mut auth_plugin = AuthPluginImpl::new(DEFAULT_PLUGIN_NAME)?;
+        let expected = auth_plugin.gen_init_auth_resp(USERNAME, PASSWORD, &seed)?;
+        if *resp.auth_response != expected {
+            return Err(Error::SqlError {
+                code: 1045,
+                state_and_msg: Box::new((
+                    String::from("28000"),
+                    format!(
+                        "Access denied for user '{}'",
+                        String::from_utf8_lossy(&resp.username)
+                    ),
+                )),
+            });
+        }
+        let principal = Principal {
+            username: String::from_utf8(resp.username.to_vec())?,
+            // todo: fix hostname
+            hostname: String::new(),
+        };
+        rg.advance(payload.len());
+        let ok = OkPacket {
+            header: 0x00,
+            affected_rows: 0,
+            last_insert_id: 0,
+            status_flags,
+            warnings: 0,
+            info: Cow::Borrowed(b""),
+            session_state_changes: Cow::Borrowed(b""),
+        };
+        let ser = ok.new_my_ser(&mut self.ctx);
+        self.send(ser, write_buf).await?;
+        Ok(principal)
     }
 
     /// Send a text query to MySQL server and return a result stream.
@@ -576,20 +676,24 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
     pub async fn query<'a>(
         mut self,
         cmd: impl Into<ComQuery<'_>>,
-        buf: &'a ByteBuffer,
+        read_buf: &'a ByteBuffer,
+        write_buf: &mut [u8],
     ) -> Result<(
         Vec<ColumnDefinition<'a>>,
         ByteBufferReadGuard<'a>,
         RowStream<T>,
     )> {
+        self.ctx.reset_pkt_nr();
         self.ctx.curr_cmd.replace(CmdCode::Query);
-        self.send(&cmd.into(), true).await?;
+        let cmd = cmd.into();
+        let ser = cmd.new_my_ser(&mut self.ctx);
+        self.send(ser, write_buf).await?;
         // The valid state transfer is listed below:
         // 1. ColCnt => ColDef / Err
         // 2. ColDef => OptEof (if DEPRECATED_EOF is disabled) / Rows / Err
         // 4. OptEof => Rows / Err
         // 5. Rows => Rows / Err
-        let (col_defs, rg) = self.parse_rows_metadata(buf).await?;
+        let (col_defs, rg) = self.parse_rows_metadata(read_buf).await?;
         Ok((col_defs, rg, RowStream(self)))
     }
 
@@ -600,12 +704,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
     pub async fn exec<'a>(
         &mut self,
         cmd: impl Into<ComQuery<'_>>,
-        buf: &'a ByteBuffer,
+        read_buf: &'a ByteBuffer,
+        write_buf: &mut [u8],
     ) -> Result<(ExecResp<'a>, ByteBufferReadGuard<'a>)> {
+        self.ctx.reset_pkt_nr();
         self.ctx.curr_cmd.replace(CmdCode::Query);
-        self.send(&cmd.into(), true).await?;
+        let cmd = cmd.into();
+        let ser = cmd.new_my_ser(&mut self.ctx);
+        self.send(ser, write_buf).await?;
         // Only Ok and Err packet are allowed for execute type SQL.
-        let (payload, rg) = self.recv_buf(buf, true).await?;
+        let (payload, rg) = self.recv_buf(read_buf, true).await?;
         if payload.is_empty() {
             return Err(Error::InvalidInput);
         }
@@ -614,7 +722,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
                 let (next, ok) = OkPacket::my_deser(&mut self.ctx, payload)?;
                 ensure_empty(next)?;
                 rg.advance(payload.len());
-                Ok((ExecResp::from(ok), buf.single_read()?))
+                Ok((ExecResp::from(ok), read_buf.single_read()?))
             }
             0xff => {
                 let (next, err) = ErrPacket::my_deser(&mut self.ctx, payload)?;
@@ -632,19 +740,21 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
     pub async fn field_list<'a>(
         &mut self,
         cmd: impl Into<ComFieldList<'_>>,
-        buf: &'a ByteBuffer,
+        read_buf: &'a ByteBuffer,
+        write_buf: &mut [u8],
     ) -> Result<(Vec<ColumnDefinition<'a>>, ByteBufferReadGuard<'a>)> {
+        self.ctx.reset_pkt_nr();
         self.ctx.curr_cmd.replace(CmdCode::FieldList);
-        self.send(&cmd.into(), true).await?;
-        buf.update()?.vacuum();
+        let cmd = cmd.into();
+        let ser = cmd.new_my_ser(&mut self.ctx);
+        self.send(ser, write_buf).await?;
+        read_buf.update()?.vacuum();
         let mut col_defs = vec![];
         loop {
-            let (payload, rg) = self.recv(buf, false).await?;
+            let (payload, rg) = self.recv(read_buf, false).await?;
             if payload.is_empty() {
                 return Err(Error::EmptyPacketPayload);
             }
-            let payload_len = payload.len();
-            println!("payload len = {}", payload_len);
             match payload[0] {
                 0xff => {
                     let (next, err) = ErrPacket::my_deser(&mut self.ctx, &payload)?;
@@ -661,7 +771,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
                         return Err(Error::MalformedPacket);
                     }
                     rg.advance(payload.len());
-                    return Ok((col_defs, buf.single_read()?));
+                    return Ok((col_defs, read_buf.single_read()?));
                 }
                 _ => {
                     let col_def = self.col_def_from_payload(payload, rg)?;
@@ -697,20 +807,19 @@ async fn read_at_least<'a, T: AsyncRead + Unpin>(
 }
 
 #[inline]
-fn ensure_empty(b: &[u8]) -> Result<()> {
-    if !b.is_empty() {
-        return Err(Error::MalformedPacket);
-    }
-    Ok(())
-}
-
-#[inline]
 fn parse_payload_len_and_pkt_nr(mut b: &[u8]) -> (usize, u8) {
     assert!(b.len() >= 4);
     let b = &mut b;
     let payload_len = b.deser_le_u24() as usize;
     let pkt_nr = b.deser_u8();
     (payload_len, pkt_nr)
+}
+
+/// Check whether capability flags sent by client are all supported by server.
+#[inline]
+fn check_cap_flags(_cap_flags: CapabilityFlags) -> Result<()> {
+    // todo: real check on capabilities
+    Ok(())
 }
 
 enum PacketKind {
@@ -959,24 +1068,19 @@ mod tests {
     fn test_recv() {
         let data = vec![2u8, 0, 0, 0, 3, 48, 2, 0, 0, 1, 3, 49];
         let cursor = Cursor::new(data);
-        let mut conn = MyConn {
-            id: 0,
-            conn: cursor,
-            ctx: SerdeCtx::default(),
-            write_buf: Vec::with_capacity(1024),
-        };
+        let mut conn = MyConn::new(0, cursor, SerdeCtx::default());
         block_on(async {
             let buf = ByteBuffer::with_capacity(64);
             let (pkt, rg) = conn.recv(&buf, false).await.unwrap();
             let (rest, cmd) = ComQuery::my_deser(&mut conn.ctx, &pkt).unwrap();
             assert!(rest.is_empty());
             rg.advance(pkt.len());
-            assert_eq!(cmd.code, CmdCode::Query);
+            assert_eq!(cmd.code(), CmdCode::Query);
             let (pkt, rg) = conn.recv(&buf, false).await.unwrap();
             let (rest, cmd) = ComQuery::my_deser(&mut conn.ctx, &pkt).unwrap();
             assert!(rest.is_empty());
             rg.advance(pkt.len());
-            assert_eq!(cmd.code, CmdCode::Query);
+            assert_eq!(cmd.code(), CmdCode::Query);
         });
     }
 
@@ -984,12 +1088,7 @@ mod tests {
     fn test_recv_rows() {
         let data = vec![2u8, 0, 0, 0, 3, 48, 2, 0, 0, 1, 3, 49];
         let cursor = Cursor::new(data);
-        let mut conn = MyConn {
-            id: 0,
-            conn: cursor,
-            ctx: SerdeCtx::default(),
-            write_buf: Vec::with_capacity(1024),
-        };
+        let mut conn = MyConn::new(0, cursor, SerdeCtx::default());
         block_on(async {
             let buf = ByteBuffer::with_capacity(32);
             let mut rows = vec![];
@@ -1011,12 +1110,7 @@ mod tests {
         let cursor = Cursor::new(data);
         let mut ctx = SerdeCtx::default();
         ctx.set_max_payload_size(4);
-        let mut conn = MyConn {
-            id: 0,
-            conn: cursor,
-            ctx,
-            write_buf: Vec::with_capacity(1024),
-        };
+        let mut conn = MyConn::new(0, cursor, ctx);
         block_on(async {
             let buf = ByteBuffer::with_capacity(32);
             let (payload, rg) = conn.recv(&buf, false).await.unwrap();
@@ -1034,12 +1128,7 @@ mod tests {
             let cursor = Cursor::new(data);
             let mut ctx = SerdeCtx::default();
             ctx.set_max_payload_size(4);
-            let mut conn = MyConn {
-                id: 0,
-                conn: cursor,
-                ctx,
-                write_buf: Vec::with_capacity(1024),
-            };
+            let mut conn = MyConn::new(0, cursor, ctx);
             block_on(async {
                 let buf = ByteBuffer::with_capacity(buf_size);
                 let (payload, rg) = conn.recv(&buf, false).await.unwrap();
@@ -1055,13 +1144,7 @@ mod tests {
             16u8, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8,
         ];
         let cursor = Cursor::new(data);
-        let ctx = SerdeCtx::default();
-        let mut conn = MyConn {
-            id: 0,
-            conn: cursor,
-            ctx,
-            write_buf: Vec::with_capacity(1024),
-        };
+        let mut conn = MyConn::new(0, cursor, SerdeCtx::default());
         block_on(async {
             let buf = ByteBuffer::with_capacity(6);
             let (payload, rg) = conn.recv(&buf, false).await.unwrap();
@@ -1073,17 +1156,18 @@ mod tests {
     #[test]
     fn test_mysql_query() {
         block_on(async {
-            let buf = ByteBuffer::with_capacity(1024);
-            let conn = new_conn(&buf).await.unwrap();
+            let read_buf = ByteBuffer::with_capacity(1024);
+            let mut write_buf = vec![0u8; 1024];
+            let conn = new_conn(&read_buf, &mut write_buf).await.unwrap();
             let (col_defs, rg, mut rs) = conn
-                .query(ComQuery::new_ref("select 1"), &buf)
+                .query(ComQuery::new_ref("select 1"), &read_buf, &mut write_buf)
                 .await
                 .unwrap();
             dbg!(col_defs);
             drop(rg);
             let mut row_cnt = 0;
             loop {
-                let (rows, rg) = rs.next(&buf).await.unwrap();
+                let (rows, rg) = rs.next(&read_buf).await.unwrap();
                 match rows {
                     Rows {
                         kind:
@@ -1095,7 +1179,7 @@ mod tests {
                     } => {
                         row_cnt += data.len();
                         if let Some(next_buf_size) = next_buf_size {
-                            buf.update().unwrap().reserve(next_buf_size);
+                            read_buf.update().unwrap().reserve(next_buf_size);
                         }
                         drop(rg);
                         rs = stream;
@@ -1117,28 +1201,40 @@ mod tests {
     #[test]
     fn test_mysql_exec_and_field_list() {
         block_on(async {
-            let buf = ByteBuffer::with_capacity(1024);
-            let mut conn = new_conn(&buf).await.unwrap();
-            let (resp, rg) = conn
-                .exec("create database if not exists db1", &buf)
-                .await
-                .unwrap();
-            dbg!(resp);
-            drop(rg);
-            assert!(unsafe { buf.readable_unchecked().is_empty() });
-            let (resp, rg) = conn.exec("use db1", &buf).await.unwrap();
-            dbg!(resp);
-            drop(rg);
+            let read_buf = ByteBuffer::with_capacity(1024);
+            let mut write_buf = vec![0; 1024];
+            let mut conn = new_conn(&read_buf, &mut write_buf).await.unwrap();
             let (resp, rg) = conn
                 .exec(
-                    "create table if not exists t1 (c0 int not null default 1, c1 varchar(20))",
-                    &buf,
+                    "create database if not exists db1",
+                    &read_buf,
+                    &mut write_buf,
                 )
                 .await
                 .unwrap();
             dbg!(resp);
             drop(rg);
-            let (col_defs, rg) = conn.field_list(("t1", "%"), &buf).await.unwrap();
+            assert!(unsafe { read_buf.readable_unchecked().is_empty() });
+            let (resp, rg) = conn
+                .exec("use db1", &read_buf, &mut write_buf)
+                .await
+                .unwrap();
+            dbg!(resp);
+            drop(rg);
+            let (resp, rg) = conn
+                .exec(
+                    "create table if not exists db1.t1 (c0 int not null default 1, c1 varchar(20))",
+                    &read_buf,
+                    &mut write_buf,
+                )
+                .await
+                .unwrap();
+            dbg!(resp);
+            drop(rg);
+            let (col_defs, rg) = conn
+                .field_list(("t1", "%"), &read_buf, &mut write_buf)
+                .await
+                .unwrap();
             dbg!(col_defs);
             drop(rg);
         })
@@ -1147,16 +1243,20 @@ mod tests {
     #[test]
     fn test_mysql_small_write_buf() {
         block_on(async {
-            let buf = ByteBuffer::with_capacity(1024);
-            let mut conn = TcpOpts::new("127.0.0.1:13306")
+            let read_buf = ByteBuffer::with_capacity(1024);
+            let mut write_buf = vec![0; 4];
+            let mut conn = TcpClientOpts::new("127.0.0.1:13306")
                 .username("root")
                 .password("password")
-                .write_buf_size(4)
-                .connect(&buf, None)
+                .connect(&read_buf, &mut write_buf, None)
                 .await
                 .unwrap();
             let (resp, rg) = conn
-                .exec("create database if not exists db1", &buf)
+                .exec(
+                    "create database if not exists db1",
+                    &read_buf,
+                    &mut write_buf,
+                )
                 .await
                 .unwrap();
             dbg!(resp);
@@ -1167,12 +1267,13 @@ mod tests {
     #[test]
     fn test_mysql_connect_non_existing_db() {
         block_on(async {
-            let buf = ByteBuffer::with_capacity(1024);
-            let conn = TcpOpts::new("127.0.0.1:13306")
+            let read_buf = ByteBuffer::with_capacity(1024);
+            let mut write_buf = vec![0; 1024];
+            let conn = TcpClientOpts::new("127.0.0.1:13306")
                 .username("root")
                 .password("password")
                 .database("non_existing_database")
-                .connect(&buf, None)
+                .connect(&read_buf, &mut write_buf, None)
                 .await;
             assert!(conn.is_err());
             dbg!(conn.unwrap_err());
@@ -1182,16 +1283,17 @@ mod tests {
     #[test]
     fn test_mysql_connect_default_plugin() {
         block_on(async {
-            let buf = ByteBuffer::with_capacity(1024);
-            let _ = new_conn(&buf).await.unwrap();
+            let read_buf = ByteBuffer::with_capacity(1024);
+            let mut write_buf = vec![0; 1024];
+            let _ = new_conn(&read_buf, &mut write_buf).await.unwrap();
         })
     }
 
-    async fn new_conn(buf: &ByteBuffer) -> Result<MyConn<TcpStream>> {
-        TcpOpts::new("127.0.0.1:13306")
+    async fn new_conn(read_buf: &ByteBuffer, write_buf: &mut [u8]) -> Result<MyConn<TcpStream>> {
+        TcpClientOpts::new("127.0.0.1:13306")
             .username("root")
             .password("password")
-            .connect(&buf, None)
+            .connect(&read_buf, write_buf, None)
             .await
     }
 }

@@ -86,17 +86,46 @@ impl TryFrom<u8> for CmdCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MyCmd<'a> {
+    Query(ComQuery<'a>),
+    FieldList(ComFieldList<'a>),
+}
+
+impl<'a> MyDeser<'a> for MyCmd<'a> {
+    #[inline]
+    fn my_deser(ctx: &mut SerdeCtx, input: &'a [u8]) -> Result<(&'a [u8], Self)> {
+        if input.is_empty() {
+            return Err(Error::InsufficientInput);
+        }
+        match input[0] {
+            0x03 => {
+                let (next, query) = ComQuery::my_deser(ctx, input)?;
+                Ok((next, MyCmd::Query(query)))
+            }
+            0x04 => {
+                let (next, field_list) = ComFieldList::my_deser(ctx, input)?;
+                Ok((next, MyCmd::FieldList(field_list)))
+            }
+            _ => Err(Error::MalformedPacket),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComFieldList<'a> {
-    pub code: CmdCode,
     pub table: Cow<'a, str>,
     pub wildcard: Cow<'a, str>,
 }
 
 impl<'a> ComFieldList<'a> {
     #[inline]
+    pub fn code(&self) -> CmdCode {
+        CmdCode::FieldList
+    }
+
+    #[inline]
     pub fn new(table: impl Into<String>, wildcard: impl Into<String>) -> Self {
         ComFieldList {
-            code: CmdCode::FieldList,
             table: Cow::Owned(table.into()),
             wildcard: Cow::Owned(wildcard.into()),
         }
@@ -109,7 +138,6 @@ impl<'a> ComFieldList<'a> {
         U: Borrow<str> + ?Sized,
     {
         ComFieldList {
-            code: CmdCode::FieldList,
             table: Cow::Borrowed(table.borrow()),
             wildcard: Cow::Borrowed(wildcard.borrow()),
         }
@@ -120,11 +148,10 @@ impl<'a> NewMySer for ComFieldList<'a> {
     type Ser<'s> = MySerPacket<'s, 3> where Self: 's;
     #[inline]
     fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
-        assert_eq!(self.code, CmdCode::FieldList);
         MySerPacket::new(
             ctx,
             [
-                MySerElem::one_byte(self.code as u8),
+                MySerElem::one_byte(CmdCode::FieldList as u8),
                 MySerElem::null_end_str(self.table.as_bytes()),
                 MySerElem::slice(self.wildcard.as_bytes()),
             ],
@@ -145,7 +172,6 @@ impl<'a> MyDeser<'a> for ComFieldList<'a> {
         Ok((
             *input,
             ComFieldList {
-                code,
                 table: Cow::Borrowed(std::str::from_utf8(table)?),
                 wildcard: Cow::Borrowed(std::str::from_utf8(wildcard)?),
             },
@@ -153,7 +179,7 @@ impl<'a> MyDeser<'a> for ComFieldList<'a> {
     }
 }
 
-impl_from_ref!(ComFieldList: code; table, wildcard);
+impl_from_ref!(ComFieldList: ; table, wildcard);
 
 impl<'a> From<(&'a str, &'a str)> for ComFieldList<'a> {
     #[inline]
