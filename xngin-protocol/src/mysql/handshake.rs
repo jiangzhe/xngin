@@ -8,6 +8,7 @@ use crate::mysql::serde::{
 use std::borrow::Cow;
 
 use super::serde::LenEncStrExt;
+pub const AUTH_PLUGIN_DATA_LEN1: usize = 8;
 
 /// Initial handshake packet.
 /// Reference: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase.html#sect_protocol_connection_phase_initial_handshake
@@ -46,7 +47,7 @@ impl<'a> NewMySer for InitialHandshake<'a> {
             );
             elem4[8] = self.auth_plugin_data_length;
         }
-        assert_eq!(self.auth_plugin_data_1.len(), 8);
+        assert_eq!(self.auth_plugin_data_1.len(), AUTH_PLUGIN_DATA_LEN1);
         let auth_plugin_name = if ctx.cap_flags.contains(CapabilityFlags::PLUGIN_AUTH) {
             MySerElem::null_end_str(&self.auth_plugin_name)
         } else {
@@ -251,6 +252,7 @@ impl<'a> MyDeser<'a> for HandshakeCliResp41<'a> {
     fn my_deser(_ctx: &mut SerdeCtx, mut input: &'a [u8]) -> Result<(&'a [u8], Self)> {
         let input = &mut input;
         let cap_flags = CapabilityFlags::from_bits_truncate(input.try_deser_le_u32()?);
+        log::debug!("cap_flags={:?}", cap_flags);
         let max_packet_size = input.try_deser_le_u32()?;
         let charset = input.try_deser_u8()?;
         // 23B filler
@@ -271,26 +273,27 @@ impl<'a> MyDeser<'a> for HandshakeCliResp41<'a> {
         } else {
             &[]
         };
-        let connect_attrs = if cap_flags.contains(CapabilityFlags::CONNECT_ATTRS) {
-            let len: u64 = input.try_deser_len_enc_int()?.try_into()?;
-            if len as usize != input.len() {
-                return Err(Error::MalformedPacket);
-            }
-            let mut attrs = vec![];
-            let mut key: &[u8];
-            let mut val: &[u8];
-            while !input.is_empty() {
-                key = input.try_deser_len_enc_str()?.try_into()?;
-                val = input.try_deser_len_enc_str()?.try_into()?;
-                attrs.push(ConnectAttr {
-                    key: Cow::Borrowed(key),
-                    value: Cow::Borrowed(val),
-                });
-            }
-            attrs
-        } else {
-            vec![]
-        };
+        let connect_attrs =
+            if input.is_empty() || !cap_flags.contains(CapabilityFlags::CONNECT_ATTRS) {
+                vec![]
+            } else {
+                let len: u64 = input.try_deser_len_enc_int()?.try_into()?;
+                if len as usize != input.len() {
+                    return Err(Error::MalformedPacket);
+                }
+                let mut attrs = vec![];
+                let mut key: &[u8];
+                let mut val: &[u8];
+                while !input.is_empty() {
+                    key = input.try_deser_len_enc_str()?.try_into()?;
+                    val = input.try_deser_len_enc_str()?.try_into()?;
+                    attrs.push(ConnectAttr {
+                        key: Cow::Borrowed(key),
+                        value: Cow::Borrowed(val),
+                    });
+                }
+                attrs
+            };
         let res = HandshakeCliResp41 {
             cap_flags,
             max_packet_size,
@@ -522,9 +525,7 @@ mod tests {
         assert_eq!(r2, HandshakeSvrResp::Ok(ok));
 
         let err = ErrPacket {
-            header: 0xff,
             error_code: 1304,
-            sql_state_marker: 30,
             sql_state: Cow::Borrowed(b"01S01"),
             error_message: Cow::Borrowed(b"internal error"),
         };

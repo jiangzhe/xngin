@@ -53,12 +53,14 @@ pub struct ByteBuffer {
     vacuum_threshold: Cell<usize>,
 }
 
+unsafe impl Send for ByteBuffer {}
+unsafe impl Sync for ByteBuffer {}
+
 impl ByteBuffer {
     /// Create a new string arena with given capacity.
     #[inline]
     pub fn with_capacity(cap: usize) -> Self {
         let arena = alloc_arena(cap);
-
         ByteBuffer {
             arena: UnsafeCell::new(arena),
             r_idx: Cell::new(0),

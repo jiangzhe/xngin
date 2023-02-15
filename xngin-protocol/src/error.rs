@@ -1,5 +1,6 @@
 use crate::mysql::packet::ErrPacket;
 use std::str::Utf8Error;
+use std::string::FromUtf8Error;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -46,10 +47,9 @@ pub enum Error {
     BufferFull { expected: usize },
     #[error("Packet split")]
     PacketSplit,
-    #[error("SQL error, code={code:}, marker={marker:} state_and_msg={state_and_msg:?}")]
+    #[error("SQL error, code={code:}, state_and_msg={state_and_msg:?}")]
     SqlError {
         code: u16,
-        marker: u8,
         state_and_msg: Box<(String, String)>,
     },
     #[error("Empty fast auth result")]
@@ -66,6 +66,8 @@ pub enum Error {
     RSAError,
     #[error("SPKI error")]
     SPKIError,
+    #[error("Server not started")]
+    ServerNotStarted,
 }
 
 impl From<crate::buf::Error> for Error {
@@ -93,7 +95,6 @@ impl<'a> From<ErrPacket<'a>> for Error {
         let msg = String::from_utf8_lossy(&src.error_message).into_owned();
         Error::SqlError {
             code: src.error_code,
-            marker: src.sql_state_marker,
             state_and_msg: Box::new((state, msg)),
         }
     }
@@ -102,6 +103,13 @@ impl<'a> From<ErrPacket<'a>> for Error {
 impl From<Utf8Error> for Error {
     #[inline]
     fn from(_src: Utf8Error) -> Self {
+        Error::InvalidUtf8String
+    }
+}
+
+impl From<FromUtf8Error> for Error {
+    #[inline]
+    fn from(_src: FromUtf8Error) -> Self {
         Error::InvalidUtf8String
     }
 }
@@ -118,4 +126,12 @@ impl From<rsa::errors::Error> for Error {
     fn from(_src: rsa::errors::Error) -> Self {
         Error::RSAError
     }
+}
+
+#[inline]
+pub(crate) fn ensure_empty(b: &[u8]) -> Result<()> {
+    if !b.is_empty() {
+        return Err(Error::MalformedPacket);
+    }
+    Ok(())
 }
