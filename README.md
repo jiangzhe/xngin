@@ -14,45 +14,6 @@ very popular web server with high performance and ease to use.
 2. Easy to use.
 3. Distributed.
 
-## Non-Goal
-
-Transactional management.
-
-## Development Plan
-
-There are lots of things to do. Just list some as below.
-
-| Functionality | Status |
-|---------------|--------|
-| Frontend AST Definition | Done |
-| Frontend AST Parse | Done |
-| Frontend AST Format | Done |
-| Logical IR Definition | In progress |
-| Logical IR Rewrite   | In progress |
-| Logical Rule-based Optimization | In progress |
-| Catalog Definition | Demo |
-| Catalog Maintain | Todo |
-| Statistics Definition | Todo |
-| Statistics Maintain | Todo |
-| Optimizer Framework | In progress |
-| Cost Model | Todo |
-| Optimizer implementation | In progress |
-| Plan Cache | Todo |
-| Physical Plan Definition | Todo |
-| Execution Framework | Todo |
-| In-Memory Data Format | Demo |
-| Physical Operators | Todo |
-| Client Protocol | Todo |
-| Internal Network Protocol | Todo |
-| Index Framework | Todo |
-| Index Implementation | Todo |
-| Backend Storage | Todo |
-| Backend Operators | Todo |
-| Backend Adaptor | Todo |
-| Data Exporter and Importer | Todo |
-
-Current focus is on SQL interface and optimizer framework.
-
 ## License
 
 This project is licensed under either of
