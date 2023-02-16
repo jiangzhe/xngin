@@ -205,7 +205,7 @@ fn pratt_expr<'a, I: ParseInput<'a>, E: ParseError<I>>(
                                     let (ri, (expr, (start, end))) =
                                         cut(builtin_args_substring)(ri)?;
                                     let (ri, _) = char_sp0(')')(ri)?; // must terminated with ')'
-                                    let end = end.unwrap_or_else(|| Expr::FuncArg(ConstArg::None));
+                                    let end = end.unwrap_or(Expr::FuncArg(ConstArg::None));
                                     lhs = Expr::func(FuncType::Substring, vec![expr, start, end]);
                                     i = ri;
                                 }

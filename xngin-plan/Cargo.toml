@@ -12,13 +12,12 @@ repository = "https://github.com/jiangzhe/xngin/xngin-plan/"
 [dependencies]
 xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
-xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
+xngin-sql = { version = "0.1.0", path = "../xngin-sql" }
 xngin-expr = { version = "0.1.0", path = "../xngin-expr" }
 aosa = "0.1"
-
 slab = "0.4"
 thiserror = "1.0"
-smol_str = "0.1"
+semistr = "0.1"
 fnv = "1.0"
 indexmap = "1.7"
 static_init = "1.0"

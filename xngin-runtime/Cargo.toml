@@ -21,7 +21,7 @@ async-io = "1.6"
 async-task = "4.2"
 async-trait = "0.1"
 xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
-xngin-frontend = { version = "0.1.0", path = "../xngin-frontend" }
+xngin-sql = { version = "0.1.0", path = "../xngin-sql" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
 xngin-expr = { version = "0.1.0", path = "../xngin-expr" }
 xngin-plan = { version = "0.1.0", path = "../xngin-plan" }

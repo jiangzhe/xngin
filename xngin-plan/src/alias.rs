@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use indexmap::{map, IndexMap};
-use smol_str::SmolStr;
+use semistr::SemiStr;
 use std::ops::{Deref, DerefMut};
 use xngin_expr::QueryID;
 
@@ -20,10 +20,10 @@ use xngin_expr::QueryID;
 ///
 /// Let aliases within single query block to be unique.
 #[derive(Debug, Clone, Default)]
-pub struct QueryAliases(IndexMap<SmolStr, QueryID>);
+pub struct QueryAliases(IndexMap<SemiStr, QueryID>);
 
 impl Deref for QueryAliases {
-    type Target = IndexMap<SmolStr, QueryID>;
+    type Target = IndexMap<SemiStr, QueryID>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -38,12 +38,12 @@ impl DerefMut for QueryAliases {
 
 impl QueryAliases {
     #[inline]
-    pub fn new(plans: IndexMap<SmolStr, QueryID>) -> Self {
+    pub fn new(plans: IndexMap<SemiStr, QueryID>) -> Self {
         QueryAliases(plans)
     }
 
     #[inline]
-    pub fn insert_query(&mut self, name_or_alias: SmolStr, query_id: QueryID) -> Result<()> {
+    pub fn insert_query(&mut self, name_or_alias: SemiStr, query_id: QueryID) -> Result<()> {
         match self.0.entry(name_or_alias) {
             map::Entry::Vacant(ent) => {
                 ent.insert(query_id);

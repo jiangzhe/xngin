@@ -1,7 +1,7 @@
-use xngin_frontend::parser::dialect::Ansi;
-use xngin_frontend::parser::parse_query_verbose;
 use xngin_plan::builder::PlanBuilder;
 use xngin_plan::explain::Explain;
+use xngin_sql::parser::dialect::Ansi;
+use xngin_sql::parser::parse_query_verbose;
 use xngin_tpch_tests::tpch_catalog;
 
 macro_rules! check_build {

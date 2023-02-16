@@ -637,7 +637,7 @@ where
             let mut word = 0u64;
             let mut idx = 0;
             for v in it {
-                word |= if v { 1 } else { 0 } << (idx & 63);
+                word |= u64::from(v) << (idx & 63);
                 idx += 1;
                 if idx == 64 {
                     return Some((word, 64));

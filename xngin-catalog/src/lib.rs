@@ -2,7 +2,7 @@ pub mod error;
 pub mod mem_impl;
 
 use bitflags::bitflags;
-use smol_str::SmolStr;
+use semistr::SemiStr;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use xngin_datatype::PreciseType;
@@ -71,21 +71,21 @@ pub type ColumnID = ObjectID<C>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     pub id: SchemaID,
-    pub name: SmolStr,
+    pub name: SemiStr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
     pub id: TableID,
     pub schema_id: SchemaID,
-    pub name: SmolStr,
+    pub name: SemiStr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
     pub id: ColumnID,
     pub table_id: TableID,
-    pub name: SmolStr,
+    pub name: SemiStr,
     pub pty: PreciseType,
     pub idx: u32,
     pub attr: ColumnAttr,

@@ -165,7 +165,7 @@ parse!(
             pair(
                 alt((
                     preceded(terminated(alt((tag_no_case("index"), tag_no_case("key"))), spcmt1), opt(terminated(ident, spcmt1))),
-                    map(terminated(ident, spcmt1), |name| Some(name)),
+                    map(terminated(ident, spcmt1), Some),
                 )),
                 key_parts,
             ),
@@ -241,9 +241,9 @@ parse!(
             map(preceded_tag("tinyint", opt(preceded(spcmt1, tag_no_case("unsigned")))),
                 |u| DataType::Tinyint(u.is_some())),
             map(preceded_ident_tag("varchar", preceded(spcmt0, paren_cut(terminated(parse_u16, spcmt0)))),
-                |n| DataType::Varchar(n)),
+                DataType::Varchar),
             map(preceded_ident_tag("char", preceded(spcmt0, paren_cut(terminated(parse_u16, spcmt0)))),
-                |n| DataType::Char(n)),
+                DataType::Char),
             value(DataType::Date, ident_tag("date")),
             decimal_type,
         ))

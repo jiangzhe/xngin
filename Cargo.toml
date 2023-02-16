@@ -2,7 +2,7 @@
 members = [
     "xngin-datatype",
     "xngin-catalog", 
-    "xngin-frontend",
+    "xngin-sql",
     "xngin-expr",
     "xngin-compute", 
     "xngin-index",

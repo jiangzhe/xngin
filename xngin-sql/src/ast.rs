@@ -1,5 +1,5 @@
 //! This module defines Abstract Syntax Tree(AST) of X-Engine.
-use smol_str::SmolStr;
+use semistr::SemiStr;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 pub trait KeywordString {
@@ -98,21 +98,26 @@ impl<'a> Ident<'a> {
     }
 
     #[inline]
-    pub fn as_str(&self) -> SmolStr {
+    pub fn as_semi_str(&self) -> SemiStr {
         // todo: handle escaped characters in delimited format
-        SmolStr::new(self.s)
+        SemiStr::new(self.s)
     }
 
     #[inline]
-    pub fn to_lower(&self) -> SmolStr {
-        // todo: handle escaped characters in delimited format
-        SmolStr::from_iter(self.s.chars().map(|c| c.to_ascii_lowercase()))
+    pub fn as_str(&self) -> &str {
+        self.s
     }
 
     #[inline]
-    pub fn to_upper(&self) -> SmolStr {
+    pub fn to_lower(&self) -> SemiStr {
         // todo: handle escaped characters in delimited format
-        SmolStr::from_iter(self.s.chars().map(|c| c.to_ascii_uppercase()))
+        SemiStr::from_iter(self.s.chars().map(|c| c.to_ascii_lowercase()))
+    }
+
+    #[inline]
+    pub fn to_upper(&self) -> SemiStr {
+        // todo: handle escaped characters in delimited format
+        SemiStr::from_iter(self.s.chars().map(|c| c.to_ascii_uppercase()))
     }
 }
 
@@ -757,10 +762,7 @@ impl<'a> Predicate<'a> {
 
     #[inline]
     pub fn is_conj(&self) -> bool {
-        match self {
-            Predicate::Conj(_) => true,
-            _ => false,
-        }
+        matches!(self, Predicate::Conj(_))
     }
 
     #[inline]

@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::{Column, ColumnAttr, ColumnID, QueryCatalog, Schema, SchemaID, Table, TableID};
 use indexmap::IndexMap;
-use smol_str::SmolStr;
+use semistr::SemiStr;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use xngin_datatype::PreciseType;
@@ -13,7 +13,7 @@ pub struct MemCatalog {
 
 #[derive(Debug)]
 struct MemCatalogInner {
-    schemas: IndexMap<SmolStr, Schema>,
+    schemas: IndexMap<SemiStr, Schema>,
     tables: IndexMap<SchemaID, Vec<Table>>,
     table_columns: HashMap<TableID, TableWithColumns>,
 }
@@ -101,7 +101,7 @@ impl QueryCatalog for MemCatalog {
 
 #[derive(Debug, Default)]
 pub struct MemCatalogBuilder {
-    schemas: IndexMap<SmolStr, Schema>,
+    schemas: IndexMap<SemiStr, Schema>,
     tables: IndexMap<SchemaID, Vec<Table>>,
     table_columns: HashMap<TableID, TableWithColumns>,
     schema_id_gen: u32,
@@ -117,7 +117,7 @@ impl MemCatalogBuilder {
         }
         self.schema_id_gen += 1;
         let id = SchemaID::new(self.schema_id_gen);
-        let name = SmolStr::new(name);
+        let name = SemiStr::new(name);
         let schema = Schema {
             id,
             name: name.clone(),
@@ -154,7 +154,7 @@ impl MemCatalogBuilder {
             // create table first
             self.table_id_gen += 1;
             let table_id = TableID::new(self.table_id_gen);
-            let table_name = SmolStr::new(table_name);
+            let table_name = SemiStr::new(table_name);
             let table = Table {
                 id: table_id,
                 schema_id,
@@ -162,7 +162,7 @@ impl MemCatalogBuilder {
             };
             self.tables
                 .entry(schema_id)
-                .or_insert(vec![])
+                .or_default()
                 .push(table.clone());
             let mut columns = Vec::with_capacity(cols.len());
             for (i, c) in cols.iter().enumerate() {
@@ -200,7 +200,7 @@ impl MemCatalogBuilder {
 }
 
 pub struct ColumnSpec {
-    pub name: SmolStr,
+    pub name: SemiStr,
     pub pty: PreciseType,
     pub attr: ColumnAttr,
 }
@@ -209,7 +209,7 @@ impl ColumnSpec {
     #[inline]
     pub fn new(name: &str, pty: PreciseType, attr: ColumnAttr) -> Self {
         ColumnSpec {
-            name: SmolStr::new(name),
+            name: SemiStr::new(name),
             pty,
             attr,
         }

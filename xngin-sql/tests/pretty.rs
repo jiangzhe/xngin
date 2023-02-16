@@ -1,6 +1,6 @@
-use xngin_frontend::parser::dialect::MySQL;
-use xngin_frontend::parser::parse_query_verbose;
-use xngin_frontend::pretty::{PrettyConf, PrettyFormat};
+use xngin_sql::parser::dialect::MySQL;
+use xngin_sql::parser::parse_query_verbose;
+use xngin_sql::pretty::{PrettyConf, PrettyFormat};
 
 macro_rules! check_sql {
     ($filename:literal) => {

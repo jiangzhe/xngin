@@ -1,10 +1,10 @@
 use std::time::Instant;
 use xngin_catalog::QueryCatalog;
-use xngin_frontend::parser::dialect::Ansi;
-use xngin_frontend::parser::parse_query_verbose;
 use xngin_plan::builder::PlanBuilder;
 use xngin_plan::explain::Explain;
 use xngin_plan::rule::rule_optimize;
+use xngin_sql::parser::dialect::Ansi;
+use xngin_sql::parser::parse_query_verbose;
 use xngin_tpch_tests::tpch_catalog;
 
 #[test]

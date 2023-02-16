@@ -32,7 +32,7 @@ pub fn fold_add_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
                 Const::Decimal(res)
             }
             // differ from MySQL, can return i64 if possible
-            Const::Bool(v1) => i64_add_u64(*v0, if *v1 { 1 } else { 0 })?,
+            Const::Bool(v1) => i64_add_u64(*v0, u64::from(*v1))?,
             Const::Null => Const::Null,
             _ => return Ok(None), // todo: handle non-nuemric value
         },
@@ -52,7 +52,7 @@ pub fn fold_add_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
                 Const::Decimal(res)
             }
             Const::Bool(v1) => v0
-                .checked_add(if *v1 { 1 } else { 0 })
+                .checked_add(u64::from(*v1))
                 .map(Const::U64)
                 .ok_or(Error::ValueOutOfRange)?,
             Const::Null => Const::Null,
@@ -109,9 +109,9 @@ pub fn fold_add_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
             _ => return Ok(None), // todo: handle non-nuemric value
         },
         Const::Bool(v0) => match rhs {
-            Const::I64(v1) => i64_add_u64(*v1, if *v0 { 1 } else { 0 })?,
+            Const::I64(v1) => i64_add_u64(*v1, u64::from(*v0))?,
             Const::U64(v1) => v1
-                .checked_add(if *v0 { 1 } else { 0 })
+                .checked_add(u64::from(*v0))
                 .map(Const::U64)
                 .ok_or(Error::ValueOutOfRange)?,
             Const::F64(v1) => {
@@ -126,8 +126,8 @@ pub fn fold_add_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
             }
             // coerce to u64
             Const::Bool(v1) => {
-                let v0: u64 = if *v0 { 1 } else { 0 };
-                let v1: u64 = if *v1 { 1 } else { 0 };
+                let v0 = u64::from(*v0);
+                let v1 = u64::from(*v1);
                 Const::U64(v0 + v1)
             }
             Const::Null => Const::Null,
