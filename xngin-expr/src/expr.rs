@@ -1,8 +1,8 @@
 use crate::controlflow::ControlFlow;
 use crate::func::FuncKind;
 use crate::pred::{Pred, PredFuncKind};
+use semistr::SemiStr;
 use smallvec::{smallvec, SmallVec};
-use smol_str::SmolStr;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -227,7 +227,7 @@ impl Expr {
         table_id: TableID,
         idx: ColIndex,
         ty: PreciseType,
-        col_name: SmolStr,
+        col_name: SemiStr,
     ) -> Self {
         Expr {
             kind: ExprKind::Col(Col {
@@ -621,7 +621,7 @@ pub struct Col {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ColKind {
     // table id and column name
-    TableCol(TableID, SmolStr),
+    TableCol(TableID, SemiStr),
     QueryCol(QueryID),
     CorrelatedCol(QueryID),
 }

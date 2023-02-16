@@ -32,7 +32,7 @@ pub fn fold_sub_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
                 Const::Decimal(res)
             }
             // differ from MySQL, can return i64 if possible
-            Const::Bool(v1) => i64_sub_u64(*v0, if *v1 { 1 } else { 0 })?,
+            Const::Bool(v1) => i64_sub_u64(*v0, u64::from(*v1))?,
             Const::Null => Const::Null,
             _ => return Ok(None), // todo: handle non-nuemric value
         },
@@ -52,7 +52,7 @@ pub fn fold_sub_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
                 Const::Decimal(res)
             }
             Const::Bool(v1) => v0
-                .checked_sub(if *v1 { 1 } else { 0 })
+                .checked_sub(u64::from(*v1))
                 .map(Const::U64)
                 .ok_or(Error::ValueOutOfRange)?,
             Const::Null => Const::Null,
@@ -113,9 +113,9 @@ pub fn fold_sub_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
             _ => return Ok(None), // todo: handle non-nuemric value
         },
         Const::Bool(v0) => match rhs {
-            Const::I64(v1) => u64_sub_i64(if *v0 { 1 } else { 0 }, *v1)?,
+            Const::I64(v1) => u64_sub_i64(u64::from(*v0), *v1)?,
             Const::U64(v1) => {
-                let v0: u64 = if *v0 { 1 } else { 0 };
+                let v0 = u64::from(*v0);
                 v0.checked_sub(*v1)
                     .map(Const::U64)
                     .ok_or(Error::ValueOutOfRange)?
@@ -132,8 +132,8 @@ pub fn fold_sub_const(lhs: &Const, rhs: &Const) -> Result<Option<Const>> {
             }
             Const::Bool(v1) => {
                 // coerce to u64
-                let v0: u64 = if *v0 { 1 } else { 0 };
-                let v1: u64 = if *v1 { 1 } else { 0 };
+                let v0 = u64::from(*v0);
+                let v1 = u64::from(*v1);
                 v0.checked_sub(v1)
                     .map(Const::U64)
                     .ok_or(Error::ValueOutOfRange)?

@@ -12,4 +12,4 @@ xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
 smallvec = {version = "1.8", features = ["union"]}
 thiserror = "1.0"
-smol_str = "0.1"
+semistr = "0.1"

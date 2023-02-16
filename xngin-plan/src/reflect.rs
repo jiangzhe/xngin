@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
 use xngin_datatype::{self as datatype, TimeUnit, DEFAULT_DATE_FORMAT};
 use xngin_expr::{self as expr, ColKind, Const, ExprKind, Farg, FuncKind, PredFuncKind, QueryID};
-use xngin_frontend::ast::*;
+use xngin_sql::ast::*;
 
 #[inline]
 pub fn reflect<'a, C: QueryCatalog>(
@@ -1086,7 +1086,7 @@ fn transform_expr<'a, C: QueryCatalog>(
                     Error::UnknownColumn(format!(
                         "column with index {} in query '{}' not found",
                         c.idx.value(),
-                        tbl_alias.as_str()
+                        tbl_alias.as_str(),
                     ))
                 })?;
                 // refer to query column with alias
@@ -1626,7 +1626,7 @@ fn next_avail_tbl_alias_id<'a>(
 mod tests {
     use super::*;
     use crate::builder::tests::{build_plan, j_catalog};
-    use xngin_frontend::pretty::{PrettyConf, PrettyFormat};
+    use xngin_sql::pretty::{PrettyConf, PrettyFormat};
 
     #[test]
     fn test_reflect_queries() {

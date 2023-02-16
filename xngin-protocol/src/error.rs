@@ -68,6 +68,8 @@ pub enum Error {
     SPKIError,
     #[error("Server not started")]
     ServerNotStarted,
+    #[error("String too long")]
+    StringTooLong,
 }
 
 impl From<crate::buf::Error> for Error {
@@ -125,6 +127,16 @@ impl From<rsa::errors::Error> for Error {
     #[inline]
     fn from(_src: rsa::errors::Error) -> Self {
         Error::RSAError
+    }
+}
+
+impl From<semistr::Error> for Error {
+    #[inline]
+    fn from(src: semistr::Error) -> Self {
+        match src {
+            semistr::Error::StringTooLong(_) => Error::StringTooLong,
+            semistr::Error::InvalidUtf8String => Error::InvalidUtf8String,
+        }
     }
 }
 

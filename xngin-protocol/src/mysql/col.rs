@@ -5,6 +5,7 @@ use crate::mysql::serde::{
     LenEncStr, MyDeser, MyDeserExt, MySerElem, MySerPacket, NewMySer, SerdeCtx,
 };
 use bitflags::bitflags;
+use semistr::SemiStr;
 use std::borrow::Cow;
 use std::convert::TryFrom;
 
@@ -101,19 +102,19 @@ impl TryFrom<u8> for ColumnType {
 ///
 /// reference: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response_text_resultset_column_definition.html
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ColumnDefinition<'a> {
+pub struct ColumnDefinition {
     // len-enc-str
-    pub catalog: Cow<'a, [u8]>,
+    pub catalog: SemiStr,
     // len-enc-str
-    pub schema: Cow<'a, [u8]>,
+    pub schema: SemiStr,
     // len-enc-str
-    pub table: Cow<'a, [u8]>,
+    pub table: SemiStr,
     // len-enc-str
-    pub org_table: Cow<'a, [u8]>,
+    pub org_table: SemiStr,
     // len-enc-str
-    pub name: Cow<'a, [u8]>,
+    pub name: SemiStr,
     // len-enc-str
-    pub org_name: Cow<'a, [u8]>,
+    pub org_name: SemiStr,
     // len-enc-int, always 0x0c
     pub charset: u16,
     pub col_len: u32,
@@ -121,16 +122,16 @@ pub struct ColumnDefinition<'a> {
     pub flags: ColumnFlags,
     // 0x00, 0x1f, 0x00-0x51
     pub decimals: u8,
-    pub default_value: Option<Cow<'a, [u8]>>,
+    pub default_value: Option<SemiStr>,
 }
 
-impl<'a> ColumnDefinition<'a> {
+impl ColumnDefinition {
     pub fn unsigned(&self) -> bool {
         self.flags.contains(ColumnFlags::UNSIGNED)
     }
 }
 
-impl<'a> NewMySer for ColumnDefinition<'a> {
+impl NewMySer for ColumnDefinition {
     type Ser<'s> = MySerPacket<'s, 8> where Self: 's;
 
     #[inline]
@@ -170,16 +171,16 @@ impl<'a> NewMySer for ColumnDefinition<'a> {
     }
 }
 
-impl<'a> MyDeser<'a> for ColumnDefinition<'a> {
+impl<'a> MyDeser<'a> for ColumnDefinition {
     #[inline]
     fn my_deser(ctx: &mut SerdeCtx, mut input: &'a [u8]) -> Result<(&'a [u8], Self)> {
         let input = &mut input;
-        let catalog = input.try_deser_len_enc_str()?.try_into()?;
-        let schema = input.try_deser_len_enc_str()?.try_into()?;
-        let table = input.try_deser_len_enc_str()?.try_into()?;
-        let org_table = input.try_deser_len_enc_str()?.try_into()?;
-        let name = input.try_deser_len_enc_str()?.try_into()?;
-        let org_name = input.try_deser_len_enc_str()?.try_into()?;
+        let catalog: SemiStr = input.try_deser_len_enc_str()?.try_into()?;
+        let schema: SemiStr = input.try_deser_len_enc_str()?.try_into()?;
+        let table: SemiStr = input.try_deser_len_enc_str()?.try_into()?;
+        let org_table: SemiStr = input.try_deser_len_enc_str()?.try_into()?;
+        let name: SemiStr = input.try_deser_len_enc_str()?.try_into()?;
+        let org_name: SemiStr = input.try_deser_len_enc_str()?.try_into()?;
         // reserved len-enc-int, but always be 0x0c.
         // so it's safe to just read 1-byte.
         let reserved = input.try_deser_u8()?;
@@ -196,34 +197,34 @@ impl<'a> MyDeser<'a> for ColumnDefinition<'a> {
             match input.try_deser_len_enc_str()? {
                 LenEncStr::Null => None,
                 LenEncStr::Err => return Err(Error::MalformedPacket),
-                LenEncStr::Bytes(b) => Some(b),
+                LenEncStr::Bytes(b) => Some(SemiStr::try_from(b)?),
             }
         } else {
             None
         };
         let res = ColumnDefinition {
-            catalog: Cow::Borrowed(catalog),
-            schema: Cow::Borrowed(schema),
-            table: Cow::Borrowed(table),
-            org_table: Cow::Borrowed(org_table),
-            name: Cow::Borrowed(name),
-            org_name: Cow::Borrowed(org_name),
+            catalog,
+            schema,
+            table,
+            org_table,
+            name,
+            org_name,
             charset,
             col_len,
             col_type,
             flags,
             decimals,
-            default_value: default_value.map(Cow::Borrowed),
+            default_value,
         };
         Ok((*input, res))
     }
 }
 
-impl_from_ref!(ColumnDefinition: src:
-    charset, col_len, col_type, flags, decimals;
-    catalog, schema, table, org_table, name, org_name;
-    default_value = src.default_value.as_ref().map(|v| std::borrow::Cow::Owned((**v).to_owned()))
-);
+// impl_from_ref!(ColumnDefinition: src:
+//     charset, col_len, col_type, flags, decimals;
+//     catalog, schema, table, org_table, name, org_name;
+//     default_value = src.default_value.as_ref().map(|v| std::borrow::Cow::Owned((**v).to_owned()))
+// );
 
 bitflags! {
     /// flags of column
@@ -264,12 +265,12 @@ mod tests {
         let mut ctx = SerdeCtx::default();
         let buf = ByteBuffer::with_capacity(1024);
         let cd = ColumnDefinition {
-            catalog: Cow::Borrowed(b"def"),
-            schema: Cow::Borrowed(b"db1"),
-            table: Cow::Borrowed(b"bb1"),
-            org_table: Cow::Borrowed(b"bb1"),
-            name: Cow::Borrowed(b"c0"),
-            org_name: Cow::Borrowed(b"c0"),
+            catalog: SemiStr::inline("def"),
+            schema: SemiStr::inline("db1"),
+            table: SemiStr::inline("bb1"),
+            org_table: SemiStr::inline("bb1"),
+            name: SemiStr::inline("c0"),
+            org_name: SemiStr::inline("c0"),
             charset: 63,
             col_len: 64,
             col_type: ColumnType::Bit,

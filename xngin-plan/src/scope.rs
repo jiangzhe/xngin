@@ -1,7 +1,7 @@
 use crate::alias::QueryAliases;
 use fnv::FnvHashSet;
 use indexmap::IndexMap;
-use smol_str::SmolStr;
+use semistr::SemiStr;
 use std::ops::{Deref, DerefMut};
 use xngin_expr::{ColIndex, Expr, QueryID};
 
@@ -82,8 +82,8 @@ impl Scope {
     }
 
     #[inline]
-    pub fn restrict_from_aliases(&self, aliases: &[SmolStr]) -> QueryAliases {
-        let m: IndexMap<SmolStr, QueryID> = aliases
+    pub fn restrict_from_aliases(&self, aliases: &[SemiStr]) -> QueryAliases {
+        let m: IndexMap<SemiStr, QueryID> = aliases
             .iter()
             .filter_map(|a| self.query_aliases.get(a).cloned().map(|p| (a.clone(), p)))
             .collect();

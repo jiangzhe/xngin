@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use xngin_catalog::mem_impl::{ColumnSpec, MemCatalog, MemCatalogBuilder};
 use xngin_catalog::ColumnAttr;
 use xngin_datatype::{Collation, PreciseType};
-use xngin_frontend::parser::dialect::MySQL;
-use xngin_frontend::parser::parse_query;
+use xngin_sql::parser::dialect::MySQL;
+use xngin_sql::parser::parse_query;
 
 macro_rules! plan_shape {
     ( $($ok:ident),* ) => {

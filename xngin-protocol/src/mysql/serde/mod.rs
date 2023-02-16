@@ -5,6 +5,7 @@ use crate::buf::ByteBuffer;
 use crate::error::{Error, Result};
 use crate::mysql::cmd::CmdCode;
 use crate::mysql::flag::{CapabilityFlags, StatusFlags};
+use semistr::SemiStr;
 
 pub use de::{my_deser_packet, MyDeser, MyDeserExt};
 pub use ser::{MySer, MySerElem, MySerExt, MySerKind, MySerPacket, NewMySer};
@@ -253,10 +254,31 @@ impl<'a> TryFrom<LenEncStr<'a>> for &'a [u8] {
     }
 }
 
+impl TryFrom<LenEncStr<'_>> for SemiStr {
+    type Error = Error;
+    #[inline]
+    fn try_from(src: LenEncStr) -> Result<Self> {
+        match src {
+            LenEncStr::Bytes(bs) => {
+                let s = std::str::from_utf8(bs)?;
+                SemiStr::try_from(s).map_err(|_| Error::StringTooLong)
+            }
+            _ => Err(Error::InvalidInput),
+        }
+    }
+}
+
 impl<'a> From<&'a [u8]> for LenEncStr<'a> {
     #[inline]
     fn from(src: &'a [u8]) -> Self {
         LenEncStr::Bytes(src)
+    }
+}
+
+impl<'a> From<&'a str> for LenEncStr<'a> {
+    #[inline]
+    fn from(src: &'a str) -> Self {
+        LenEncStr::Bytes(src.as_bytes())
     }
 }
 

@@ -342,7 +342,7 @@ impl From<PreciseType> for [u8; 4] {
             PreciseType::Int(bytes, neg) => {
                 tgt[0] = 2;
                 tgt[1] = bytes;
-                tgt[2] = if neg { 1 } else { 0 };
+                tgt[2] = u8::from(neg);
             }
             PreciseType::Decimal(prec, frac) => {
                 tgt[0] = 3;

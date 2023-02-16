@@ -5,7 +5,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("{0}")]
-    Syntax(#[from] xngin_frontend::error::Error),
+    Syntax(#[from] xngin_sql::error::Error),
     #[error("{0}")]
     Plan(#[from] xngin_plan::error::Error),
     #[error("{0}")]

@@ -11,7 +11,7 @@ repository = "https://github.com/jiangzhe/xngin/xngin-catalog/"
 
 [dependencies]
 xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
-smol_str = "0.1"
+semistr = "0.1"
 bitflags = "1.3"
 indexmap = "1.7"
 thiserror = "1.0"

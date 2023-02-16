@@ -1,19 +1,19 @@
 use crate::col::{ColGen, ProjCol};
 use crate::error::{Error, Result, ToResult};
 use crate::query::Subquery;
-use smol_str::SmolStr;
+use semistr::SemiStr;
 use std::sync::Arc;
 use xngin_catalog::QueryCatalog;
 use xngin_datatype::{Date, Decimal, TimeUnit, DEFAULT_DATE_FORMAT};
 use xngin_expr::{
     self as expr, ColIndex, ExprKind, Farg, FuncKind, Pred, PredFuncKind, QueryID, SubqKind,
 };
-use xngin_frontend::ast::*;
+use xngin_sql::ast::*;
 
 #[derive(Debug)]
 pub enum Resolution {
-    Expr(expr::Expr, Option<SmolStr>),
-    Unknown(Vec<SmolStr>),
+    Expr(expr::Expr, Option<SemiStr>),
+    Unknown(Vec<SemiStr>),
 }
 
 /// ExprResolve defines interface to resolve expressions in SQL context.
@@ -32,14 +32,14 @@ pub trait ExprResolve {
 
     /// Returns all visiable subqueries for iterative search by alias.
     /// It should be implemented in all scenarios, except row subquery.
-    fn queries(&self) -> Vec<(SmolStr, QueryID)>;
+    fn queries(&self) -> Vec<(SemiStr, QueryID)>;
 
     /// Find column by alias, this may result in a column or a aliased expression,
     /// depends on the context.
     /// Default implementation should be overriden for GROUP BY, HAVING, ORDER BY.
     fn find_col(
         &self,
-        col_alias: SmolStr,
+        col_alias: SemiStr,
         _location: &'static str,
         colgen: &mut ColGen,
     ) -> Result<Resolution> {
@@ -50,8 +50,8 @@ pub trait ExprResolve {
     /// Default implementation should be overriden for HAVING, ORDER BY.
     fn find_tbl_col(
         &self,
-        tbl_alias: SmolStr,
-        col_alias: SmolStr,
+        tbl_alias: SemiStr,
+        col_alias: SemiStr,
         location: &'static str,
         colgen: &mut ColGen,
     ) -> Result<Resolution> {
@@ -62,9 +62,9 @@ pub trait ExprResolve {
     /// Default implementation should be overriden for HAVING, ORDER BY.
     fn find_schema_tbl_col(
         &self,
-        schema_name: SmolStr,
-        tbl_alias: SmolStr,
-        col_alias: SmolStr,
+        schema_name: SemiStr,
+        tbl_alias: SemiStr,
+        col_alias: SemiStr,
         location: &'static str,
         colgen: &mut ColGen,
     ) -> Result<Resolution> {
@@ -72,7 +72,7 @@ pub trait ExprResolve {
     }
 
     #[inline]
-    fn find_col_by_default(&self, col_alias: SmolStr, colgen: &mut ColGen) -> Result<Resolution> {
+    fn find_col_by_default(&self, col_alias: SemiStr, colgen: &mut ColGen) -> Result<Resolution> {
         let queries = self.queries();
         if queries.is_empty() {
             return Ok(Resolution::Unknown(vec![col_alias]));
@@ -96,8 +96,8 @@ pub trait ExprResolve {
     #[inline]
     fn find_tbl_col_by_default(
         &self,
-        tbl_alias: SmolStr,
-        col_alias: SmolStr,
+        tbl_alias: SemiStr,
+        col_alias: SemiStr,
         location: &'static str,
         colgen: &mut ColGen,
     ) -> Result<Resolution> {
@@ -119,9 +119,9 @@ pub trait ExprResolve {
     #[inline]
     fn find_schema_tbl_col_by_default(
         &self,
-        schema_name: SmolStr,
-        tbl_alias: SmolStr,
-        col_alias: SmolStr,
+        schema_name: SemiStr,
+        tbl_alias: SemiStr,
+        col_alias: SemiStr,
         location: &'static str,
         colgen: &mut ColGen,
     ) -> Result<Resolution> {
@@ -296,7 +296,7 @@ pub trait ExprResolve {
         phc: &mut PlaceholderCollector<'a>,
         within_aggr: bool,
         colgen: &mut ColGen,
-    ) -> Result<(expr::Expr, Option<SmolStr>)> {
+    ) -> Result<(expr::Expr, Option<SemiStr>)> {
         self.resolve_expr_by_default(e, location, phc, within_aggr, colgen)
     }
 
@@ -308,7 +308,7 @@ pub trait ExprResolve {
         phc: &mut PlaceholderCollector<'a>,
         within_aggr: bool,
         colgen: &mut ColGen,
-    ) -> Result<(expr::Expr, Option<SmolStr>)> {
+    ) -> Result<(expr::Expr, Option<SemiStr>)> {
         let res = match e {
             Expr::Literal(lit) => self.resolve_lit(lit)?,
             Expr::ColumnRef(cr) => match self.resolve_col_ref(cr, location, colgen)? {
@@ -653,7 +653,7 @@ pub trait ExprResolve {
 /// simple and clear.
 pub struct PlaceholderCollector<'a> {
     pub allow_unknown_ident: bool,
-    pub idents: Vec<(u32, Vec<SmolStr>, &'static str)>,
+    pub idents: Vec<(u32, Vec<SemiStr>, &'static str)>,
     pub subqueries: Vec<PlaceholderQuery<'a>>,
     ident_id_gen: u32,
     subquery_id_gen: u32,
@@ -672,7 +672,7 @@ impl<'a> PlaceholderCollector<'a> {
     }
 
     #[inline]
-    pub fn add_ident(&mut self, ident: Vec<SmolStr>, location: &'static str) -> expr::Expr {
+    pub fn add_ident(&mut self, ident: Vec<SemiStr>, location: &'static str) -> expr::Expr {
         let uid = self.ident_id_gen;
         self.idents.push((uid, ident, location));
         self.ident_id_gen += 1;

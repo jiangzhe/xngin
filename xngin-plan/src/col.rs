@@ -1,4 +1,4 @@
-use smol_str::SmolStr;
+use semistr::SemiStr;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use xngin_catalog::TableID;
@@ -8,13 +8,13 @@ use xngin_expr::{ColIndex, Expr, GlobalID, QueryCol, QueryID};
 #[derive(Debug, Clone)]
 pub struct ProjCol {
     pub expr: Expr,
-    pub alias: SmolStr,
+    pub alias: SemiStr,
     pub alias_kind: AliasKind,
 }
 
 impl ProjCol {
     #[inline]
-    pub fn new(expr: Expr, alias: SmolStr, alias_kind: AliasKind) -> Self {
+    pub fn new(expr: Expr, alias: SemiStr, alias_kind: AliasKind) -> Self {
         ProjCol {
             expr,
             alias,
@@ -27,14 +27,14 @@ impl ProjCol {
     pub fn no_alias(expr: Expr) -> Self {
         ProjCol {
             expr,
-            alias: SmolStr::default(),
+            alias: SemiStr::default(),
             alias_kind: AliasKind::None,
         }
     }
 
     /// Create a projection column with explicit alias.
     #[inline]
-    pub fn explicit_alias(expr: Expr, alias: SmolStr) -> Self {
+    pub fn explicit_alias(expr: Expr, alias: SemiStr) -> Self {
         ProjCol {
             expr,
             alias,
@@ -44,7 +44,7 @@ impl ProjCol {
 
     /// Create a projection column with implicit alias.
     #[inline]
-    pub fn implicit_alias(expr: Expr, alias: SmolStr) -> Self {
+    pub fn implicit_alias(expr: Expr, alias: SemiStr) -> Self {
         ProjCol {
             expr,
             alias,
@@ -85,7 +85,7 @@ impl ColGen {
         table_id: TableID,
         idx: ColIndex,
         ty: PreciseType,
-        col_name: SmolStr,
+        col_name: SemiStr,
     ) -> Expr {
         let gid = self.find_or_inc_cid(qry_id, idx);
         Expr::table_col(gid, table_id, idx, ty, col_name)

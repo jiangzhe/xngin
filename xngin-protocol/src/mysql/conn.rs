@@ -355,11 +355,7 @@ impl<T: AsyncRead + Unpin> MyConn<T> {
     }
 
     /// Parse column definition packet.
-    async fn col_def<'a>(
-        &mut self,
-        buf: &'a ByteBuffer,
-        vacuum: bool,
-    ) -> Result<ColumnDefinition<'a>> {
+    async fn col_def<'a>(&mut self, buf: &'a ByteBuffer, vacuum: bool) -> Result<ColumnDefinition> {
         let (payload, rg) = self.recv(buf, vacuum).await?;
         self.col_def_from_payload(payload, rg)
     }
@@ -369,7 +365,7 @@ impl<T: AsyncRead + Unpin> MyConn<T> {
         &mut self,
         payload: Cow<'a, [u8]>,
         rg: ByteBufferReadGuard<'a>,
-    ) -> Result<ColumnDefinition<'a>> {
+    ) -> Result<ColumnDefinition> {
         match payload {
             Cow::Borrowed(slice) => {
                 let (next, col_def) = ColumnDefinition::my_deser(&mut self.ctx, slice)?;
@@ -393,7 +389,7 @@ impl<T: AsyncRead + Unpin> MyConn<T> {
     async fn parse_rows_metadata<'a>(
         &mut self,
         buf: &'a ByteBuffer,
-    ) -> Result<(Vec<ColumnDefinition<'a>>, ByteBufferReadGuard<'a>)> {
+    ) -> Result<(Vec<ColumnDefinition>, ByteBufferReadGuard<'a>)> {
         // optional metadata_follows packet
         let (buf, metadata_follows) = if self
             .ctx
@@ -678,11 +674,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
         cmd: impl Into<ComQuery<'_>>,
         read_buf: &'a ByteBuffer,
         write_buf: &mut [u8],
-    ) -> Result<(
-        Vec<ColumnDefinition<'a>>,
-        ByteBufferReadGuard<'a>,
-        RowStream<T>,
-    )> {
+    ) -> Result<(Vec<ColumnDefinition>, ByteBufferReadGuard<'a>, RowStream<T>)> {
         self.ctx.reset_pkt_nr();
         self.ctx.curr_cmd.replace(CmdCode::Query);
         let cmd = cmd.into();
@@ -742,7 +734,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> MyConn<T> {
         cmd: impl Into<ComFieldList<'_>>,
         read_buf: &'a ByteBuffer,
         write_buf: &mut [u8],
-    ) -> Result<(Vec<ColumnDefinition<'a>>, ByteBufferReadGuard<'a>)> {
+    ) -> Result<(Vec<ColumnDefinition>, ByteBufferReadGuard<'a>)> {
         self.ctx.reset_pkt_nr();
         self.ctx.curr_cmd.replace(CmdCode::FieldList);
         let cmd = cmd.into();

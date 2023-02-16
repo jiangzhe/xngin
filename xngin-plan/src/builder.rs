@@ -12,13 +12,13 @@ use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolut
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::scope::{Scope, Scopes};
 use crate::setop::{SetopKind, SubqOp};
-use smol_str::SmolStr;
+use semistr::SemiStr;
 use xngin_catalog::{QueryCatalog, SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::{
     self as expr, ColIndex, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind,
 };
-use xngin_frontend::ast::*;
+use xngin_sql::ast::*;
 
 pub struct PlanBuilder<'a, C> {
     catalog: &'a C,
@@ -111,7 +111,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
     fn setup_correlated_cols(
         &mut self,
         root: &mut Op,
-        idents: Vec<(u32, Vec<SmolStr>, &'static str)>,
+        idents: Vec<(u32, Vec<SemiStr>, &'static str)>,
         colgen: &mut ColGen,
     ) -> Result<Vec<expr::Expr>> {
         if idents.is_empty() {
@@ -647,7 +647,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         table_ref: &'a TableRef<'a>,
         phc: &mut PlaceholderCollector<'a>,
         colgen: &mut ColGen,
-    ) -> Result<(JoinOp, Vec<SmolStr>)> {
+    ) -> Result<(JoinOp, Vec<SemiStr>)> {
         let (plan, aliases) = match table_ref {
             TableRef::Primitive(tp) => self.setup_table_primitive(tp, phc, colgen)?,
             TableRef::Joined(tj) => match tj.as_ref() {
@@ -810,7 +810,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         tp: &TablePrimitive<'a>,
         phc: &mut PlaceholderCollector<'a>,
         colgen: &mut ColGen,
-    ) -> Result<(JoinOp, Vec<SmolStr>)> {
+    ) -> Result<(JoinOp, Vec<SemiStr>)> {
         let (plan, alias) = match tp {
             TablePrimitive::Named(tn, alias) => {
                 let tbl_name = tn.table.to_lower();
@@ -1108,7 +1108,7 @@ impl ExprResolve for ResolveNone {
     }
 
     #[inline]
-    fn queries(&self) -> Vec<(SmolStr, QueryID)> {
+    fn queries(&self) -> Vec<(SemiStr, QueryID)> {
         vec![]
     }
 }
@@ -1139,7 +1139,7 @@ impl<'a, C: QueryCatalog> ExprResolve for ResolveProjOrFilt<'a, C> {
     }
 
     #[inline]
-    fn queries(&self) -> Vec<(SmolStr, QueryID)> {
+    fn queries(&self) -> Vec<(SemiStr, QueryID)> {
         self.query_aliases
             .iter()
             .map(|(a, q)| (a.clone(), *q))
@@ -1174,7 +1174,7 @@ impl ExprResolve for ResolveGroup<'_> {
     }
 
     #[inline]
-    fn queries(&self) -> Vec<(SmolStr, QueryID)> {
+    fn queries(&self) -> Vec<(SemiStr, QueryID)> {
         self.query_aliases
             .iter()
             .map(|(a, q)| (a.clone(), *q))
@@ -1184,7 +1184,7 @@ impl ExprResolve for ResolveGroup<'_> {
     /// try to match proj alias first.
     fn find_col(
         &self,
-        col_alias: SmolStr,
+        col_alias: SemiStr,
         _location: &str,
         colgen: &mut ColGen,
     ) -> Result<Resolution> {
@@ -1227,7 +1227,7 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
     }
 
     #[inline]
-    fn queries(&self) -> Vec<(SmolStr, QueryID)> {
+    fn queries(&self) -> Vec<(SemiStr, QueryID)> {
         self.query_aliases
             .iter()
             .map(|(a, q)| (a.clone(), *q))
@@ -1237,7 +1237,7 @@ impl ExprResolve for ResolveHavingOrOrder<'_> {
     #[inline]
     fn find_col(
         &self,
-        col_alias: SmolStr,
+        col_alias: SemiStr,
         _location: &str,
         colgen: &mut ColGen,
     ) -> Result<Resolution> {

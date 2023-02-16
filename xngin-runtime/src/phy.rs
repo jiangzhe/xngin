@@ -132,9 +132,9 @@ mod tests {
     use xngin_catalog::mem_impl::{ColumnSpec, MemCatalog, MemCatalogBuilder};
     use xngin_catalog::{ColumnAttr, QueryCatalog};
     use xngin_datatype::PreciseType;
-    use xngin_frontend::parser::{dialect, parse_query_verbose};
     use xngin_plan::builder::PlanBuilder;
     use xngin_plan::lgc::LgcPlan;
+    use xngin_sql::parser::{dialect, parse_query_verbose};
 
     #[test]
     fn test_build_phy() {

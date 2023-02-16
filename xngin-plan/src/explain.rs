@@ -535,8 +535,8 @@ mod tests {
     use super::Explain;
     use crate::builder::tests::tpch_catalog;
     use crate::builder::PlanBuilder;
-    use xngin_frontend::parser::dialect::MySQL;
-    use xngin_frontend::parser::parse_query;
+    use xngin_sql::parser::dialect::MySQL;
+    use xngin_sql::parser::parse_query;
 
     #[test]
     fn test_explain_plan() {

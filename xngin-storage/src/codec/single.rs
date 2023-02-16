@@ -40,7 +40,7 @@ impl Single {
     #[inline]
     pub fn new_bool(val: bool, len: u16) -> Self {
         Single {
-            data: smallvec![if val { 1u8 } else { 0 }],
+            data: smallvec![u8::from(val)],
             len,
         }
     }
