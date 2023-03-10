@@ -6,6 +6,18 @@ pub trait KeywordString {
     fn kw_str(&self, upper: bool) -> &'static str;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatementKind {
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Create,
+    Drop,
+    UseDB,
+    Explain,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement<'a> {
     // DML statements
@@ -19,6 +31,23 @@ pub enum Statement<'a> {
     // Utility statements
     UseDB(UseDB<'a>),
     Explain(Explain<'a>),
+}
+
+impl Statement<'_> {
+    /// Returns the kind of statement.
+    #[inline]
+    pub fn kind(&self) -> StatementKind {
+        match self {
+            Statement::Select(_) => StatementKind::Select,
+            Statement::Insert(_) => StatementKind::Insert,
+            Statement::Update(_) => StatementKind::Update,
+            Statement::Delete(_) => StatementKind::Delete,
+            Statement::Create(_) => StatementKind::Create,
+            Statement::Drop(_) => StatementKind::Drop,
+            Statement::UseDB(_) => StatementKind::UseDB,
+            Statement::Explain(_) => StatementKind::Explain,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

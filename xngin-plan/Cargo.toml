@@ -14,6 +14,8 @@ xngin-datatype = { version = "0.1.0", path = "../xngin-datatype" }
 xngin-catalog = { version = "0.1.0", path = "../xngin-catalog" }
 xngin-sql = { version = "0.1.0", path = "../xngin-sql" }
 xngin-expr = { version = "0.1.0", path = "../xngin-expr" }
+xngin-storage = { version = "0.1.0", path = "../xngin-storage" }
+xngin-compute = { version = "0.1.0", path = "../xngin-compute" }
 aosa = "0.1"
 slab = "0.4"
 thiserror = "1.0"

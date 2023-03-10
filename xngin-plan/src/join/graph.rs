@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::join::JoinKind;
-use crate::op::Op;
+use crate::lgc::Op;
 use indexmap::IndexMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;

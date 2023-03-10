@@ -1,8 +1,8 @@
-use crate::col::{AliasKind, ProjCol};
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinOp};
-use crate::op::{Op, OpMutVisitor, OpVisitor};
-use crate::scope::Scope;
+use crate::lgc::col::{AliasKind, ProjCol};
+use crate::lgc::op::{Op, OpMutVisitor, OpVisitor};
+use crate::lgc::scope::Scope;
 use fnv::FnvHashMap;
 use std::collections::HashSet;
 use std::mem;

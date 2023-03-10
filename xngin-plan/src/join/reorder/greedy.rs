@@ -3,7 +3,7 @@ use crate::join::estimate::Estimate;
 use crate::join::graph::{Edge, EdgeID, EdgeIDs, Graph, VertexSet};
 use crate::join::reorder::{JoinEdge, Reorder};
 use crate::join::{JoinKind, JoinOp};
-use crate::op::Op;
+use crate::lgc::Op;
 use smallvec::smallvec;
 use std::borrow::Cow;
 use std::collections::BTreeMap;

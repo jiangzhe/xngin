@@ -1,7 +1,7 @@
-use crate::error::{Error, Result};
+use crate::mysql::error::{Error, Result};
 use crate::mysql::flag::*;
 use crate::mysql::serde::{
-    LenEncInt, MyDeser, MyDeserExt, MySerElem, MySerPacket, NewMySer, SerdeCtx,
+    LenEncInt, MyDeser, MyDeserExt, MySerElem, MySerPackets, NewMySer, SerdeCtx,
 };
 use std::borrow::Cow;
 
@@ -27,10 +27,10 @@ pub struct OkPacket<'a> {
 }
 
 impl<'a> NewMySer for OkPacket<'a> {
-    type Ser<'s> = MySerPacket<'s, 7> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 7> where Self: 's;
 
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
         // u8 header
         let header = MySerElem::one_byte(self.header);
         // len-enc-int affected rows
@@ -68,7 +68,7 @@ impl<'a> NewMySer for OkPacket<'a> {
         } else {
             MySerElem::empty()
         };
-        MySerPacket::new(
+        MySerPackets::new(
             ctx,
             [
                 header,
@@ -90,7 +90,7 @@ impl<'a> MyDeser<'a> for OkPacket<'a> {
         // header can be either 0x00 or 0xfe
         let header = input.try_deser_u8()?;
         if header != 0x00 && header != 0xfe {
-            return Err(Error::MalformedPacket);
+            return Err(Error::MalformedPacket());
         }
         let affected_rows = input.try_deser_len_enc_int()?.try_into()?;
         let last_insert_id = input.try_deser_len_enc_int()?.try_into()?;
@@ -140,37 +140,37 @@ impl_from_ref!(OkPacket: header, affected_rows, last_insert_id, status_flags, wa
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrPacket<'a> {
     // pub header: u8,
-    pub error_code: u16,
+    pub code: u16,
     // if PROTOCOL_41 enabled: string[1]
     // pub sql_state_marker: u8,
     // if PROTOCOL_41 enabled: string[5]
-    pub sql_state: Cow<'a, [u8]>,
+    pub state: [u8; 5],
     // EOF-terminated string
-    pub error_message: Cow<'a, [u8]>,
+    pub msg: Cow<'a, [u8]>,
 }
 
 impl<'a> NewMySer for ErrPacket<'a> {
-    type Ser<'s> = MySerPacket<'s, 3> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 3> where Self: 's;
 
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
         let mut elem0 = [0u8; 4]; // combine header, error code, state marker
         elem0[0] = 0xff;
-        elem0[1] = self.error_code as u8;
-        elem0[2] = (self.error_code >> 8) as u8;
+        elem0[1] = self.code as u8;
+        elem0[2] = (self.code >> 8) as u8;
         let sql_state = if ctx.cap_flags.contains(CapabilityFlags::PROTOCOL_41) {
             // set marker to '#'
             elem0[3] = b'#';
-            MySerElem::slice(&self.sql_state)
+            MySerElem::slice(&self.state)
         } else {
             MySerElem::empty()
         };
-        MySerPacket::new(
+        MySerPackets::new(
             ctx,
             [
                 MySerElem::inline_bytes(&elem0),
                 sql_state,
-                MySerElem::slice(&self.error_message),
+                MySerElem::slice(&self.msg),
             ],
         )
     }
@@ -182,51 +182,31 @@ impl<'a> MyDeser<'a> for ErrPacket<'a> {
         let input = &mut input;
         let header = input.try_deser_u8()?;
         if header != 0xff {
-            return Err(Error::MalformedPacket);
+            return Err(Error::MalformedPacket());
         }
-        let error_code = input.try_deser_le_u16()?;
+        let code = input.try_deser_le_u16()?;
         // handshake stage has different behavior?
-        let sql_state = if ctx.cap_flags.contains(CapabilityFlags::PROTOCOL_41) {
+        let state = if ctx.cap_flags.contains(CapabilityFlags::PROTOCOL_41) {
             let marker = input.try_deser_u8()?;
             if marker != b'#' {
-                return Err(Error::MalformedPacket);
+                return Err(Error::MalformedPacket());
             }
-            input.try_deser_bytes(5usize)?
+            let b = input.try_deser_bytes(5usize)?;
+            b.try_into().unwrap()
         } else {
-            &[]
+            [0u8; 5]
         };
-        let error_message = input.deser_to_end();
+        let msg = input.deser_to_end();
         let res = ErrPacket {
-            error_code,
-            sql_state: Cow::Borrowed(sql_state),
-            error_message: Cow::Borrowed(error_message),
+            code,
+            state,
+            msg: Cow::Borrowed(msg),
         };
         Ok((*input, res))
     }
 }
 
-impl_from_ref!(ErrPacket: error_code; sql_state, error_message);
-
-impl<'a> From<&'a Error> for ErrPacket<'a> {
-    #[inline]
-    fn from(src: &'a Error) -> Self {
-        match src {
-            Error::SqlError {
-                code,
-                state_and_msg,
-            } => ErrPacket {
-                error_code: *code,
-                sql_state: Cow::Borrowed(state_and_msg.0.as_bytes()),
-                error_message: Cow::Borrowed(state_and_msg.1.as_bytes()),
-            },
-            _ => ErrPacket {
-                error_code: 0,
-                sql_state: Cow::Borrowed(b""),
-                error_message: Cow::Owned(src.to_string().into_bytes()),
-            },
-        }
-    }
-}
+impl_from_ref!(ErrPacket: code, state; msg);
 
 /// EOF Packet
 /// This kind of packet is deprecated.
@@ -235,29 +215,37 @@ impl<'a> From<&'a Error> for ErrPacket<'a> {
 /// reference: https://dev.mysql.com/doc/internals/en/packet-EOF_Packet.html
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EofPacket {
-    pub header: u8,
     // if PROTOCOL_41 enabled
     pub warnings: u16,
     // if PROTOCOL_41 enabled
     pub status_flags: StatusFlags,
 }
 
-impl NewMySer for EofPacket {
-    type Ser<'s> = MySerPacket<'s, 3> where Self: 's;
+impl EofPacket {
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
-        let (warnings, status_flags) = if ctx.cap_flags.contains(CapabilityFlags::PROTOCOL_41) {
-            (
-                MySerElem::le_u16(self.warnings),
-                MySerElem::le_u16(self.status_flags.bits()),
-            )
-        } else {
-            (MySerElem::empty(), MySerElem::empty())
-        };
-        MySerPacket::new(
-            ctx,
-            [MySerElem::one_byte(self.header), warnings, status_flags],
-        )
+    pub fn new(warnings: u16, status_flags: StatusFlags) -> Self {
+        EofPacket {
+            warnings,
+            status_flags,
+        }
+    }
+}
+
+impl NewMySer for EofPacket {
+    type Ser<'s> = MySerPackets<'s, 1> where Self: 's;
+    #[inline]
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
+        let mut b = [0u8; 5];
+        b[0] = 0xFE; // EOF header is 0xFE
+        if ctx.cap_flags.contains(CapabilityFlags::PROTOCOL_41) {
+            // warnings in little endian.
+            b[1] = self.warnings as u8;
+            b[2] = (self.warnings >> 8) as u8;
+            // status flags in little endian.
+            b[3] = self.status_flags.bits() as u8;
+            b[4] = (self.status_flags.bits() >> 8) as u8;
+        }
+        MySerPackets::new(ctx, [MySerElem::inline_bytes(&b)])
     }
 }
 
@@ -266,6 +254,7 @@ impl<'a> MyDeser<'a> for EofPacket {
     fn my_deser(ctx: &mut SerdeCtx, mut input: &'a [u8]) -> Result<(&'a [u8], Self)> {
         let input = &mut input;
         let header = input.try_deser_u8()?;
+        debug_assert_eq!(header, 0xFE, "EOF packet header mismatch");
         let (warnings, status_flags) = if ctx.cap_flags.contains(CapabilityFlags::PROTOCOL_41) {
             let warnings = input.try_deser_le_u16()?;
             let status_flags = input.try_deser_le_u16()?;
@@ -276,7 +265,6 @@ impl<'a> MyDeser<'a> for EofPacket {
             (0, StatusFlags::empty())
         };
         let res = EofPacket {
-            header,
             warnings,
             status_flags,
         };
@@ -298,7 +286,7 @@ mod tests {
             header: 0,
             affected_rows: 1,
             last_insert_id: 3,
-            status_flags: StatusFlags::STATUS_AUTOCOMMIT,
+            status_flags: StatusFlags::AUTOCOMMIT,
             warnings: 0,
             info: Cow::Borrowed(b""),
             session_state_changes: Cow::Borrowed(b""),
@@ -311,9 +299,9 @@ mod tests {
         let mut ctx = SerdeCtx::default();
         let buf = ByteBuffer::with_capacity(1024);
         let err = ErrPacket {
-            error_code: 1304,
-            sql_state: Cow::Borrowed(b"01S01"),
-            error_message: Cow::Borrowed(b"internal error"),
+            code: 1304,
+            state: *b"01S01",
+            msg: Cow::Borrowed(b"internal error"),
         };
         check_ser_and_deser(&mut ctx, &err, &buf);
     }
@@ -323,8 +311,7 @@ mod tests {
         let mut ctx = SerdeCtx::default();
         let buf = ByteBuffer::with_capacity(1024);
         let eof = EofPacket {
-            header: 0,
-            status_flags: StatusFlags::STATUS_AUTOCOMMIT,
+            status_flags: StatusFlags::AUTOCOMMIT,
             warnings: 0,
         };
         check_ser_and_deser(&mut ctx, &eof, &buf);

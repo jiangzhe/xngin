@@ -1,106 +1,17 @@
 use crate::error::{Error, Result};
-use crate::{Column, ColumnAttr, ColumnID, QueryCatalog, Schema, SchemaID, Table, TableID};
+use crate::{Catalog, Column, ColumnID, Schema, SchemaID, Table, TableID, TableSpec};
 use indexmap::IndexMap;
+use parking_lot::RwLock;
 use semistr::SemiStr;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use xngin_datatype::PreciseType;
+use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default)]
 pub struct MemCatalog {
-    inner: Arc<MemCatalogInner>,
-}
-
-#[derive(Debug)]
-struct MemCatalogInner {
-    schemas: IndexMap<SemiStr, Schema>,
-    tables: IndexMap<SchemaID, Vec<Table>>,
-    table_columns: HashMap<TableID, TableWithColumns>,
-}
-
-#[derive(Debug)]
-pub struct TableWithColumns {
-    table: Table,
-    columns: Vec<Column>,
-}
-
-impl QueryCatalog for MemCatalog {
-    fn all_schemas(&self) -> Vec<Schema> {
-        self.inner.schemas.values().cloned().collect()
-    }
-
-    fn exists_schema(&self, schema_name: &str) -> bool {
-        self.inner.schemas.contains_key(schema_name)
-    }
-
-    fn find_schema_by_name(&self, schema_name: &str) -> Option<Schema> {
-        self.inner.schemas.get(schema_name).cloned()
-    }
-
-    fn find_schema(&self, schema_id: &SchemaID) -> Option<Schema> {
-        self.inner
-            .schemas
-            .values()
-            .find(|s| &s.id == schema_id)
-            .cloned()
-    }
-
-    fn all_tables_in_schema(&self, schema_id: &SchemaID) -> Vec<Table> {
-        self.inner
-            .tables
-            .get(schema_id)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    fn exists_table(&self, schema_id: &SchemaID, table_name: &str) -> bool {
-        self.inner
-            .tables
-            .get(schema_id)
-            .map(|ts| ts.iter().any(|t| t.name == table_name))
-            .unwrap_or_default()
-    }
-
-    fn find_table_by_name(&self, schema_id: &SchemaID, table_name: &str) -> Option<Table> {
-        self.inner
-            .tables
-            .get(schema_id)
-            .and_then(|ts| ts.iter().find(|t| t.name == table_name).cloned())
-    }
-
-    fn find_table(&self, table_id: &TableID) -> Option<Table> {
-        self.inner
-            .table_columns
-            .get(table_id)
-            .map(|twc| twc.table.clone())
-    }
-
-    fn all_columns_in_table(&self, table_id: &TableID) -> Vec<Column> {
-        self.inner
-            .table_columns
-            .get(table_id)
-            .map(|twc| twc.columns.clone())
-            .unwrap_or_default()
-    }
-
-    fn exists_column(&self, table_id: &TableID, column_name: &str) -> bool {
-        self.inner
-            .table_columns
-            .get(table_id)
-            .map(|twc| twc.columns.iter().any(|c| c.name == column_name))
-            .unwrap_or_default()
-    }
-
-    fn find_column_by_name(&self, table_id: &TableID, column_name: &str) -> Option<Column> {
-        self.inner
-            .table_columns
-            .get(table_id)
-            .and_then(|twc| twc.columns.iter().find(|c| c.name == column_name).cloned())
-    }
+    inner: RwLock<Inner>,
 }
 
 #[derive(Debug, Default)]
-pub struct MemCatalogBuilder {
+struct Inner {
     schemas: IndexMap<SemiStr, Schema>,
     tables: IndexMap<SchemaID, Vec<Table>>,
     table_columns: HashMap<TableID, TableWithColumns>,
@@ -109,109 +20,206 @@ pub struct MemCatalogBuilder {
     column_id_gen: u32,
 }
 
-impl MemCatalogBuilder {
+#[derive(Debug)]
+pub struct TableWithColumns {
+    table: Table,
+    columns: Vec<Column>,
+}
+
+impl Catalog for MemCatalog {
     #[inline]
-    pub fn add_schema(&mut self, name: &str) -> Result<SchemaID> {
-        if self.schemas.contains_key(name) {
-            return Err(Error::SchemaAlreadyExists(name.to_string()));
+    fn all_schemas(&self) -> Vec<Schema> {
+        let inner = self.inner.read();
+        inner.schemas.values().cloned().collect()
+    }
+
+    #[inline]
+    fn exists_schema(&self, schema_name: &str) -> bool {
+        let inner = self.inner.read();
+        inner.schemas.contains_key(schema_name)
+    }
+
+    #[inline]
+    fn find_schema_by_name(&self, schema_name: &str) -> Option<Schema> {
+        let inner = self.inner.read();
+        inner.schemas.get(schema_name).cloned()
+    }
+
+    #[inline]
+    fn find_schema(&self, schema_id: &SchemaID) -> Option<Schema> {
+        let inner = self.inner.read();
+        inner.schemas.values().find(|s| &s.id == schema_id).cloned()
+    }
+
+    #[inline]
+    fn all_tables_in_schema(&self, schema_id: &SchemaID) -> Vec<Table> {
+        let inner = self.inner.read();
+        inner.tables.get(schema_id).cloned().unwrap_or_default()
+    }
+
+    #[inline]
+    fn exists_table(&self, schema_id: &SchemaID, table_name: &str) -> bool {
+        let inner = self.inner.read();
+        inner
+            .tables
+            .get(schema_id)
+            .map(|ts| ts.iter().any(|t| t.name == table_name))
+            .unwrap_or_default()
+    }
+
+    #[inline]
+    fn find_table_by_name(&self, schema_id: &SchemaID, table_name: &str) -> Option<Table> {
+        let inner = self.inner.read();
+        inner
+            .tables
+            .get(schema_id)
+            .and_then(|ts| ts.iter().find(|t| t.name == table_name).cloned())
+    }
+
+    #[inline]
+    fn find_table(&self, table_id: &TableID) -> Option<Table> {
+        let inner = self.inner.read();
+        inner
+            .table_columns
+            .get(table_id)
+            .map(|twc| twc.table.clone())
+    }
+
+    #[inline]
+    fn all_columns_in_table(&self, table_id: &TableID) -> Vec<Column> {
+        let inner = self.inner.read();
+        inner
+            .table_columns
+            .get(table_id)
+            .map(|twc| twc.columns.clone())
+            .unwrap_or_default()
+    }
+
+    #[inline]
+    fn exists_column(&self, table_id: &TableID, column_name: &str) -> bool {
+        let inner = self.inner.read();
+        inner
+            .table_columns
+            .get(table_id)
+            .map(|twc| twc.columns.iter().any(|c| c.name == column_name))
+            .unwrap_or_default()
+    }
+
+    #[inline]
+    fn find_column_by_name(&self, table_id: &TableID, column_name: &str) -> Option<Column> {
+        let inner = self.inner.read();
+        inner
+            .table_columns
+            .get(table_id)
+            .and_then(|twc| twc.columns.iter().find(|c| c.name == column_name).cloned())
+    }
+
+    #[inline]
+    fn create_schema(&self, schema_name: &str) -> Result<SchemaID> {
+        let mut inner = self.inner.write();
+        if inner.schemas.contains_key(schema_name) {
+            return Err(Error::SchemaAlreadyExists(SemiStr::new(schema_name)));
         }
-        self.schema_id_gen += 1;
-        let id = SchemaID::new(self.schema_id_gen);
-        let name = SemiStr::new(name);
+        inner.schema_id_gen += 1;
+        let id = SchemaID::new(inner.schema_id_gen);
+        let name = SemiStr::new(schema_name);
         let schema = Schema {
             id,
             name: name.clone(),
         };
-        self.schemas.insert(name, schema);
+        inner.schemas.insert(name, schema);
+        inner.tables.insert(id, vec![]);
         Ok(id)
     }
 
     #[inline]
-    pub fn add_table(
-        &mut self,
-        schema_name: &str,
-        table_name: &str,
-        cols: &[ColumnSpec],
-    ) -> Result<TableID> {
-        if let Some(schema) = self.schemas.get(schema_name) {
-            let schema_id = schema.id;
-            // check table name conflicts
-            if self
-                .tables
-                .get(&schema_id)
-                .and_then(|ts| ts.iter().find(|t| t.name == table_name))
-                .is_some()
-            {
-                return Err(Error::TableAlreadyExists(table_name.to_string()));
+    fn drop_schema(&self, schema_name: &str) -> Result<()> {
+        let mut inner = self.inner.write();
+        match inner.schemas.remove(schema_name) {
+            None => Err(Error::SchemaNotExists(SemiStr::new(schema_name))),
+            Some(schema) => {
+                if let Some(tables) = inner.tables.remove(&schema.id) {
+                    for table in tables {
+                        inner.table_columns.remove(&table.id);
+                    }
+                }
+                Ok(())
             }
-            // check column name conflicts
-            let mut col_names = HashSet::with_capacity(cols.len());
-            for c in cols {
-                if !col_names.insert(c.name.clone()) {
-                    return Err(Error::ColumnNameNotUnique(c.name.to_string()));
+        }
+    }
+
+    #[inline]
+    fn create_table(&self, table_spec: TableSpec) -> Result<TableID> {
+        let mut inner = self.inner.write();
+        let Inner {
+            schemas,
+            tables,
+            table_columns,
+            table_id_gen,
+            column_id_gen,
+            ..
+        } = &mut *inner;
+        match schemas.get(&table_spec.schema_name) {
+            None => Err(Error::SchemaNotExists(table_spec.schema_name)),
+            Some(schema) => {
+                let tables_in_schema = &tables[&schema.id];
+                if tables_in_schema
+                    .iter()
+                    .any(|t| t.name == table_spec.table_name)
+                {
+                    return Err(Error::TableAlreadyExists(table_spec.table_name));
+                }
+                *table_id_gen += 1;
+                let table_id = TableID::new(*table_id_gen);
+                let table_name = SemiStr::new(&table_spec.table_name);
+                let table = Table {
+                    id: table_id,
+                    schema_id: schema.id,
+                    name: table_name,
+                };
+                tables.entry(schema.id).or_default().push(table.clone());
+                let mut columns = Vec::with_capacity(table_spec.columns.len());
+                for (i, c) in table_spec.columns.iter().enumerate() {
+                    *column_id_gen += 1;
+                    let id = ColumnID::new(*column_id_gen);
+                    let column = Column {
+                        id,
+                        table_id,
+                        name: c.name.clone(),
+                        pty: c.pty,
+                        attr: c.attr,
+                        idx: i as u32,
+                    };
+                    columns.push(column);
+                }
+                table_columns.insert(table_id, TableWithColumns { table, columns });
+                Ok(table_id)
+            }
+        }
+    }
+
+    #[inline]
+    fn drop_table(&self, schema_name: &str, table_name: &str) -> Result<()> {
+        let mut inner = self.inner.write();
+        let Inner {
+            schemas,
+            tables,
+            table_columns,
+            ..
+        } = &mut *inner;
+        match schemas.get(schema_name) {
+            None => Err(Error::SchemaNotExists(SemiStr::new(schema_name))),
+            Some(schema) => {
+                let tables_in_schema = &mut tables[&schema.id];
+                match tables_in_schema.iter().position(|t| t.name == table_name) {
+                    None => Err(Error::TableNotExists(SemiStr::new(table_name))),
+                    Some(idx) => {
+                        let table = tables_in_schema.swap_remove(idx);
+                        table_columns.remove(&table.id);
+                        Ok(())
+                    }
                 }
             }
-            // create table first
-            self.table_id_gen += 1;
-            let table_id = TableID::new(self.table_id_gen);
-            let table_name = SemiStr::new(table_name);
-            let table = Table {
-                id: table_id,
-                schema_id,
-                name: table_name,
-            };
-            self.tables
-                .entry(schema_id)
-                .or_default()
-                .push(table.clone());
-            let mut columns = Vec::with_capacity(cols.len());
-            for (i, c) in cols.iter().enumerate() {
-                self.column_id_gen += 1;
-                let id = ColumnID::new(self.column_id_gen);
-                let column = Column {
-                    id,
-                    table_id,
-                    name: c.name.clone(),
-                    pty: c.pty,
-                    attr: c.attr,
-                    idx: i as u32,
-                };
-                columns.push(column);
-            }
-            self.table_columns
-                .insert(table_id, TableWithColumns { table, columns });
-            Ok(table_id)
-        } else {
-            Err(Error::SchemaNotExists(schema_name.to_string()))
-        }
-    }
-
-    #[inline]
-    pub fn build(self) -> MemCatalog {
-        let inner = MemCatalogInner {
-            schemas: self.schemas,
-            tables: self.tables,
-            table_columns: self.table_columns,
-        };
-        MemCatalog {
-            inner: Arc::new(inner),
-        }
-    }
-}
-
-pub struct ColumnSpec {
-    pub name: SemiStr,
-    pub pty: PreciseType,
-    pub attr: ColumnAttr,
-}
-
-impl ColumnSpec {
-    #[inline]
-    pub fn new(name: &str, pty: PreciseType, attr: ColumnAttr) -> Self {
-        ColumnSpec {
-            name: SemiStr::new(name),
-            pty,
-            attr,
         }
     }
 }

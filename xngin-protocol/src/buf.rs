@@ -11,8 +11,6 @@ const VACUUM_RATE: f64 = 0.8;
 pub enum Error {
     #[error("exceeds capacity with additional {0} bytes")]
     ExceedsCapacity(usize),
-    #[error("invalid input")]
-    InvalidInput,
     #[error("invalid state")]
     InvalidState,
 }

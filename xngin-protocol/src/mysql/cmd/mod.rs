@@ -1,8 +1,8 @@
 //! Defines MySQL commands.
 mod query;
 
-use crate::error::{Error, Result};
-use crate::mysql::serde::{MyDeser, MyDeserExt, MySerElem, MySerPacket, NewMySer, SerdeCtx};
+use crate::mysql::error::{Error, Result};
+use crate::mysql::serde::{MyDeser, MyDeserExt, MySerElem, MySerPackets, NewMySer, SerdeCtx};
 pub use query::ComQuery;
 use std::borrow::{Borrow, Cow};
 
@@ -95,7 +95,7 @@ impl<'a> MyDeser<'a> for MyCmd<'a> {
     #[inline]
     fn my_deser(ctx: &mut SerdeCtx, input: &'a [u8]) -> Result<(&'a [u8], Self)> {
         if input.is_empty() {
-            return Err(Error::InsufficientInput);
+            return Err(Error::MalformedPacket());
         }
         match input[0] {
             0x03 => {
@@ -106,7 +106,7 @@ impl<'a> MyDeser<'a> for MyCmd<'a> {
                 let (next, field_list) = ComFieldList::my_deser(ctx, input)?;
                 Ok((next, MyCmd::FieldList(field_list)))
             }
-            _ => Err(Error::MalformedPacket),
+            _ => Err(Error::MalformedPacket()),
         }
     }
 }
@@ -145,10 +145,10 @@ impl<'a> ComFieldList<'a> {
 }
 
 impl<'a> NewMySer for ComFieldList<'a> {
-    type Ser<'s> = MySerPacket<'s, 3> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 3> where Self: 's;
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
-        MySerPacket::new(
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
+        MySerPackets::new(
             ctx,
             [
                 MySerElem::one_byte(CmdCode::FieldList as u8),
@@ -169,11 +169,13 @@ impl<'a> MyDeser<'a> for ComFieldList<'a> {
         }
         let table = input.try_deser_until(0, false)?;
         let wildcard = input.deser_to_end();
+        let table = std::str::from_utf8(table).map_err(|_| Error::InvalidUtf8String())?;
+        let wildcard = std::str::from_utf8(wildcard).map_err(|_| Error::InvalidUtf8String())?;
         Ok((
             *input,
             ComFieldList {
-                table: Cow::Borrowed(std::str::from_utf8(table)?),
-                wildcard: Cow::Borrowed(std::str::from_utf8(wildcard)?),
+                table: Cow::Borrowed(table),
+                wildcard: Cow::Borrowed(wildcard),
             },
         ))
     }

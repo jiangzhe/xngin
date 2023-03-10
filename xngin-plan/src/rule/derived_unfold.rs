@@ -1,10 +1,9 @@
-use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::op::{Op, OpMutVisitor, OpVisitor};
-use crate::query::{Location, QuerySet, Subquery};
+use crate::lgc::{
+    Location, Op, OpMutVisitor, OpVisitor, ProjCol, QuerySet, Setop, SubqOp, Subquery,
+};
 use crate::rule::RuleEffect;
-use crate::setop::{Setop, SubqOp};
 use std::collections::HashMap;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
@@ -363,8 +362,8 @@ fn rewrite_exprs(op: &mut Op, mapping: &HashMap<QueryCol, Expr>) -> RuleEffect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{assert_j_plan1, j_catalog, print_plan};
-    use crate::op::OpKind::*;
+    use crate::lgc::tests::{assert_j_plan1, j_catalog, print_plan};
+    use crate::lgc::OpKind::*;
     use crate::rule::{col_prune, pred_pushdown};
 
     #[test]

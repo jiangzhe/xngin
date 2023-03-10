@@ -1,8 +1,6 @@
-use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::op::{Op, OpMutVisitor};
-use crate::query::QuerySet;
+use crate::lgc::{Op, OpMutVisitor, ProjCol, QuerySet};
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce, PartialExpr};
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -598,7 +596,7 @@ struct PartialExprSet(GlobalID, HashSet<PartialExpr>);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{assert_j_plan1, get_filt_expr, j_catalog, print_plan};
+    use crate::lgc::tests::{assert_j_plan1, get_filt_expr, j_catalog, print_plan};
 
     #[test]
     fn test_pred_pullup_cross_join() {

@@ -1,4 +1,4 @@
-use crate::alias::QueryAliases;
+use crate::lgc::alias::QueryAliases;
 use fnv::FnvHashSet;
 use indexmap::IndexMap;
 use semistr::SemiStr;

@@ -1,54 +1,25 @@
-use crate::col::{AliasKind, ProjCol};
 use crate::error::{Error, Result};
 use crate::join::{self, Join, JoinKind, JoinOp};
+use crate::lgc::col::{AliasKind, ProjCol};
+use crate::lgc::op::{Op, SortItem};
+use crate::lgc::query::QuerySet;
 use crate::lgc::LgcPlan;
-use crate::op::{Op, SortItem};
-use crate::query::QuerySet;
 use aosa::StringArena;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use xngin_catalog::{QueryCatalog, SchemaID, TableID};
+use xngin_catalog::{Catalog, SchemaID, TableID};
 use xngin_datatype::{self as datatype, TimeUnit, DEFAULT_DATE_FORMAT};
 use xngin_expr::{self as expr, ColKind, Const, ExprKind, Farg, FuncKind, PredFuncKind, QueryID};
 use xngin_sql::ast::*;
 
 #[inline]
-pub fn reflect<'a, C: QueryCatalog>(
+pub fn reflect<'a, C: Catalog>(
     plan: &LgcPlan,
     arena: &'a StringArena,
     catalog: &C,
 ) -> Result<Statement<'a>> {
     // todo: handle CTEs
     let mut ctx = AstContext::default();
-    // let mut ctes = vec![];
-    // for cte_qry_id in &plan.attaches {
-    //     let op = reflect_root_query(&mut ctx, arena, &plan.qry_set, *cte_qry_id, catalog)?;
-    //     match op {
-    //         AstOp::Partial(AstPartial::Derived{..}) => return Err(Error::IncompleteLgcPlanReflection),
-    //         AstOp::Partial(AstPartial::TableScan { tbl, filt, cols, .. }) => {
-    //             if cols.is_empty() {
-    //                 return Err(Error::IncompleteLgcPlanReflection)
-    //             }
-    //             let qe = QueryExpr{with: None, query: Query::table(SelectTable{
-    //                 q: SetQuantifier::All,
-    //                 cols,
-    //                 from: vec![TableRef::primitive(TablePrimitive::Named(tbl, None))],
-    //                 filter: filt,
-    //                 group_by: vec![],
-    //                 having: None,
-    //                 order_by: vec![],
-    //                 limit: None,
-    //             })};
-
-    //             WithElement{}
-    //         }
-    //     }
-    // }
-    // let with = if ctes.is_empty() {
-    //     None
-    // } else {
-    //     Some(With{recursive: false, elements: ctes})
-    // };
     let with = None;
     let op = reflect_root_query(&mut ctx, arena, &plan.qry_set, plan.root, catalog)?;
     let res = match op {
@@ -90,7 +61,7 @@ pub fn reflect<'a, C: QueryCatalog>(
 
 /// Reduce a independent plan to SQL statement.
 #[inline]
-fn reflect_root_query<'a, C: QueryCatalog>(
+fn reflect_root_query<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -105,7 +76,7 @@ fn reflect_root_query<'a, C: QueryCatalog>(
 
 /// Reduce query to partial AST for future processing.
 #[inline]
-fn reflect_query<'a, C: QueryCatalog>(
+fn reflect_query<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -120,7 +91,7 @@ fn reflect_query<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn reflect_op<'a, C: QueryCatalog>(
+fn reflect_op<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -187,7 +158,7 @@ fn reflect_op<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn reflect_proj<'a, C: QueryCatalog>(
+fn reflect_proj<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     proj_cols: &[ProjCol],
@@ -305,7 +276,7 @@ fn reflect_proj<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn reflect_filt<'a, C: QueryCatalog>(
+fn reflect_filt<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     preds: &[expr::Expr],
@@ -443,7 +414,7 @@ fn reflect_filt<'a, C: QueryCatalog>(
 
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn reflect_aggr<'a, C: QueryCatalog>(
+fn reflect_aggr<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     groups: &[expr::Expr],
@@ -612,7 +583,7 @@ fn reflect_aggr<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn reflect_join<'a, C: QueryCatalog>(
+fn reflect_join<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -630,7 +601,7 @@ fn reflect_join<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn reflect_sort<'a, C: QueryCatalog>(
+fn reflect_sort<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     items: &[SortItem],
@@ -732,7 +703,7 @@ fn reflect_limit(start: u64, end: u64, child: AstOp) -> Result<AstOp> {
 }
 
 #[inline]
-fn reflect_cross_join<'a, C: QueryCatalog>(
+fn reflect_cross_join<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -782,7 +753,7 @@ fn reflect_cross_join<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn implicit_cross_join<'a, C: QueryCatalog>(
+fn implicit_cross_join<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -809,7 +780,7 @@ fn implicit_cross_join<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn reflect_qualified_join<'a, C: QueryCatalog>(
+fn reflect_qualified_join<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -845,7 +816,7 @@ fn reflect_qualified_join<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn reflect_join_op<'a, C: QueryCatalog>(
+fn reflect_join_op<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -911,7 +882,7 @@ fn reflect_join_op<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn reflect_table<'a, C: QueryCatalog>(
+fn reflect_table<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     root: QueryID,
@@ -990,7 +961,7 @@ fn wrap_query<'a>(op: AstOp<'a>, alias: Ident<'a>) -> Result<AstOp<'a>> {
 }
 
 #[inline]
-fn transform_proj_cols<'a, C: QueryCatalog>(
+fn transform_proj_cols<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -1012,7 +983,7 @@ fn transform_proj_cols<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn transform_conj_preds<'a, C: QueryCatalog>(
+fn transform_conj_preds<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -1027,7 +998,7 @@ fn transform_conj_preds<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn transform_exprs<'a, C: QueryCatalog>(
+fn transform_exprs<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -1043,7 +1014,7 @@ fn transform_exprs<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn transform_sort_items<'a, C: QueryCatalog>(
+fn transform_sort_items<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -1059,7 +1030,7 @@ fn transform_sort_items<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn transform_expr<'a, C: QueryCatalog>(
+fn transform_expr<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -1170,7 +1141,7 @@ fn transform_expr<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn transform_pred<'a, C: QueryCatalog>(
+fn transform_pred<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -1298,7 +1269,7 @@ fn transform_pred<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn transform_func<'a, C: QueryCatalog>(
+fn transform_func<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -1355,7 +1326,7 @@ fn transform_func<'a, C: QueryCatalog>(
 }
 
 #[inline]
-fn transform_aggf<'a, C: QueryCatalog>(
+fn transform_aggf<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
@@ -1625,7 +1596,7 @@ fn next_avail_tbl_alias_id<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{build_plan, j_catalog};
+    use crate::lgc::tests::{build_plan, j_catalog};
     use xngin_sql::pretty::{PrettyConf, PrettyFormat};
 
     #[test]

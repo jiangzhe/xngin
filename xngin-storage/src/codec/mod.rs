@@ -55,8 +55,8 @@ impl Codec {
     pub fn to_owned(&self) -> Self {
         match self {
             Codec::Single(s) => Codec::Single(s.clone()),
-            Codec::Array(a) => Codec::Array(Arc::new(Array::to_owned(&*a))),
-            Codec::Bitmap(b) => Codec::Bitmap(Arc::new(Bitmap::to_owned(&*b))),
+            Codec::Array(a) => Codec::Array(Arc::new(Array::to_owned(&**a))),
+            Codec::Bitmap(b) => Codec::Bitmap(Arc::new(Bitmap::to_owned(b))),
             Codec::Empty => Codec::Empty,
         }
     }

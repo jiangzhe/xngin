@@ -1,3 +1,4 @@
+use semistr::SemiStr;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -5,11 +6,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Schema '{0}' already exists")]
-    SchemaAlreadyExists(String),
+    SchemaAlreadyExists(SemiStr),
     #[error("Schema '{0}' not exists")]
-    SchemaNotExists(String),
+    SchemaNotExists(SemiStr),
     #[error("Table '{0}' already exists")]
-    TableAlreadyExists(String),
+    TableAlreadyExists(SemiStr),
+    #[error("Table '{0}' not exists")]
+    TableNotExists(SemiStr),
     #[error("Column name '{0}' is not unique")]
-    ColumnNameNotUnique(String),
+    ColumnNameNotUnique(SemiStr),
 }

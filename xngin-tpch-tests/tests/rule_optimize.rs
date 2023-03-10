@@ -1,7 +1,7 @@
 use std::time::Instant;
-use xngin_catalog::QueryCatalog;
-use xngin_plan::builder::PlanBuilder;
+use xngin_catalog::Catalog;
 use xngin_plan::explain::Explain;
+use xngin_plan::lgc::LgcBuilder;
 use xngin_plan::rule::rule_optimize;
 use xngin_sql::parser::dialect::Ansi;
 use xngin_sql::parser::parse_query_verbose;
@@ -161,11 +161,11 @@ fn test_tpch_rule_optimize22() {
     check_tpch_rule_optimize(&cat, sql);
 }
 
-fn check_tpch_rule_optimize<C: QueryCatalog>(cat: &C, sql: &str) {
+fn check_tpch_rule_optimize<C: Catalog>(cat: &C, sql: &str) {
     let inst = Instant::now();
     let qry = parse_query_verbose(Ansi(sql)).unwrap();
     let dur_parse = inst.elapsed();
-    let builder = PlanBuilder::new(cat, "tpch").unwrap();
+    let builder = LgcBuilder::new(cat, "tpch").unwrap();
     let mut plan = builder.build_plan(&qry).unwrap();
     let dur_build = inst.elapsed();
     rule_optimize(&mut plan).unwrap();

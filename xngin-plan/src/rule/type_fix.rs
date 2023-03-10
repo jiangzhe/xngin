@@ -1,7 +1,6 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, QualifiedJoin};
-use crate::op::{Aggr, Op, OpMutVisitor};
-use crate::query::QuerySet;
+use crate::lgc::{Aggr, Op, OpMutVisitor, QuerySet};
 use std::collections::HashMap;
 use xngin_datatype::PreciseType;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
@@ -117,10 +116,10 @@ impl OpMutVisitor for FixType<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{build_plan, get_filt_expr, print_plan};
+    use crate::lgc::tests::{build_plan, get_filt_expr, print_plan};
     use crate::lgc::LgcPlan;
-    use xngin_catalog::mem_impl::{ColumnSpec, MemCatalog, MemCatalogBuilder};
-    use xngin_catalog::{ColumnAttr, QueryCatalog};
+    use xngin_catalog::mem_impl::MemCatalog;
+    use xngin_catalog::{Catalog, ColumnAttr, ColumnSpec, TableSpec};
 
     macro_rules! vec2 {
         ($e:expr) => {
@@ -387,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_type_fix_join() {
-        use crate::op::{preorder, Op};
+        use crate::lgc::{preorder, Op};
         let cat = ty_catalog();
         assert_ty_plan1(
             &cat,
@@ -408,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_type_fix_aggr() {
-        use crate::op::{preorder, Op};
+        use crate::lgc::{preorder, Op};
         let cat = ty_catalog();
         assert_ty_plan1(
             &cat,
@@ -431,85 +430,81 @@ mod tests {
 
     #[inline]
     fn ty_catalog() -> MemCatalog {
-        let mut builder = MemCatalogBuilder::default();
-        builder.add_schema("ty").unwrap();
-        builder
-            .add_table(
-                "ty",
-                "ty1",
-                &[
-                    ColumnSpec::new("c_i32", PreciseType::i32(), ColumnAttr::empty()),
-                    ColumnSpec::new("c_u32", PreciseType::u32(), ColumnAttr::empty()),
-                    ColumnSpec::new("c_i64", PreciseType::i64(), ColumnAttr::empty()),
-                    ColumnSpec::new("c_u64", PreciseType::u64(), ColumnAttr::empty()),
-                    ColumnSpec::new("c_f32", PreciseType::f32(), ColumnAttr::empty()),
-                    ColumnSpec::new("c_f64", PreciseType::f64(), ColumnAttr::empty()),
-                    ColumnSpec::new("c_dec", PreciseType::decimal(18, 2), ColumnAttr::empty()),
-                    ColumnSpec::new("c_bool", PreciseType::bool(), ColumnAttr::empty()),
-                    ColumnSpec::new("c_dm", PreciseType::datetime(0), ColumnAttr::empty()),
-                    ColumnSpec::new("c_tm", PreciseType::time(0), ColumnAttr::empty()),
-                    ColumnSpec::new("c_dt", PreciseType::date(), ColumnAttr::empty()),
-                    ColumnSpec::new("c_ascii", PreciseType::ascii(1), ColumnAttr::empty()),
-                    ColumnSpec::new("c_utf8", PreciseType::var_utf8(10), ColumnAttr::empty()),
-                    ColumnSpec::new("c_bin", PreciseType::var_bytes(1024), ColumnAttr::empty()),
-                ],
-            )
-            .unwrap();
-        builder
-            .add_table(
-                "ty",
-                "dec1",
-                &[
-                    ColumnSpec::new("d40", PreciseType::decimal(4, 0), ColumnAttr::empty()),
-                    ColumnSpec::new("d50", PreciseType::decimal(5, 0), ColumnAttr::empty()),
-                    ColumnSpec::new("d60", PreciseType::decimal(6, 0), ColumnAttr::empty()),
-                    ColumnSpec::new("d41", PreciseType::decimal(4, 1), ColumnAttr::empty()),
-                    ColumnSpec::new("d51", PreciseType::decimal(5, 1), ColumnAttr::empty()),
-                    ColumnSpec::new("d61", PreciseType::decimal(6, 1), ColumnAttr::empty()),
-                    ColumnSpec::new("d42", PreciseType::decimal(4, 2), ColumnAttr::empty()),
-                    ColumnSpec::new("d52", PreciseType::decimal(5, 2), ColumnAttr::empty()),
-                    ColumnSpec::new("d62", PreciseType::decimal(6, 2), ColumnAttr::empty()),
-                ],
-            )
-            .unwrap();
-        builder
-            .add_table(
-                "ty",
-                "dm1",
-                &[
-                    ColumnSpec::new("dm0", PreciseType::datetime(0), ColumnAttr::empty()),
-                    ColumnSpec::new("dm3", PreciseType::datetime(3), ColumnAttr::empty()),
-                    ColumnSpec::new("dm6", PreciseType::datetime(6), ColumnAttr::empty()),
-                    ColumnSpec::new("tm0", PreciseType::time(0), ColumnAttr::empty()),
-                    ColumnSpec::new("tm3", PreciseType::time(3), ColumnAttr::empty()),
-                    ColumnSpec::new("tm6", PreciseType::time(6), ColumnAttr::empty()),
-                ],
-            )
-            .unwrap();
-        builder
-            .add_table(
-                "ty",
-                "str1",
-                &[
-                    ColumnSpec::new("a1", PreciseType::ascii(1), ColumnAttr::empty()),
-                    ColumnSpec::new("a10", PreciseType::ascii(10), ColumnAttr::empty()),
-                    ColumnSpec::new("va1", PreciseType::var_ascii(1), ColumnAttr::empty()),
-                    ColumnSpec::new("va10", PreciseType::var_ascii(10), ColumnAttr::empty()),
-                    ColumnSpec::new("u1", PreciseType::utf8(1), ColumnAttr::empty()),
-                    ColumnSpec::new("u10", PreciseType::utf8(10), ColumnAttr::empty()),
-                    ColumnSpec::new("vu1", PreciseType::var_utf8(1), ColumnAttr::empty()),
-                    ColumnSpec::new("vu10", PreciseType::var_utf8(10), ColumnAttr::empty()),
-                    ColumnSpec::new("b1", PreciseType::bytes(1), ColumnAttr::empty()),
-                    ColumnSpec::new("b10", PreciseType::bytes(10), ColumnAttr::empty()),
-                    ColumnSpec::new("vb1", PreciseType::var_bytes(1), ColumnAttr::empty()),
-                    ColumnSpec::new("vb10", PreciseType::var_bytes(10), ColumnAttr::empty()),
-                ],
-            )
-            .unwrap();
-        builder.build()
+        let cat = MemCatalog::default();
+        cat.create_schema("ty").unwrap();
+        cat.create_table(TableSpec::new(
+            "ty",
+            "ty1",
+            vec![
+                ColumnSpec::new("c_i32", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c_u32", PreciseType::u32(), ColumnAttr::empty()),
+                ColumnSpec::new("c_i64", PreciseType::i64(), ColumnAttr::empty()),
+                ColumnSpec::new("c_u64", PreciseType::u64(), ColumnAttr::empty()),
+                ColumnSpec::new("c_f32", PreciseType::f32(), ColumnAttr::empty()),
+                ColumnSpec::new("c_f64", PreciseType::f64(), ColumnAttr::empty()),
+                ColumnSpec::new("c_dec", PreciseType::decimal(18, 2), ColumnAttr::empty()),
+                ColumnSpec::new("c_bool", PreciseType::bool(), ColumnAttr::empty()),
+                ColumnSpec::new("c_dm", PreciseType::datetime(0), ColumnAttr::empty()),
+                ColumnSpec::new("c_tm", PreciseType::time(0), ColumnAttr::empty()),
+                ColumnSpec::new("c_dt", PreciseType::date(), ColumnAttr::empty()),
+                ColumnSpec::new("c_ascii", PreciseType::ascii(1), ColumnAttr::empty()),
+                ColumnSpec::new("c_utf8", PreciseType::var_utf8(10), ColumnAttr::empty()),
+                ColumnSpec::new("c_bin", PreciseType::var_bytes(1024), ColumnAttr::empty()),
+            ],
+        ))
+        .unwrap();
+        cat.create_table(TableSpec::new(
+            "ty",
+            "dec1",
+            vec![
+                ColumnSpec::new("d40", PreciseType::decimal(4, 0), ColumnAttr::empty()),
+                ColumnSpec::new("d50", PreciseType::decimal(5, 0), ColumnAttr::empty()),
+                ColumnSpec::new("d60", PreciseType::decimal(6, 0), ColumnAttr::empty()),
+                ColumnSpec::new("d41", PreciseType::decimal(4, 1), ColumnAttr::empty()),
+                ColumnSpec::new("d51", PreciseType::decimal(5, 1), ColumnAttr::empty()),
+                ColumnSpec::new("d61", PreciseType::decimal(6, 1), ColumnAttr::empty()),
+                ColumnSpec::new("d42", PreciseType::decimal(4, 2), ColumnAttr::empty()),
+                ColumnSpec::new("d52", PreciseType::decimal(5, 2), ColumnAttr::empty()),
+                ColumnSpec::new("d62", PreciseType::decimal(6, 2), ColumnAttr::empty()),
+            ],
+        ))
+        .unwrap();
+        cat.create_table(TableSpec::new(
+            "ty",
+            "dm1",
+            vec![
+                ColumnSpec::new("dm0", PreciseType::datetime(0), ColumnAttr::empty()),
+                ColumnSpec::new("dm3", PreciseType::datetime(3), ColumnAttr::empty()),
+                ColumnSpec::new("dm6", PreciseType::datetime(6), ColumnAttr::empty()),
+                ColumnSpec::new("tm0", PreciseType::time(0), ColumnAttr::empty()),
+                ColumnSpec::new("tm3", PreciseType::time(3), ColumnAttr::empty()),
+                ColumnSpec::new("tm6", PreciseType::time(6), ColumnAttr::empty()),
+            ],
+        ))
+        .unwrap();
+        cat.create_table(TableSpec::new(
+            "ty",
+            "str1",
+            vec![
+                ColumnSpec::new("a1", PreciseType::ascii(1), ColumnAttr::empty()),
+                ColumnSpec::new("a10", PreciseType::ascii(10), ColumnAttr::empty()),
+                ColumnSpec::new("va1", PreciseType::var_ascii(1), ColumnAttr::empty()),
+                ColumnSpec::new("va10", PreciseType::var_ascii(10), ColumnAttr::empty()),
+                ColumnSpec::new("u1", PreciseType::utf8(1), ColumnAttr::empty()),
+                ColumnSpec::new("u10", PreciseType::utf8(10), ColumnAttr::empty()),
+                ColumnSpec::new("vu1", PreciseType::var_utf8(1), ColumnAttr::empty()),
+                ColumnSpec::new("vu10", PreciseType::var_utf8(10), ColumnAttr::empty()),
+                ColumnSpec::new("b1", PreciseType::bytes(1), ColumnAttr::empty()),
+                ColumnSpec::new("b10", PreciseType::bytes(10), ColumnAttr::empty()),
+                ColumnSpec::new("vb1", PreciseType::var_bytes(1), ColumnAttr::empty()),
+                ColumnSpec::new("vb10", PreciseType::var_bytes(10), ColumnAttr::empty()),
+            ],
+        ))
+        .unwrap();
+        cat
     }
 
-    fn assert_ty_plan1<C: QueryCatalog, F: FnOnce(&str, LgcPlan)>(cat: &C, sql: &str, f: F) {
+    fn assert_ty_plan1<C: Catalog, F: FnOnce(&str, LgcPlan)>(cat: &C, sql: &str, f: F) {
         let plan = build_plan(cat, "ty", sql);
         f(sql, plan)
     }

@@ -1,8 +1,6 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, QualifiedJoin};
-use crate::op::Op;
-use crate::op::OpMutVisitor;
-use crate::query::QuerySet;
+use crate::lgc::{Op, OpMutVisitor, QuerySet};
 use crate::rule::RuleEffect;
 use indexmap::{IndexMap, IndexSet};
 use std::cmp::Ordering;
@@ -1806,9 +1804,7 @@ fn coerce_cmp_func(kind: PredFuncKind, e1: Expr, e2: Expr) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{
-        assert_j_plan1, assert_j_plan2, get_filt_expr, j_catalog, print_plan,
-    };
+    use crate::lgc::tests::{assert_j_plan1, assert_j_plan2, get_filt_expr, j_catalog, print_plan};
     use crate::lgc::LgcPlan;
 
     #[test]

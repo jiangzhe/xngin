@@ -1,8 +1,6 @@
-use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, QualifiedJoin};
-use crate::op::{Op, OpMutVisitor};
-use crate::query::{Location, QuerySet};
+use crate::lgc::{Location, Op, OpMutVisitor, ProjCol, QuerySet};
 use crate::rule::expr_simplify::{simplify_single, NullCoalesce};
 use crate::rule::RuleEffect;
 use std::collections::{HashMap, HashSet};
@@ -298,7 +296,7 @@ impl ExprMutVisitor for TransformCollectSimplify<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{
+    use crate::lgc::tests::{
         assert_j_plan1, extract_join_kinds, get_lvl_queries, j_catalog, print_plan,
     };
     use crate::lgc::LgcPlan;

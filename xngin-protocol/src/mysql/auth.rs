@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::mysql::error::{Error, Result};
 use rsa::pkcs8::DecodePublicKey;
 use rsa::{Oaep, PublicKey, RsaPublicKey};
 use sha1::{Digest, Sha1};
@@ -53,9 +53,9 @@ impl AuthPluginImpl {
             b"caching_sha2_password" => {
                 Ok(AuthPluginImpl::CachingSha2(CachingSha2::with_ssl(false)))
             }
-            _ => Err(Error::AuthPluginNotSupported(
+            _ => Err(Error::AuthPluginNotSupported(Box::new(
                 String::from_utf8_lossy(plugin_name).to_string(),
-            )),
+            ))),
         }
     }
 }
@@ -208,7 +208,7 @@ impl AuthPlugin for CachingSha2 {
             CachingSha2Stage::FastAuthReadResult => {
                 log::debug!("caching_sha2_password enters fast auth result stage.");
                 if input.is_empty() {
-                    return Err(Error::EmptyFastAuthResult);
+                    return Err(Error::MalformedPacket());
                 }
                 match input[0] {
                     3 => Ok(()), // complete fast auth
@@ -238,20 +238,24 @@ impl AuthPlugin for CachingSha2 {
                         self.stage = CachingSha2Stage::FullAuthPubkeyRequest;
                         Ok(())
                     }
-                    _ => Err(Error::UnknownServerRespAfterFastAuth),
+                    _ => Err(Error::MalformedPacket()),
                 }
             }
             CachingSha2Stage::FullAuthPubkeyRequest => {
                 log::debug!("caching_sha2_password enters full auth stage");
                 let input = &mut input;
-                let pubkey_str = std::str::from_utf8(input)?;
-                let pubkey = RsaPublicKey::from_public_key_pem(pubkey_str)?;
+                let pubkey_str =
+                    std::str::from_utf8(input).map_err(|_| Error::InvalidUtf8String())?;
+                let pubkey = RsaPublicKey::from_public_key_pem(pubkey_str)
+                    .map_err(|_| Error::AuthRSACantParse())?;
                 // todo: support old version(less than 8.0.5) of MySQL
                 // Use RSA/ECB/PKCS1Padding instead of RSA/ECB/OAEPWithSHA-1AndMGF1Padding.
                 let buf = self.xor_password();
                 let padding = Oaep::new_with_mgf_hash::<Sha1, Sha1>();
                 let mut rng = rand::thread_rng();
-                let res = pubkey.encrypt(&mut rng, padding, &buf)?;
+                let res = pubkey
+                    .encrypt(&mut rng, padding, &buf)
+                    .map_err(|_| Error::AuthRSACantEncrypt())?;
                 output.extend(res);
                 Ok(())
             }

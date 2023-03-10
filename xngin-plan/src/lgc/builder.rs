@@ -1,26 +1,23 @@
-#[cfg(test)]
-pub(crate) mod tests;
-
-use crate::alias::QueryAliases;
-use crate::col::{AliasKind, ColGen, ProjCol};
 use crate::error::{Error, Result, ToResult};
 use crate::join::{JoinKind, JoinOp};
+use crate::lgc::alias::QueryAliases;
+use crate::lgc::col::{AliasKind, ColGen, ProjCol};
+use crate::lgc::op::{Op, OpMutVisitor, SortItem};
+use crate::lgc::query::{Location, QuerySet, Subquery};
+use crate::lgc::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
+use crate::lgc::scope::{Scope, Scopes};
+use crate::lgc::setop::{SetopKind, SubqOp};
 use crate::lgc::LgcPlan;
-use crate::op::{Op, OpMutVisitor, SortItem};
-use crate::query::{Location, QuerySet, Subquery};
-use crate::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
-use crate::scope::{Scope, Scopes};
-use crate::setop::{SetopKind, SubqOp};
 use semistr::SemiStr;
-use xngin_catalog::{QueryCatalog, SchemaID, TableID};
+use xngin_catalog::{Catalog, SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::{
     self as expr, ColIndex, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind,
 };
 use xngin_sql::ast::*;
 
-pub struct PlanBuilder<'a, C> {
+pub struct LgcBuilder<'a, C: Catalog> {
     catalog: &'a C,
     default_schema: SchemaID,
     qs: QuerySet,
@@ -28,7 +25,7 @@ pub struct PlanBuilder<'a, C> {
     attaches: Vec<QueryID>,
 }
 
-impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
+impl<'c, C: Catalog> LgcBuilder<'c, C> {
     #[inline]
     pub fn new(catalog: &'c C, default_schema: &str) -> Result<Self> {
         let qs = QuerySet::default();
@@ -37,7 +34,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         } else {
             return Err(Error::SchemaNotExists(default_schema.to_string()));
         };
-        Ok(PlanBuilder {
+        Ok(LgcBuilder {
             catalog,
             default_schema,
             qs,
@@ -319,7 +316,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
         match query {
             Query::Row(row) => {
                 let mut cols = Vec::with_capacity(row.len());
-                let resolver = ResolveNone;
+                let resolver = ResolveNone(self.catalog);
                 for c in row {
                     match c {
                         DerivedCol::Asterisk(_) => {
@@ -531,7 +528,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
     #[inline]
     fn setup_order<'a>(
         &self,
-        resolver: &dyn ExprResolve,
+        resolver: &dyn ExprResolve<C>,
         elems: &'a [OrderElement<'a>],
         phc: &mut PlaceholderCollector<'a>,
         colgen: &mut ColGen,
@@ -575,7 +572,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
     #[inline]
     fn setup_proj_cols<'a>(
         &self,
-        resolver: &dyn ExprResolve,
+        resolver: &dyn ExprResolve<C>,
         cols: &'a [DerivedCol<'a>],
         location: &'static str,
         phc: &mut PlaceholderCollector<'a>,
@@ -881,7 +878,7 @@ impl<'c, C: QueryCatalog> PlanBuilder<'c, C> {
     #[inline]
     fn setup_group<'a>(
         &self,
-        resolver: &dyn ExprResolve,
+        resolver: &dyn ExprResolve<C>,
         group_by: &'a [Expr<'a>],
         phc: &mut PlaceholderCollector<'a>,
         colgen: &mut ColGen,
@@ -1089,12 +1086,12 @@ fn validate_order(aggr_groups: &[expr::Expr], scalar_aggr: bool, order: &[SortIt
 }
 
 /// no-op resolver for row subquery.
-pub struct ResolveNone;
+pub struct ResolveNone<'a, C: Catalog>(&'a C);
 
-impl ExprResolve for ResolveNone {
+impl<'a, C: Catalog> ExprResolve<C> for ResolveNone<'a, C> {
     #[inline]
-    fn catalog(&self) -> Option<&dyn QueryCatalog> {
-        None
+    fn catalog(&self) -> &C {
+        self.0
     }
 
     #[inline]
@@ -1120,10 +1117,10 @@ pub struct ResolveProjOrFilt<'a, C> {
     query_aliases: &'a QueryAliases,
 }
 
-impl<'a, C: QueryCatalog> ExprResolve for ResolveProjOrFilt<'a, C> {
+impl<'a, C: Catalog> ExprResolve<C> for ResolveProjOrFilt<'a, C> {
     #[inline]
-    fn catalog(&self) -> Option<&dyn QueryCatalog> {
-        Some(self.catalog)
+    fn catalog(&self) -> &C {
+        self.catalog
     }
 
     #[inline]
@@ -1148,17 +1145,17 @@ impl<'a, C: QueryCatalog> ExprResolve for ResolveProjOrFilt<'a, C> {
 }
 
 /// Resolver for GROUP BY
-pub struct ResolveGroup<'a> {
-    catalog: &'a dyn QueryCatalog,
+pub struct ResolveGroup<'a, C: Catalog> {
+    catalog: &'a C,
     qs: &'a QuerySet,
     query_aliases: &'a QueryAliases,
     proj_cols: &'a [ProjCol],
 }
 
-impl ExprResolve for ResolveGroup<'_> {
+impl<C: Catalog> ExprResolve<C> for ResolveGroup<'_, C> {
     #[inline]
-    fn catalog(&self) -> Option<&dyn QueryCatalog> {
-        Some(self.catalog)
+    fn catalog(&self) -> &C {
+        self.catalog
     }
 
     #[inline]
@@ -1200,18 +1197,18 @@ impl ExprResolve for ResolveGroup<'_> {
 /// Resolver for HAVING or ORDER BY
 /// The difference between them is HAVING does not care about
 /// tables/queries in FROM clause.
-pub struct ResolveHavingOrOrder<'a> {
-    catalog: &'a dyn QueryCatalog,
+pub struct ResolveHavingOrOrder<'a, C: Catalog> {
+    catalog: &'a C,
     qs: &'a QuerySet,
     query_aliases: &'a QueryAliases,
     proj_cols: &'a [ProjCol],
     group_cols: Option<&'a [expr::Expr]>,
 }
 
-impl ExprResolve for ResolveHavingOrOrder<'_> {
+impl<C: Catalog> ExprResolve<C> for ResolveHavingOrOrder<'_, C> {
     #[inline]
-    fn catalog(&self) -> Option<&dyn QueryCatalog> {
-        Some(self.catalog)
+    fn catalog(&self) -> &C {
+        self.catalog
     }
 
     #[inline]

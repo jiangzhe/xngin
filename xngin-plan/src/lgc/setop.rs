@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::op::Op;
+use crate::lgc::op::Op;
 use xngin_expr::{QueryID, Setq};
 
 #[derive(Debug, Clone)]

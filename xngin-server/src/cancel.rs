@@ -1,4 +1,3 @@
-use crate::error::Error;
 use event_listener::{Event, EventListener};
 use futures_lite::Stream;
 use pin_project_lite::pin_project;
@@ -8,12 +7,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-
-#[derive(Debug)]
-pub enum Cancellable<T> {
-    Ready(T),
-    Cancelled,
-}
+use xngin_protocol::mysql::error::{Error, Result};
 
 /// Cancellation represents a handle that can cancel future and stream
 /// processing.
@@ -133,9 +127,9 @@ impl<T, S> Stream for CancellableStream<S>
 where
     S: Stream<Item = T>,
 {
-    type Item = Cancellable<T>;
+    type Item = Result<T>;
     #[inline]
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Cancellable<T>>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Result<T>>> {
         let this = self.project();
         if *this.cancelled {
             // returns None as the stream is cancelled.
@@ -143,9 +137,9 @@ where
         }
         if this.listener.poll(cx).is_ready() {
             *this.cancelled = true;
-            return Poll::Ready(Some(Cancellable::Cancelled));
+            return Poll::Ready(Some(Err(Error::Cancelled())));
         }
-        this.stream.poll_next(cx).map(|v| v.map(Cancellable::Ready))
+        this.stream.poll_next(cx).map(|v| v.map(Ok))
     }
 }
 
@@ -176,7 +170,7 @@ mod tests {
                 let cancel = cancel.clone();
                 ex.spawn(async move {
                     Timer::after(Duration::from_millis(50)).await;
-                    cancel.cancel(Error::Cancelled);
+                    cancel.cancel(Error::Cancelled());
                 })
                 .detach();
             }
@@ -184,11 +178,11 @@ mod tests {
             let stream = cancel.select_stream(rx.into_stream());
             // last element is guaranteed to be cancelled
             let cancelled = stream
-                .filter(|v| matches!(v, Cancellable::Cancelled))
+                .filter(|v| matches!(v, Err(Error::Cancelled())))
                 .next()
                 .await;
             assert!(cancelled.is_some());
-            assert!(matches!(cancel.err(), Some(Error::Cancelled)));
+            assert!(matches!(cancel.err(), Some(Error::Cancelled())));
         })
     }
 }
