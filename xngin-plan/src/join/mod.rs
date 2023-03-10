@@ -3,7 +3,7 @@ pub mod graph;
 pub mod reorder;
 
 use crate::error::{Error, Result};
-use crate::op::Op;
+use crate::lgc::Op;
 use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 use xngin_expr::{Expr, QueryID};

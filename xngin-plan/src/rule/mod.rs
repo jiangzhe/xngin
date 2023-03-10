@@ -2,8 +2,7 @@
 //! in early stage. "Canonical" means if the rule applies, the plan
 //! is supposed to be always better, so that no cost model involved.
 use crate::error::Result;
-use crate::lgc::LgcPlan;
-use crate::query::QuerySet;
+use crate::lgc::{LgcPlan, QuerySet};
 use bitflags::bitflags;
 use xngin_expr::{Effect, QueryID};
 

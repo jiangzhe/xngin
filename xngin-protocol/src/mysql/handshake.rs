@@ -1,9 +1,9 @@
-use crate::buf::ByteBuffer;
-use crate::error::{Error, Result};
+use crate::mysql::error::{Error, Result};
 use crate::mysql::flag::CapabilityFlags;
 use crate::mysql::packet::{ErrPacket, OkPacket};
 use crate::mysql::serde::{
-    LenEncInt, LenEncStr, MyDeser, MyDeserExt, MySerElem, MySerExt, MySerPacket, NewMySer, SerdeCtx,
+    LenEncInt, LenEncStr, MyDeser, MyDeserExt, MySerElem, MySerExt, MySerPackets, NewMySer,
+    SerdeCtx,
 };
 use std::borrow::Cow;
 
@@ -31,9 +31,9 @@ pub struct InitialHandshake<'a> {
 }
 
 impl<'a> NewMySer for InitialHandshake<'a> {
-    type Ser<'s> = MySerPacket<'s, 8> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 8> where Self: 's;
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
         let mut elem4 = [0u8; 9]; // 1B filler + 2B cap flags lower + 1B charset + 2B status flags + 2B cap flags upper + 1B auth plugin data len
                                   // first byte is filler
         elem4[1..3].copy_from_slice(&(self.capability_flags as u16).to_le_bytes());
@@ -53,13 +53,13 @@ impl<'a> NewMySer for InitialHandshake<'a> {
         } else {
             MySerElem::empty()
         };
-        MySerPacket::new(
+        MySerPackets::new(
             ctx,
             [
                 MySerElem::one_byte(self.protocol_version), // 1B protocol version
                 MySerElem::null_end_str(&self.server_version), // null-end-str server version
                 MySerElem::inline_bytes(&self.connection_id.to_le_bytes()), // 4B connection id
-                MySerElem::slice(&self.auth_plugin_data_1), // 8B auth plugin data part 1
+                MySerElem::inline_bytes(&self.auth_plugin_data_1), // 8B auth plugin data part 1
                 MySerElem::inline_bytes(&elem4),
                 MySerElem::filler(10),
                 MySerElem::slice(&self.auth_plugin_data_2),
@@ -135,32 +135,32 @@ impl<'a> MyDeser<'a> for HandshakeSvrResp<'a> {
             0x00 => {
                 let (next, ok) = OkPacket::my_deser(ctx, input)?;
                 if !next.is_empty() {
-                    return Err(Error::MalformedPacket);
+                    return Err(Error::MalformedPacket());
                 }
                 Ok((next, HandshakeSvrResp::Ok(ok)))
             }
             0x01 => {
                 let (next, more) = AuthMoreData::my_deser(ctx, input)?;
                 if !next.is_empty() {
-                    return Err(Error::MalformedPacket);
+                    return Err(Error::MalformedPacket());
                 }
                 Ok((next, HandshakeSvrResp::More(more)))
             }
             0xff => {
                 let (next, err) = ErrPacket::my_deser(ctx, input)?;
                 if !next.is_empty() {
-                    return Err(Error::MalformedPacket);
+                    return Err(Error::MalformedPacket());
                 }
                 Ok((next, HandshakeSvrResp::Err(err)))
             }
             0xfe => {
                 let (next, switch) = AuthSwitchRequest::my_deser(ctx, input)?;
                 if !next.is_empty() {
-                    return Err(Error::MalformedPacket);
+                    return Err(Error::MalformedPacket());
                 }
                 Ok((next, HandshakeSvrResp::Switch(switch)))
             }
-            c => Err(Error::InvalidPacketCode(c)),
+            c => Err(Error::InvalidPacketHeader(c)),
         }
     }
 }
@@ -188,9 +188,9 @@ pub struct HandshakeCliResp41<'a> {
 }
 
 impl<'a> NewMySer for HandshakeCliResp41<'a> {
-    type Ser<'s> = MySerPacket<'s, 7> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 7> where Self: 's;
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
         // combine cap_flags, max_packet_size and charset
         let mut bs = [0u8; 9];
         bs[..4].copy_from_slice(&self.cap_flags.bits().to_le_bytes());
@@ -220,19 +220,15 @@ impl<'a> NewMySer for HandshakeCliResp41<'a> {
         let connect_attrs = if self.cap_flags.contains(CapabilityFlags::CONNECT_ATTRS) {
             assert!(!self.connect_attrs.is_empty());
             let (lei, datalen) = calc_connect_attrs_my_len(&self.connect_attrs);
-            let buf = ByteBuffer::with_capacity(lei.len() + datalen);
-            my_ser_connect_attrs(datalen, &self.connect_attrs, &buf).unwrap();
-            // SAFETY
-            //
-            // The slice is guaranteed to be used only within context.
-            let slice = unsafe { ctx.accept_buf(buf) };
-            MySerElem::slice(slice)
+            let mut buf = vec![0; lei.len() + datalen];
+            my_ser_connect_attrs(datalen, &self.connect_attrs, &mut buf).unwrap();
+            MySerElem::buffer(buf)
         } else {
             assert!(self.connect_attrs.is_empty());
             MySerElem::empty()
         };
         // todo: 1-byte zstd compression level?
-        MySerPacket::new(
+        MySerPackets::new(
             ctx,
             [
                 cf_mps_cs,                               // cap flags, max packet size, and charset
@@ -279,7 +275,7 @@ impl<'a> MyDeser<'a> for HandshakeCliResp41<'a> {
             } else {
                 let len: u64 = input.try_deser_len_enc_int()?.try_into()?;
                 if len as usize != input.len() {
-                    return Err(Error::MalformedPacket);
+                    return Err(Error::MalformedPacket());
                 }
                 let mut attrs = vec![];
                 let mut key: &[u8];
@@ -321,16 +317,13 @@ fn calc_connect_attrs_my_len(connect_attrs: &[ConnectAttr<'_>]) -> (LenEncInt, u
 fn my_ser_connect_attrs(
     dlen: usize,
     connect_attrs: &[ConnectAttr<'_>],
-    buf: &ByteBuffer,
+    mut buf: &mut [u8],
 ) -> Result<()> {
-    let (mut writable, _wg) = buf.writable()?;
-    let orig_len = writable.len();
-    writable = writable.ser_len_enc_int(LenEncInt::from(dlen as u64));
+    buf = buf.ser_len_enc_int(LenEncInt::from(dlen as u64));
     for attr in connect_attrs {
-        writable = writable.ser_len_enc_str(LenEncStr::from(&*attr.key));
-        writable = writable.ser_len_enc_str(LenEncStr::from(&*attr.value));
+        buf = buf.ser_len_enc_str(LenEncStr::from(&*attr.key));
+        buf = buf.ser_len_enc_str(LenEncStr::from(&*attr.value));
     }
-    buf.advance_w_idx(orig_len - writable.len())?;
     Ok(())
 }
 
@@ -360,11 +353,11 @@ pub struct AuthSwitchRequest<'a> {
 }
 
 impl<'a> NewMySer for AuthSwitchRequest<'a> {
-    type Ser<'s> = MySerPacket<'s, 3> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 3> where Self: 's;
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
         assert_eq!(self.header, 0xfe);
-        MySerPacket::new(
+        MySerPackets::new(
             ctx,
             [
                 MySerElem::one_byte(self.header),
@@ -381,7 +374,7 @@ impl<'a> MyDeser<'a> for AuthSwitchRequest<'a> {
         let input = &mut input;
         let header = input.try_deser_u8()?;
         if header != 0xfe {
-            return Err(Error::InvalidPacketCode(header));
+            return Err(Error::InvalidPacketHeader(header));
         }
         let plugin_name = input.try_deser_until(0, false)?;
         let auth_plugin_data = input.deser_to_end();
@@ -405,11 +398,11 @@ pub struct AuthMoreData<'a> {
 }
 
 impl<'a> NewMySer for AuthMoreData<'a> {
-    type Ser<'s> = MySerPacket<'s, 2> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 2> where Self: 's;
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
         assert_eq!(self.header, 0x01);
-        MySerPacket::new(
+        MySerPackets::new(
             ctx,
             [
                 MySerElem::one_byte(self.header),
@@ -425,7 +418,7 @@ impl<'a> MyDeser<'a> for AuthMoreData<'a> {
         let input = &mut input;
         let header = input.try_deser_u8()?;
         if header != 0x01 {
-            return Err(Error::InvalidPacketCode(header));
+            return Err(Error::InvalidPacketHeader(header));
         }
         let plugin_data = input.deser_to_end();
         let res = AuthMoreData {
@@ -441,6 +434,7 @@ impl_from_ref!(AuthMoreData: header; plugin_data);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buf::ByteBuffer;
     use crate::mysql::flag::StatusFlags;
     use crate::mysql::serde::tests::{check_deser, check_ser, check_ser_and_deser};
 
@@ -515,7 +509,7 @@ mod tests {
             header: 0,
             affected_rows: 1,
             last_insert_id: 3,
-            status_flags: StatusFlags::STATUS_AUTOCOMMIT,
+            status_flags: StatusFlags::AUTOCOMMIT,
             warnings: 0,
             info: Cow::Borrowed(b""),
             session_state_changes: Cow::Borrowed(b""),
@@ -525,9 +519,9 @@ mod tests {
         assert_eq!(r2, HandshakeSvrResp::Ok(ok));
 
         let err = ErrPacket {
-            error_code: 1304,
-            sql_state: Cow::Borrowed(b"01S01"),
-            error_message: Cow::Borrowed(b"internal error"),
+            code: 1304,
+            state: *b"01S01",
+            msg: Cow::Borrowed(b"internal error"),
         };
         check_ser(&mut ctx, &err, &buf);
         let r3: HandshakeSvrResp = check_deser(&mut ctx, &buf);

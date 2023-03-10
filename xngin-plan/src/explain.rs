@@ -1,9 +1,6 @@
 use crate::join::graph::Edge;
 use crate::join::{Join, JoinGraph, QualifiedJoin};
-use crate::lgc::LgcPlan;
-use crate::op::{Aggr, Apply, Op, OpVisitor, SortItem};
-use crate::query::QuerySet;
-use crate::setop::Setop;
+use crate::lgc::{Aggr, Apply, LgcPlan, Op, OpVisitor, QuerySet, Setop, SortItem};
 use std::fmt::{self, Write};
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{AggKind, Col, ColKind, Const, Expr, ExprKind, Pred, QueryID, Setq};
@@ -533,8 +530,8 @@ fn write_prefix<F: Write>(f: &mut F, spans: &[Span]) -> fmt::Result {
 #[cfg(test)]
 mod tests {
     use super::Explain;
-    use crate::builder::tests::tpch_catalog;
-    use crate::builder::PlanBuilder;
+    use crate::lgc::tests::tpch_catalog;
+    use crate::lgc::LgcBuilder;
     use xngin_sql::parser::dialect::MySQL;
     use xngin_sql::parser::parse_query;
 
@@ -549,7 +546,7 @@ mod tests {
             "select 1 union select 2",
             "select 1 from lineitem join (select 1) t1",
         ] {
-            let builder = PlanBuilder::new(&cat, "tpch").unwrap();
+            let builder = LgcBuilder::new(&cat, "tpch").unwrap();
             let qr = parse_query(MySQL(sql)).unwrap();
             let plan = builder.build_plan(&qr).unwrap();
             let mut s = String::new();

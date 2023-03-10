@@ -1,7 +1,5 @@
-use crate::col::ProjCol;
 use crate::error::{Error, Result};
-use crate::op::{Op, OpMutVisitor, OpVisitor};
-use crate::query::{Location, QuerySet, Subquery};
+use crate::lgc::{Location, Op, OpMutVisitor, OpVisitor, ProjCol, QuerySet, Subquery};
 use crate::rule::RuleEffect;
 use fnv::FnvHashMap;
 use std::collections::BTreeMap;
@@ -222,7 +220,7 @@ fn update_use_set(use_set: &mut FnvHashMap<QueryID, BTreeMap<ColIndex, ColIndex>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{assert_j_plan, get_lvl_queries, print_plan};
+    use crate::lgc::tests::{assert_j_plan, get_lvl_queries, print_plan};
 
     #[test]
     fn test_col_prune_const() {

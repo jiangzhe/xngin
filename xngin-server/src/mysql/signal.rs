@@ -1,8 +1,8 @@
-use crate::error::Result;
 use flume::Sender;
 use signal_hook::consts::*;
 use signal_hook::iterator::Signals;
 use std::thread;
+use xngin_protocol::mysql::error::Result;
 
 #[inline]
 pub fn subscribe_stop_signal(tx: Sender<()>) -> Result<()> {

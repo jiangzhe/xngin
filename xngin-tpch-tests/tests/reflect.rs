@@ -1,6 +1,6 @@
 use aosa::StringArena;
-use xngin_plan::builder::PlanBuilder;
-use xngin_plan::reflect::reflect;
+use xngin_plan::lgc::reflect;
+use xngin_plan::lgc::LgcBuilder;
 use xngin_sql::parser::dialect::Ansi;
 use xngin_sql::parser::parse_query_verbose;
 use xngin_sql::pretty::{PrettyConf, PrettyFormat};
@@ -11,7 +11,7 @@ macro_rules! check_reflect {
         let cat = tpch_catalog();
         let sql = include_str!($filename);
         let qry = parse_query_verbose(Ansi(sql)).unwrap();
-        let builder = PlanBuilder::new(&cat, "tpch").unwrap();
+        let builder = LgcBuilder::new(&cat, "tpch").unwrap();
         let plan = builder.build_plan(&qry).unwrap();
         let mut s = String::new();
         let arena = StringArena::with_capacity(16384);

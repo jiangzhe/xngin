@@ -1,6 +1,6 @@
 use crate::mysql::serde::{LenEncInt, LenEncStr, SerdeCtx};
 use std::marker::PhantomData;
-use std::mem::transmute;
+use std::mem::{transmute, ManuallyDrop};
 
 /// Defines how to serialize self to bytes.
 /// The purpose of serialization is to transfer via network.
@@ -15,7 +15,7 @@ pub trait MySer<'s> {
 
     /// Serialize object into fix-sized byte slice.
     /// The buffer is guaranteed to be big enough.
-    fn my_ser<'a>(&mut self, ctx: &mut SerdeCtx, out: &'a mut [u8]) -> &'a mut [u8];
+    fn my_ser(&mut self, ctx: &SerdeCtx, out: &mut [u8], start_idx: usize) -> usize;
 
     /// Serialize partial object into fixed-sized byte slice, due to
     /// insufficient space of the buffer.
@@ -23,7 +23,17 @@ pub trait MySer<'s> {
     /// Note: this method should only be called if output buffer is smaller
     /// than the total serialization bytes. Otherwise, call [`MySerialize::my_ser`]
     /// method.
-    fn my_ser_partial(&mut self, ctx: &mut SerdeCtx, out: &mut [u8]);
+    fn my_ser_partial(&mut self, ctx: &SerdeCtx, out: &mut [u8], start_idx: usize);
+
+    /// Try to serialize object into fix-sized byte slice.
+    #[inline]
+    fn try_my_ser(&mut self, ctx: &SerdeCtx, out: &mut [u8], start_idx: usize) -> Option<usize> {
+        if self.my_len(ctx) + start_idx > out.len() {
+            self.my_ser_partial(ctx, out, start_idx);
+            return None;
+        }
+        Some(self.my_ser(ctx, out, start_idx))
+    }
 }
 
 pub trait NewMySer {
@@ -32,15 +42,15 @@ pub trait NewMySer {
         Self: 'a;
 
     /// Construct a serializer.
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_>;
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_>;
 }
 
 impl NewMySer for [u8] {
-    type Ser<'s> = MySerPacket<'s, 1> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 1> where Self: 's;
 
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
-        MySerPacket::new(ctx, [MySerElem::slice(self)])
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
+        MySerPackets::new(ctx, [MySerElem::slice(self)])
     }
 }
 
@@ -58,31 +68,30 @@ impl<'a, const N: usize> MySer<'a> for MySerPayload<'a, N> {
     }
 
     #[inline]
-    fn my_ser<'b>(&mut self, ctx: &mut SerdeCtx, mut out: &'b mut [u8]) -> &'b mut [u8] {
+    fn my_ser(&mut self, ctx: &SerdeCtx, out: &mut [u8], mut start_idx: usize) -> usize {
         for elem in &mut self.elems[self.idx..] {
-            out = elem.my_ser(ctx, out);
+            start_idx = elem.my_ser(ctx, out, start_idx);
             self.idx += 1;
         }
-        out
+        start_idx
     }
 
     #[inline]
-    fn my_ser_partial(&mut self, ctx: &mut SerdeCtx, mut out: &mut [u8]) {
-        let mut total_len = 0;
+    fn my_ser_partial(&mut self, ctx: &SerdeCtx, out: &mut [u8], mut start_idx: usize) {
+        // let mut total_len = 0;
         for elem in &mut self.elems[self.idx..] {
             let len = elem.my_len(ctx);
-            if total_len + len > out.len() {
-                elem.my_ser_partial(ctx, out);
+            if start_idx + len > out.len() {
+                elem.my_ser_partial(ctx, out, start_idx);
                 return;
             }
-            out = elem.my_ser(ctx, out);
+            start_idx = elem.my_ser(ctx, out, start_idx);
             self.idx += 1;
-            total_len += len;
         }
     }
 }
 
-pub struct MySerPacket<'a, const N: usize> {
+pub struct MySerPackets<'a, const N: usize> {
     // total bytes of all packets.
     packet_total: usize,
     // remained bytes of current packet, including header.
@@ -91,9 +100,12 @@ pub struct MySerPacket<'a, const N: usize> {
     payload: MySerPayload<'a, N>,
     // whether to add header or not.
     header: Option<MySerElem<'static>>,
+    // number of result packets,
+    // this field should be only accessed after serialization.
+    pub res_pkts: usize,
 }
 
-impl<'a, const N: usize> MySerPacket<'a, N> {
+impl<'a, const N: usize> MySerPackets<'a, N> {
     /// Create new MySQL packets.
     /// The payload may be splitted if its length exceeds maximum
     /// packet size.
@@ -103,25 +115,28 @@ impl<'a, const N: usize> MySerPacket<'a, N> {
         let payload_total = payload.my_len(ctx);
         let packet_total = calc_packet_total(payload_total, ctx.max_payload_size);
         // first payload length
-        let (packet_rem, header) = calc_packet_rem_and_header(packet_total, ctx);
-        MySerPacket {
+        let (packet_rem, header) = calc_packet_rem_and_header(packet_total, ctx, 0);
+        MySerPackets {
             packet_total,
             packet_rem,
             payload,
             header: Some(header),
+            res_pkts: 1,
         }
     }
 
     #[inline]
     fn ser_header_partial<'b>(
         &mut self,
-        ctx: &mut SerdeCtx,
+        ctx: &SerdeCtx,
         mut header: MySerElem<'static>,
         out: &'b mut [u8],
+        start_idx: usize,
     ) {
-        header.my_ser_partial(ctx, out);
-        self.packet_total -= out.len();
-        self.packet_rem -= out.len();
+        let outlen = out.len() - start_idx;
+        header.my_ser_partial(ctx, out, start_idx);
+        self.packet_total -= outlen;
+        self.packet_rem -= outlen;
         // now we need to save header back, so next time
         // we can finish the deserialization.
         self.header = Some(header);
@@ -130,41 +145,44 @@ impl<'a, const N: usize> MySerPacket<'a, N> {
     #[inline]
     fn ser_header<'b>(
         &mut self,
-        ctx: &mut SerdeCtx,
+        ctx: &SerdeCtx,
         mut header: MySerElem<'static>,
         out: &'b mut [u8],
-    ) -> &'b mut [u8] {
+        mut start_idx: usize,
+    ) -> usize {
         let header_len = header.my_len(ctx);
-        let out = header.my_ser(ctx, out);
-        ctx.pkt_nr = ctx.pkt_nr.wrapping_add(1);
+        start_idx = header.my_ser(ctx, out, start_idx);
         self.packet_total -= header_len;
         self.packet_rem -= header_len;
-        out
+        start_idx
     }
 
-    fn ser_payload_partial<'b>(&mut self, ctx: &mut SerdeCtx, out: &'b mut [u8]) {
-        self.payload.my_ser_partial(ctx, out);
-        self.packet_total -= out.len();
-        self.packet_rem -= out.len();
+    #[inline]
+    fn ser_payload_partial(&mut self, ctx: &SerdeCtx, out: &mut [u8], start_idx: usize) {
+        let outlen = out.len() - start_idx;
+        self.payload.my_ser_partial(ctx, out, start_idx);
+        self.packet_total -= outlen;
+        self.packet_rem -= outlen;
     }
 
     // serialize payload in case max packet size is reached
     // but buffer is still available.
     #[inline]
-    fn ser_payload_rem<'b>(&mut self, ctx: &mut SerdeCtx, out: &'b mut [u8]) -> &'b mut [u8] {
+    fn ser_payload_rem(&mut self, ctx: &SerdeCtx, out: &mut [u8], start_idx: usize) -> usize {
         let packet_rem = self.packet_rem;
-        self.payload.my_ser_partial(ctx, &mut out[..packet_rem]);
+        self.payload
+            .my_ser_partial(ctx, &mut out[..start_idx + packet_rem], start_idx);
         self.packet_total -= self.packet_rem;
         self.packet_rem = 0;
-        &mut out[packet_rem..]
+        start_idx + packet_rem
     }
 
     #[inline]
-    fn ser_payload<'b>(&mut self, ctx: &mut SerdeCtx, out: &'b mut [u8]) -> &'b mut [u8] {
-        let next = self.payload.my_ser(ctx, out);
+    fn ser_payload(&mut self, ctx: &SerdeCtx, out: &mut [u8], mut start_idx: usize) -> usize {
+        start_idx = self.payload.my_ser(ctx, out, start_idx);
         self.packet_total = 0;
         self.packet_rem = 0;
-        next
+        start_idx
     }
 }
 
@@ -180,75 +198,83 @@ fn calc_packet_total(payload_total: usize, max_payload_size: usize) -> usize {
 }
 
 #[inline]
-fn calc_packet_rem_and_header(packet_total: usize, ctx: &SerdeCtx) -> (usize, MySerElem<'static>) {
+fn calc_packet_rem_and_header(
+    packet_total: usize,
+    ctx: &SerdeCtx,
+    pkts: usize,
+) -> (usize, MySerElem<'static>) {
     debug_assert!(ctx.max_payload_size <= 0xffffff); // maximum value of u24
     let packet_rem = packet_total.min(ctx.max_payload_size + 4);
     let mut bs = ((packet_rem - 4) as u32).to_le_bytes();
-    bs[3] = ctx.pkt_nr;
+    bs[3] = (ctx.pkt_nr as usize + pkts) as u8;
     let header = MySerElem::inline_bytes(&bs);
     (packet_rem, header)
 }
 
-impl<'a, const N: usize> MySer<'a> for MySerPacket<'a, N> {
+impl<'a, const N: usize> MySer<'a> for MySerPackets<'a, N> {
     #[inline]
     fn my_len(&self, _ctx: &SerdeCtx) -> usize {
         self.packet_total
     }
 
     #[inline]
-    fn my_ser<'b>(&mut self, ctx: &mut SerdeCtx, mut out: &'b mut [u8]) -> &'b mut [u8] {
+    fn my_ser<'b>(&mut self, ctx: &SerdeCtx, out: &'b mut [u8], mut start_idx: usize) -> usize {
         if let Some(header) = self.header.take() {
             // write header: 3-byte payload length + 1-byte packet number
-            out = self.ser_header(ctx, header, out);
+            start_idx = self.ser_header(ctx, header, out, start_idx);
         }
         loop {
             // serialize payload
             if self.packet_rem < self.packet_total {
-                out = self.ser_payload_rem(ctx, out);
+                start_idx = self.ser_payload_rem(ctx, out, start_idx);
                 // calculate header and payload of next packet
-                let (packet_rem, header) = calc_packet_rem_and_header(self.packet_total, ctx);
+                let (packet_rem, header) =
+                    calc_packet_rem_and_header(self.packet_total, ctx, self.res_pkts);
+                self.res_pkts += 1;
                 self.packet_rem = packet_rem;
-                out = self.ser_header(ctx, header, out);
+                start_idx = self.ser_header(ctx, header, out, start_idx);
             } else {
-                out = self.ser_payload(ctx, out);
+                start_idx = self.ser_payload(ctx, out, start_idx);
                 break;
             }
         }
-        out
+        start_idx
     }
 
     #[inline]
-    fn my_ser_partial(&mut self, ctx: &mut SerdeCtx, mut out: &mut [u8]) {
+    fn my_ser_partial(&mut self, ctx: &SerdeCtx, out: &mut [u8], mut start_idx: usize) {
         if let Some(header) = self.header.take() {
             let header_len = header.my_len(ctx);
-            if header_len > out.len() {
+            if start_idx + header_len > out.len() {
                 // too small to serialize header
-                self.ser_header_partial(ctx, header, out);
+                self.ser_header_partial(ctx, header, out, start_idx);
                 return;
             }
-            out = self.ser_header(ctx, header, out);
+            start_idx = self.ser_header(ctx, header, out, start_idx);
         }
         // serialize payload
         loop {
             // check if current packet can fit buffer.
-            if self.packet_rem > out.len() {
+            if start_idx + self.packet_rem > out.len() {
                 // buffer is too small
-                self.ser_payload_partial(ctx, out);
+                self.ser_payload_partial(ctx, out, start_idx);
                 return;
             }
             // current packet can fit buffer, but payload is not ended.
-            out = self.ser_payload_rem(ctx, out);
+            start_idx = self.ser_payload_rem(ctx, out, start_idx);
             // now we prepare next packet and write header.
-            let (packet_rem, header) = calc_packet_rem_and_header(self.packet_total, ctx);
+            let (packet_rem, header) =
+                calc_packet_rem_and_header(self.packet_total, ctx, self.res_pkts);
+            self.res_pkts += 1;
             self.packet_rem = packet_rem;
             let header_len = header.my_len(ctx);
-            if header_len > out.len() {
+            if start_idx + header_len > out.len() {
                 // too small to serialize header
-                self.ser_header_partial(ctx, header, out);
+                self.ser_header_partial(ctx, header, out, start_idx);
                 return;
             }
             // enough space to serialize header
-            out = self.ser_header(ctx, header, out);
+            start_idx = self.ser_header(ctx, header, out, start_idx);
         }
     }
 }
@@ -295,6 +321,8 @@ pub enum MySerKind {
     NullEndSlice = 7,
     /// Slice with prefix length 1 byte. So at most 255 bytes.
     Prefix1BSlice = 8,
+    /// Owned buffer
+    OwnedBuffer = 9,
 }
 
 /// MySerElem is the base elements to serialize objects to MySQL packets.
@@ -358,6 +386,22 @@ impl<'a> MySerElem<'a> {
             data,
         };
         unsafe { transmute(ib) }
+    }
+
+    #[inline]
+    pub fn buffer(mut b: Vec<u8>) -> Self {
+        assert!(b.len() <= 0xffffff);
+        b.shrink_to_fit();
+        let b = ManuallyDrop::new(b);
+        let ptr = b.as_ptr();
+        let len = b.len();
+        let ob = OwnedBuffer {
+            kind: MySerKind::OwnedBuffer,
+            len: [len as u8, (len >> 8) as u8, (len >> 16) as u8],
+            start_idx: 0,
+            ptr,
+        };
+        unsafe { transmute(ob) }
     }
 
     /// Create an inline len-enc-str.
@@ -495,6 +539,11 @@ impl<'a> MySerElem<'a> {
     }
 
     #[inline]
+    fn as_ob(&self) -> &OwnedBuffer {
+        unsafe { transmute(self) }
+    }
+
+    #[inline]
     fn as_inline_bytes_mut(&mut self) -> &mut InlineBytes {
         unsafe { transmute(self) }
     }
@@ -531,6 +580,11 @@ impl<'a> MySerElem<'a> {
 
     #[inline]
     fn as_p1bs_mut(&mut self) -> &mut Prefix1BSlice {
+        unsafe { transmute(self) }
+    }
+
+    #[inline]
+    fn as_ob_mut(&mut self) -> &mut OwnedBuffer {
         unsafe { transmute(self) }
     }
 
@@ -664,6 +718,25 @@ impl PartialEq for MySerElem<'_> {
                     && this.end_offset == that.end_offset
                     && this.data() == that.data()
             }
+            MySerKind::OwnedBuffer => {
+                let this = self.as_ob();
+                let that = rhs.as_ob();
+                this.data() == that.data()
+            }
+        }
+    }
+}
+
+impl Drop for MySerElem<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if self.kind == MySerKind::OwnedBuffer {
+            unsafe {
+                let ob: &mut OwnedBuffer = transmute(self);
+                let len = ob.len();
+                let vec = Vec::from_raw_parts(ob.ptr as *mut u8, len, len);
+                drop(vec);
+            }
         }
     }
 }
@@ -705,217 +778,237 @@ impl<'a> MySer<'a> for MySerElem<'a> {
                 let p1bs = self.as_p1bs();
                 usize::from(p1bs.prefix_to_fill) + p1bs.data().len()
             }
+            MySerKind::OwnedBuffer => {
+                let ob = self.as_ob();
+                ob.len() - ob.start_idx as usize
+            }
         }
     }
 
     #[inline]
-    fn my_ser<'b>(&mut self, _ctx: &mut SerdeCtx, out: &'b mut [u8]) -> &'b mut [u8] {
+    fn my_ser<'b>(&mut self, _ctx: &SerdeCtx, out: &'b mut [u8], start_idx: usize) -> usize {
         match self.kind {
-            MySerKind::Empty => out,
+            MySerKind::Empty => start_idx,
             MySerKind::InlineBytes => {
                 let ib = self.as_inline_bytes_mut();
                 let data = ib.data();
                 let datalen = data.len();
-                out[..datalen].copy_from_slice(data);
+                out[start_idx..start_idx + datalen].copy_from_slice(data);
                 ib.advance(datalen);
-                &mut out[datalen..]
+                start_idx + datalen
             }
             MySerKind::Slice => {
                 let s = self.as_slice_mut();
                 let data = s.data();
                 let datalen = data.len();
-                out[..datalen].copy_from_slice(data);
+                out[start_idx..start_idx + datalen].copy_from_slice(data);
                 s.advance(datalen);
-                &mut out[datalen..]
+                start_idx + datalen
             }
             MySerKind::LenEncSlice3 => {
                 let les = self.as_les3_mut();
                 // append len int
                 let lendata = les.lendata();
                 let lendatalen = lendata.len();
-                out[..lendatalen].copy_from_slice(lendata);
+                out[start_idx..start_idx + lendatalen].copy_from_slice(lendata);
                 // append data
                 let data = les.data();
                 let datalen = data.len();
-                out[lendatalen..lendatalen + datalen].copy_from_slice(data);
+                out[start_idx + lendatalen..start_idx + lendatalen + datalen].copy_from_slice(data);
                 les.advance_len(lendatalen);
                 les.advance(datalen);
-                &mut out[lendatalen + datalen..]
+                start_idx + lendatalen + datalen
             }
             MySerKind::LenEncSlice4 => {
                 let les = self.as_les4_mut();
                 // append len int
                 let (lendata, lendataidx) = les.lendata();
                 let lendatalen = lendata.len() - lendataidx;
-                out[..lendatalen].copy_from_slice(&lendata[lendataidx..]);
+                out[start_idx..start_idx + lendatalen].copy_from_slice(&lendata[lendataidx..]);
                 // append data
                 let data = les.data();
                 let datalen = data.len();
-                out[lendatalen..lendatalen + datalen].copy_from_slice(data);
+                out[start_idx + lendatalen..start_idx + lendatalen + datalen].copy_from_slice(data);
                 les.advance_len(lendatalen);
                 les.advance(datalen);
-                &mut out[lendatalen + datalen..]
+                start_idx + lendatalen + datalen
             }
             MySerKind::LenEncSlice9 => {
                 let les = self.as_les9_mut();
                 // append len int
                 let (lendata, lendataidx) = les.lendata();
                 let lendatalen = lendata.len() - lendataidx;
-                out[..lendatalen].copy_from_slice(&lendata[lendataidx..]);
+                out[start_idx..start_idx + lendatalen].copy_from_slice(&lendata[lendataidx..]);
                 // append data
                 let data = les.data();
                 let datalen = data.len();
-                out[lendatalen..lendatalen + datalen].copy_from_slice(data);
+                out[start_idx + lendatalen..start_idx + lendatalen + datalen].copy_from_slice(data);
                 les.advance_len(lendatalen);
                 les.advance(datalen);
-                &mut out[lendatalen + datalen..]
+                start_idx + lendatalen + datalen
             }
             MySerKind::Filler => {
                 let filler = self.as_filler_mut();
                 let flen = filler.len as usize;
-                out[..flen].fill(0);
+                out[start_idx..start_idx + flen].fill(0);
                 filler.len = 0;
-                &mut out[flen..]
+                start_idx + flen
             }
             MySerKind::NullEndSlice => {
                 let nes = self.as_nes_mut();
                 let data = nes.data();
                 let datalen = data.len();
-                out[..datalen].copy_from_slice(data);
-                out[datalen] = 0;
+                out[start_idx..start_idx + datalen].copy_from_slice(data);
+                out[start_idx + datalen] = 0;
                 nes.advance(datalen);
                 nes.advance_null();
-                &mut out[datalen + 1..]
+                start_idx + datalen + 1
             }
             MySerKind::Prefix1BSlice => {
                 let p1bs = self.as_p1bs_mut();
                 if p1bs.prefix_to_fill {
                     if out.is_empty() {
-                        return out;
+                        return start_idx;
                     }
-                    out[0] = p1bs.end_offset;
+                    out[start_idx] = p1bs.end_offset;
                     let data = p1bs.data();
                     let datalen = data.len();
-                    out[1..datalen + 1].copy_from_slice(data);
+                    out[start_idx + 1..start_idx + datalen + 1].copy_from_slice(data);
                     p1bs.advance_prefix();
                     p1bs.advance(datalen);
-                    return &mut out[datalen + 1..];
+                    return start_idx + datalen + 1;
                 }
                 // prefix already filled
                 let data = p1bs.data();
                 let datalen = data.len();
-                out[..datalen].copy_from_slice(data);
+                out[start_idx..start_idx + datalen].copy_from_slice(data);
                 p1bs.advance(datalen);
-                &mut out[datalen..]
+                start_idx + datalen
+            }
+            MySerKind::OwnedBuffer => {
+                let ob = self.as_ob_mut();
+                let data = ob.data();
+                let datalen = data.len();
+                out[start_idx..start_idx + datalen].copy_from_slice(data);
+                ob.advance(datalen);
+                start_idx + datalen
             }
         }
     }
 
     #[inline]
-    fn my_ser_partial(&mut self, _ctx: &mut SerdeCtx, out: &mut [u8]) {
+    fn my_ser_partial(&mut self, _ctx: &SerdeCtx, out: &mut [u8], start_idx: usize) {
         match self.kind {
             MySerKind::Empty => (),
             MySerKind::InlineBytes => {
                 let ib = self.as_inline_bytes_mut();
                 let data = ib.data();
-                let outlen = out.len();
-                out.copy_from_slice(&data[..outlen]);
+                let outlen = out.len() - start_idx;
+                out[start_idx..].copy_from_slice(&data[..outlen]);
                 ib.advance(outlen);
             }
             MySerKind::Slice => {
                 let s = self.as_slice_mut();
                 let data = s.data();
-                let outlen = out.len();
-                out.copy_from_slice(&data[..outlen]);
+                let outlen = out.len() - start_idx;
+                out[start_idx..].copy_from_slice(&data[..outlen]);
                 s.advance(outlen);
             }
             MySerKind::LenEncSlice3 => {
                 let les = self.as_les3_mut();
-                let outlen = out.len();
+                let outlen = out.len() - start_idx;
                 let lendata = les.lendata();
                 let lendatalen = lendata.len();
-                if outlen <= lendatalen {
-                    out.copy_from_slice(&lendata[..outlen]);
+                if lendatalen >= outlen {
+                    out[start_idx..].copy_from_slice(&lendata[..outlen]);
                     les.advance_len(outlen);
                     return;
                 }
-                out[..lendatalen].copy_from_slice(lendata);
+                out[start_idx..start_idx + lendatalen].copy_from_slice(lendata);
                 les.advance_len(lendatalen);
                 let data = les.data();
-                out[lendatalen..].copy_from_slice(&data[..outlen - lendatalen]);
+                out[start_idx + lendatalen..].copy_from_slice(&data[..outlen - lendatalen]);
                 les.advance(outlen - lendatalen);
             }
             MySerKind::LenEncSlice4 => {
                 let les = self.as_les4_mut();
-                let outlen = out.len();
+                let outlen = out.len() - start_idx;
                 let (lendata, lendataidx) = les.lendata();
                 let lendatalen = lendata.len() - lendataidx;
-                if outlen <= lendatalen {
-                    out.copy_from_slice(&lendata[lendataidx..lendataidx + outlen]);
+                if lendatalen >= outlen {
+                    out[start_idx..].copy_from_slice(&lendata[lendataidx..lendataidx + outlen]);
                     les.advance_len(outlen);
                     return;
                 }
-                out[..lendatalen].copy_from_slice(&lendata[lendataidx..]);
+                out[start_idx..start_idx + lendatalen].copy_from_slice(&lendata[lendataidx..]);
                 les.advance_len(lendatalen);
                 let data = les.data();
-                out[lendatalen..].copy_from_slice(&data[..outlen - lendatalen]);
-                les.advance(outlen - lendatalen);
+                out[start_idx + lendatalen..].copy_from_slice(&data[..outlen - lendatalen]);
+                les.advance(outlen);
             }
             MySerKind::LenEncSlice9 => {
                 let les = self.as_les9_mut();
-                let outlen = out.len();
+                let outlen = out.len() - start_idx;
                 let (lendata, lendataidx) = les.lendata();
                 let lendatalen = lendata.len() - lendataidx;
-                if outlen <= lendatalen {
-                    out.copy_from_slice(&lendata[lendataidx..lendataidx + outlen]);
+                if lendatalen >= outlen {
+                    out[start_idx + lendatalen..]
+                        .copy_from_slice(&lendata[lendataidx..lendataidx + outlen]);
                     les.advance_len(outlen);
                     return;
                 }
-                out[..lendatalen].copy_from_slice(&lendata[lendataidx..]);
+                out[start_idx..start_idx + lendatalen].copy_from_slice(&lendata[lendataidx..]);
                 les.advance_len(lendatalen);
                 let data = les.data();
-                out[lendatalen..].copy_from_slice(&data[..outlen - lendatalen]);
-                les.advance(outlen - lendatalen);
+                out[start_idx + lendatalen..].copy_from_slice(&data[..outlen - lendatalen]);
+                les.advance(outlen);
             }
             MySerKind::Filler => {
                 let filler = self.as_filler_mut();
-                let outlen = out.len();
-                out.fill(0);
+                let outlen = out.len() - start_idx;
+                out[start_idx..].fill(0);
                 filler.len -= outlen as u32;
             }
             MySerKind::NullEndSlice => {
                 let nes = self.as_nes_mut();
                 let data = nes.data();
                 let datalen = data.len();
-                let outlen = out.len();
-                if outlen <= datalen {
-                    out.copy_from_slice(&data[..outlen]);
+                let outlen = out.len() - start_idx;
+                if datalen >= outlen {
+                    out[start_idx..].copy_from_slice(&data[..outlen]);
                     nes.advance(outlen);
                     return;
                 }
-                out[..datalen].copy_from_slice(data);
+                out[start_idx..start_idx + datalen].copy_from_slice(data);
                 nes.advance(datalen);
-                out[datalen] = 0;
+                out[start_idx + datalen] = 0;
                 nes.advance_null();
             }
             MySerKind::Prefix1BSlice => {
                 let p1bs = self.as_p1bs_mut();
-                let outlen = out.len();
+                let outlen = out.len() - start_idx;
                 if p1bs.prefix_to_fill {
-                    if out.is_empty() {
+                    if outlen == 0 {
                         return;
                     }
-                    out[0] = p1bs.end_offset;
+                    out[start_idx] = p1bs.end_offset;
                     p1bs.advance_prefix();
                     let data = p1bs.data();
-                    out.copy_from_slice(&data[..outlen - 1]);
+                    out[start_idx + 1..].copy_from_slice(&data[..outlen - 1]);
                     p1bs.advance(outlen - 1);
                     return;
                 }
                 // prefix already filled
                 let data = p1bs.data();
-                out.copy_from_slice(&data[..outlen]);
+                out[start_idx..].copy_from_slice(&data[..outlen]);
                 p1bs.advance(outlen);
+            }
+            MySerKind::OwnedBuffer => {
+                let ob = self.as_ob_mut();
+                let data = ob.data();
+                let outlen = out.len() - start_idx;
+                out[start_idx..].copy_from_slice(&data[..outlen]);
+                ob.advance(outlen);
             }
         }
     }
@@ -1120,6 +1213,37 @@ impl SerSlice for Slice<'_> {
         unsafe {
             self.ptr = self.ptr.add(len);
         }
+    }
+}
+
+/// Buffer is owned bytes.
+/// maximum length is u24::MAX.
+#[repr(C, align(8))]
+struct OwnedBuffer {
+    kind: MySerKind,
+    len: [u8; 3],
+    start_idx: u32,
+    ptr: *const u8,
+}
+
+impl OwnedBuffer {
+    #[inline]
+    fn len(&self) -> usize {
+        self.len[0] as usize | ((self.len[1] as usize) << 8) | ((self.len[2] as usize) << 16)
+    }
+}
+
+impl SerSlice for OwnedBuffer {
+    #[inline]
+    fn data(&self) -> &[u8] {
+        let len = self.len();
+        let len = len - self.start_idx as usize;
+        unsafe { std::slice::from_raw_parts(self.ptr.add(self.start_idx as usize), len) }
+    }
+
+    #[inline]
+    fn advance(&mut self, len: usize) {
+        self.start_idx += len as u32;
     }
 }
 
@@ -1418,25 +1542,26 @@ mod tests {
     fn test_ser_elems() {
         let mut ctx = SerdeCtx::default();
         let mut out = vec![0u8; 32];
+        let mut idx = 0usize;
         let mut e1 = MySerElem::inline_bytes(&123u32.to_le_bytes());
         assert_eq!(e1.my_len(&ctx), 4);
-        let next = e1.my_ser(&mut ctx, &mut out);
-        assert_eq!(next.len(), 32 - 4);
+        idx = e1.my_ser(&mut ctx, &mut out, idx);
+        assert_eq!(idx, 4);
         assert_eq!(&[123, 0, 0, 0], &out[..4]);
 
         let mut e2 = MySerElem::slice(b"hello");
         assert_eq!(e2.my_len(&ctx), 5);
-        let next = e2.my_ser(&mut ctx, &mut out);
-        assert_eq!(next.len(), 32 - 5);
-        assert_eq!(b"hello", &out[..5]);
+        idx = e2.my_ser(&mut ctx, &mut out, idx);
+        assert_eq!(idx, 4 + 5);
+        assert_eq!(b"hello", &out[4..9]);
 
         let mut e3 = MySerElem::slice(b"hello");
         let mut out = vec![0u8; 32];
-        e3.my_ser_partial(&mut ctx, &mut out[..4]);
+        e3.my_ser_partial(&mut ctx, &mut out[..4], 0);
         assert_eq!(b"hell\0", &out[..5]);
         assert_eq!(e3, MySerElem::inline_bytes(b"o"));
-        let next = e3.my_ser(&mut ctx, &mut out[4..]);
-        assert_eq!(next.len(), 32 - 5);
+        idx = e3.my_ser(&mut ctx, &mut out, 4);
+        assert_eq!(idx, 5);
         assert_eq!(b"hello", &out[..5]);
     }
 
@@ -1445,13 +1570,14 @@ mod tests {
         let mut ctx = SerdeCtx::default();
         let mut buf = vec![0u8; 255];
         let ser_buf = &mut buf[..];
-        let ser_buf = MySerElem::len_enc_int(LenEncInt::Null).my_ser(&mut ctx, ser_buf);
-        let ser_buf = MySerElem::len_enc_int(LenEncInt::Err).my_ser(&mut ctx, ser_buf);
-        let ser_buf = MySerElem::len_enc_int(LenEncInt::from(1024u16)).my_ser(&mut ctx, ser_buf); // u16
-        let ser_buf =
-            MySerElem::len_enc_int(LenEncInt::from(1024u32 * 1024)).my_ser(&mut ctx, ser_buf); // u24
+        let mut idx = 0usize;
+        idx = MySerElem::len_enc_int(LenEncInt::Null).my_ser(&mut ctx, ser_buf, idx);
+        idx = MySerElem::len_enc_int(LenEncInt::Err).my_ser(&mut ctx, ser_buf, idx);
+        idx = MySerElem::len_enc_int(LenEncInt::from(1024u16)).my_ser(&mut ctx, ser_buf, idx); // u16
+        idx =
+            MySerElem::len_enc_int(LenEncInt::from(1024u32 * 1024)).my_ser(&mut ctx, ser_buf, idx); // u24
         let _ = MySerElem::len_enc_int(LenEncInt::from(1024u64 * 1024 * 1024))
-            .my_ser(&mut ctx, ser_buf); // u64
+            .my_ser(&mut ctx, ser_buf, idx); // u64
         let de_buf = &mut &buf[..];
         let v = de_buf.try_deser_len_enc_int().unwrap();
         assert_eq!(v, LenEncInt::Null);
@@ -1471,14 +1597,14 @@ mod tests {
         let data = vec![1u8; 1024 * 1024 * 17];
         let mut buf = vec![0u8; 1024 * 1024 * 18];
         let ser_buf = &mut buf[..];
-        let ser_buf = MySerElem::len_enc_str(LenEncStr::Null).my_ser(&mut ctx, ser_buf);
-        let ser_buf = MySerElem::len_enc_str(LenEncStr::Err).my_ser(&mut ctx, ser_buf);
-        let ser_buf =
-            MySerElem::len_enc_str(LenEncStr::from(&data[..1024])).my_ser(&mut ctx, ser_buf); // u16
-        let ser_buf =
-            MySerElem::len_enc_str(LenEncStr::from(&data[..1024 * 128])).my_ser(&mut ctx, ser_buf); // u24
+        let mut idx = 0usize;
+        idx = MySerElem::len_enc_str(LenEncStr::Null).my_ser(&mut ctx, ser_buf, idx);
+        idx = MySerElem::len_enc_str(LenEncStr::Err).my_ser(&mut ctx, ser_buf, idx);
+        idx = MySerElem::len_enc_str(LenEncStr::from(&data[..1024])).my_ser(&mut ctx, ser_buf, idx); // u16
+        idx = MySerElem::len_enc_str(LenEncStr::from(&data[..1024 * 128]))
+            .my_ser(&mut ctx, ser_buf, idx); // u24
         let _ = MySerElem::len_enc_str(LenEncStr::from(&data[..1024 * 1024 * 17]))
-            .my_ser(&mut ctx, ser_buf); // u64
+            .my_ser(&mut ctx, ser_buf, idx); // u64
         let de_buf = &mut &buf[..];
         let v = de_buf.try_deser_len_enc_str().unwrap();
         assert_eq!(v, LenEncStr::Null);
@@ -1498,7 +1624,7 @@ mod tests {
         let mut buf = vec![0u8; 1024];
         let ser_buf = &mut buf[..];
         let s = b"this is greeting from j";
-        let _ = MySerElem::prefix_1b_str(s).my_ser(&mut ctx, ser_buf);
+        let _ = MySerElem::prefix_1b_str(s).my_ser(&mut ctx, ser_buf, 0);
         let de_buf = &mut &buf[..];
         let v = de_buf.try_deser_prefix_1b_str().unwrap();
         assert_eq!(v, s);
@@ -1512,31 +1638,32 @@ mod tests {
 
         // case 1: single packet
         ctx.pkt_nr = 0;
-        let mut pkts = MySerPacket::new(&ctx, [MySerElem::inline_bytes(&[1u8])]);
+        let mut pkts = MySerPackets::new(&ctx, [MySerElem::inline_bytes(&[1u8])]);
         assert_eq!(pkts.my_len(&ctx), 5);
-        pkts.my_ser(&mut ctx, &mut buf[..]);
+        let _ = pkts.my_ser(&mut ctx, &mut buf[..], 0);
         assert_eq!(&buf[..5], &[1, 0, 0, 0, 1]);
 
         // case 2: split packets
         ctx.pkt_nr = 0;
-        let mut pkts = MySerPacket::new(&ctx, [MySerElem::slice(b"hello")]);
+        let mut pkts = MySerPackets::new(&ctx, [MySerElem::slice(b"hello")]);
         assert_eq!(pkts.my_len(&ctx), 13);
-        let next = pkts.my_ser(&mut ctx, &mut buf[..]);
-        assert_eq!(next.len(), 32 - 13);
+        let next = pkts.my_ser(&mut ctx, &mut buf[..], 0);
+        assert_eq!(next, 13);
         assert_eq!(
             &buf[..13],
             &[4, 0, 0, 0, b'h', b'e', b'l', b'l', 1, 0, 0, 1, b'o']
         );
+        assert_eq!(pkts.res_pkts, 2);
 
         // case 3: partial packet
         ctx.pkt_nr = 0;
-        let mut pkts = MySerPacket::new(&ctx, [MySerElem::slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9])]);
+        let mut pkts = MySerPackets::new(&ctx, [MySerElem::slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9])]);
         assert_eq!(pkts.my_len(&ctx), 21);
-        pkts.my_ser_partial(&mut ctx, &mut buf[..10]);
+        pkts.my_ser_partial(&mut ctx, &mut buf[..10], 0);
         assert_eq!(&buf[..10], &[4, 0, 0, 0, 1, 2, 3, 4, 4, 0]);
-        pkts.my_ser_partial(&mut ctx, &mut buf[10..20]);
+        pkts.my_ser_partial(&mut ctx, &mut buf[..20], 10);
         assert_eq!(&buf[10..20], &[0, 1, 5, 6, 7, 8, 1, 0, 0, 2]);
-        pkts.my_ser(&mut ctx, &mut buf[20..]);
+        pkts.my_ser(&mut ctx, &mut buf, 20);
         assert_eq!(
             &buf[..21],
             &[4, 0, 0, 0, 1, 2, 3, 4, 4, 0, 0, 1, 5, 6, 7, 8, 1, 0, 0, 2, 9]

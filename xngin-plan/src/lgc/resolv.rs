@@ -1,9 +1,9 @@
-use crate::col::{ColGen, ProjCol};
 use crate::error::{Error, Result, ToResult};
-use crate::query::Subquery;
+use crate::lgc::col::{ColGen, ProjCol};
+use crate::lgc::query::Subquery;
 use semistr::SemiStr;
 use std::sync::Arc;
-use xngin_catalog::QueryCatalog;
+use xngin_catalog::Catalog;
 use xngin_datatype::{Date, Decimal, TimeUnit, DEFAULT_DATE_FORMAT};
 use xngin_expr::{
     self as expr, ColIndex, ExprKind, Farg, FuncKind, Pred, PredFuncKind, QueryID, SubqKind,
@@ -19,10 +19,10 @@ pub enum Resolution {
 /// ExprResolve defines interface to resolve expressions in SQL context.
 /// Different strategies should be implemented to resolve column references
 /// in SELECT, WHERE, GROUP BY, HAVING and ORDER BY.
-pub trait ExprResolve {
+pub trait ExprResolve<C: Catalog> {
     /// Returns catalog for metadata lookup.
     /// It should be implemented in all scenarios, except row subquery.
-    fn catalog(&self) -> Option<&dyn QueryCatalog>;
+    fn catalog(&self) -> &C;
 
     /// Search visible subquery(table treated as subquery) by alias.
     /// It should be implemented in all scenarios, except row subquery.
@@ -127,7 +127,7 @@ pub trait ExprResolve {
     ) -> Result<Resolution> {
         let schema = self
             .catalog()
-            .and_then(|cat| cat.find_schema_by_name(&schema_name))
+            .find_schema_by_name(&schema_name)
             .ok_or_else(|| {
                 Error::unknown_column_full_name(&schema_name, &tbl_alias, &col_alias, location)
             })?;
@@ -222,7 +222,7 @@ pub trait ExprResolve {
                 let schema_name = schema_name.to_lower();
                 let schema = self
                     .catalog()
-                    .and_then(|cat| cat.find_schema_by_name(&schema_name))
+                    .find_schema_by_name(&schema_name)
                     .ok_or_else(|| Error::unknown_asterisk_column(q, location))?;
                 let tbl_alias = tbl_alias.to_lower();
                 let (query_id, subquery) = self

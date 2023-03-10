@@ -107,6 +107,12 @@ pub enum Error {
     InvalidExprTransformationForReflection,
     #[error("Break")]
     Break,
+    #[error("Empty plan")]
+    EmptyPlan,
+    #[error(transparent)]
+    Compute(#[from] xngin_compute::error::Error),
+    #[error("Unsupported physical table scan")]
+    UnsupportedPhyTableScan,
 }
 
 impl Error {

@@ -1,10 +1,7 @@
-pub mod buf;
 pub mod cancel;
-pub mod digraph;
-pub mod error;
+pub mod chan;
 pub mod exec;
-pub mod phy;
-pub mod res;
+pub mod mysql;
 
 #[cfg(test)]
 pub(crate) mod tests {

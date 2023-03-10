@@ -79,22 +79,22 @@ impl Default for CapabilityFlags {
 
 bitflags! {
     pub struct StatusFlags: u16 {
-        const STATUS_IN_TRANS           = 0x0001;
-        const STATUS_AUTOCOMMIT         = 0x0002;
+        const IN_TRANS              = 0x0001;
+        const AUTOCOMMIT            = 0x0002;
         // not in doc but in real response
-        const STATUS_0X0004             = 0x0004;
-        const MORE_RESULTS_EXISTS       = 0x0008;
-        const STATUS_NO_GOOD_INDEX_USED = 0x0010;
-        const STATUS_NO_INDEX_USED      = 0x0020;
-        const STATUS_CURSOR_EXISTS      = 0x0040;
-        const STATUS_LAST_ROW_SENT      = 0x0080;
-        const STATUS_DB_DROPPED         = 0x0100;
-        const STATUS_NO_BACKSLASH_ESCAPES = 0x0200;
-        const STATUS_METADATA_CHANGED   = 0x0400;
-        const QUERY_WAS_SLOW            = 0x0800;
-        const PS_OUT_PARAMS             = 0x1000;
-        const STATUS_IN_TRANS_READONLY  = 0x2000;
-        const SESSION_STATE_CHANGED     = 0x4000;
+        const X0004                 = 0x0004;
+        const MORE_RESULTS_EXISTS   = 0x0008;
+        const NO_GOOD_INDEX_USED    = 0x0010;
+        const NO_INDEX_USED         = 0x0020;
+        const CURSOR_EXISTS         = 0x0040;
+        const LAST_ROW_SENT         = 0x0080;
+        const DB_DROPPED            = 0x0100;
+        const NO_BACKSLASH_ESCAPES  = 0x0200;
+        const METADATA_CHANGED      = 0x0400;
+        const QUERY_WAS_SLOW        = 0x0800;
+        const PS_OUT_PARAMS         = 0x1000;
+        const IN_TRANS_READONLY     = 0x2000;
+        const SESSION_STATE_CHANGED = 0x4000;
     }
 }
 

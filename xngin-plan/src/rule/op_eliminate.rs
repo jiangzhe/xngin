@@ -1,10 +1,8 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::op::{Op, OpMutVisitor};
-use crate::query::QuerySet;
+use crate::lgc::{Op, OpMutVisitor, QuerySet, Setop, SetopKind};
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
-use crate::setop::{Setop, SetopKind};
 use std::collections::HashSet;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
@@ -331,9 +329,8 @@ fn pair_const_false(es: &[Expr]) -> (bool, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{assert_j_plan1, get_lvl_queries, j_catalog, print_plan};
-    use crate::lgc::LgcPlan;
-    use crate::op::preorder;
+    use crate::lgc::tests::{assert_j_plan1, get_lvl_queries, j_catalog, print_plan};
+    use crate::lgc::{preorder, LgcPlan};
 
     #[test]
     fn test_op_eliminate_false_pred() {

@@ -1,13 +1,13 @@
 //! defines structure and metadata for mysql columns
-use crate::error::{Error, Result};
 use crate::mysql::cmd::CmdCode;
+use crate::mysql::error::{Error, Result};
 use crate::mysql::serde::{
-    LenEncStr, MyDeser, MyDeserExt, MySerElem, MySerPacket, NewMySer, SerdeCtx,
+    LenEncStr, MyDeser, MyDeserExt, MySerElem, MySerPackets, NewMySer, SerdeCtx,
 };
 use bitflags::bitflags;
 use semistr::SemiStr;
-use std::borrow::Cow;
 use std::convert::TryFrom;
+use std::sync::Arc;
 
 /// ColumnType defined in binlog
 ///
@@ -88,7 +88,7 @@ impl TryFrom<u8> for ColumnType {
             0xfd => ColumnType::VarString,
             0xfe => ColumnType::String,
             0xff => ColumnType::Geometry,
-            _ => return Err(Error::InvalidColumnType(code)),
+            _ => return Err(Error::InvalidColumnType()),
         };
         Ok(ct)
     }
@@ -132,10 +132,10 @@ impl ColumnDefinition {
 }
 
 impl NewMySer for ColumnDefinition {
-    type Ser<'s> = MySerPacket<'s, 8> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 8> where Self: 's;
 
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
         // combine charset, col_len, col_type, flags, decimals to one element.
         // the reserved byte is actually the length of this element.
         let mut bs = [0u8; 13];
@@ -155,7 +155,7 @@ impl NewMySer for ColumnDefinition {
         } else {
             MySerElem::empty()
         };
-        MySerPacket::new(
+        MySerPackets::new(
             ctx,
             [
                 MySerElem::len_enc_str(&*self.catalog),
@@ -190,14 +190,16 @@ impl<'a> MyDeser<'a> for ColumnDefinition {
         let col_type = input.try_deser_u8()?;
         let col_type = ColumnType::try_from(col_type)?;
         let flags = input.try_deser_le_u16()?;
-        let flags = ColumnFlags::from_bits(flags).ok_or(Error::InvalidInput)?;
+        let flags = ColumnFlags::from_bits(flags).ok_or(Error::MalformedPacket())?;
         let decimals = input.try_deser_u8()?;
         input.try_advance(2)?;
         let default_value = if let Some(CmdCode::FieldList) = ctx.curr_cmd.as_ref() {
             match input.try_deser_len_enc_str()? {
                 LenEncStr::Null => None,
-                LenEncStr::Err => return Err(Error::MalformedPacket),
-                LenEncStr::Bytes(b) => Some(SemiStr::try_from(b)?),
+                LenEncStr::Err => return Err(Error::MalformedPacket()),
+                LenEncStr::Bytes(b) => {
+                    Some(SemiStr::try_from(b).map_err(|_| Error::WrongStringLength())?)
+                }
             }
         } else {
             None
@@ -220,11 +222,7 @@ impl<'a> MyDeser<'a> for ColumnDefinition {
     }
 }
 
-// impl_from_ref!(ColumnDefinition: src:
-//     charset, col_len, col_type, flags, decimals;
-//     catalog, schema, table, org_table, name, org_name;
-//     default_value = src.default_value.as_ref().map(|v| std::borrow::Cow::Owned((**v).to_owned()))
-// );
+pub type ColumnDefinitions = Vec<Arc<ColumnDefinition>>;
 
 bitflags! {
     /// flags of column

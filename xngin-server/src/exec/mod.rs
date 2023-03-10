@@ -1,20 +1,17 @@
 mod proj;
-mod table_scan;
 
-use crate::buf::OutputBuffer;
 use crate::cancel::Cancellation;
-use crate::error::{Error, Result};
+use crate::chan::OutputChannel;
 use async_executor::Executor;
 use async_trait::async_trait;
 use flume::{Receiver, Sender};
 pub use proj::ProjExec;
 use std::sync::Arc;
-pub use table_scan::TableScanExec;
+use xngin_protocol::mysql::error::{Error, Result};
 use xngin_storage::block::Block;
 
 pub enum Exec {
     Proj(ProjExec),
-    TableScan(TableScanExec),
 }
 
 pub struct ExecContext {
@@ -25,16 +22,15 @@ pub struct ExecContext {
 impl ExecContext {
     /// Proxy result to output buffer of downstream.
     #[inline]
-    pub(crate) fn proxy_res(&self, res_rx: Receiver<Result<Block>>, out_buf: &OutputBuffer) {
+    pub(crate) fn proxy_res(&self, res_rx: Receiver<Result<Block>>, out: OutputChannel) {
         let executor = self.executor.clone();
         let cancel = self.cancel.clone();
-        let out_buf = out_buf.clone();
         executor
             .spawn(async move {
                 while let Ok(res) = res_rx.recv_async().await {
                     match res {
                         Ok(res) => {
-                            if out_buf.send(res).await.is_err() {
+                            if out.send(res).await.is_err() {
                                 return;
                             }
                         }
@@ -91,7 +87,7 @@ impl<W: Work> Dispatcher<W> {
         self.tx
             .send_async(work)
             .await
-            .map_err(|_| Error::DispatchError)
+            .map_err(|_| Error::Cancelled())
     }
 }
 
@@ -107,8 +103,7 @@ pub trait Work: Sized + Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buf;
-    use crate::cancel::Cancellable;
+    use crate::chan;
     use crate::tests::single_thread_executor;
     use futures_lite::future;
     use futures_lite::StreamExt;
@@ -131,8 +126,8 @@ mod tests {
             vec![col1.clone(), Expr::new_const(Const::I64(1))],
         )];
         let eval_plan = build_plan(es);
-        let (upstream_in, upstream_out) = buf::unbounded(1024);
-        let (downstream_in, downstream_out) = buf::unbounded(1024);
+        let (upstream_in, upstream_out) = chan::unbounded(1024);
+        let (downstream_in, downstream_out) = chan::unbounded(1024);
         let mut proj_exec = ProjExec::new(Arc::new(eval_plan), upstream_in, downstream_out, 1);
         // setup execution context
         let executor = single_thread_executor();
@@ -145,7 +140,7 @@ mod tests {
             proj_exec.exec(&ctx).await.unwrap();
             let mut stream = downstream_in.to_stream(&ctx.cancel).unwrap();
             let res = stream.next().await.unwrap();
-            if let Cancellable::Ready(res) = res {
+            if let Ok(res) = res {
                 assert_eq!(1024, res.n_records);
                 let res = res.data;
                 assert_eq!(1, res.len());

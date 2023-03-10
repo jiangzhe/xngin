@@ -194,7 +194,7 @@ fn attach_bytes(bs: &[u8], buf: &mut Vec<u8>) {
         // update last byte as segment length
         *buf.last_mut().unwrap() = SEG_LEN as u8;
     } else {
-        while let Some(c) = chunks.next() {
+        for c in chunks.by_ref() {
             buf.extend_from_slice(c);
             buf.push(FIX_SEG_FLAG);
         }
@@ -221,7 +221,7 @@ fn write_bytes(bs: &[u8], mut buf: &mut [u8]) {
         // update last byte as segment length
         buf[offset - 1] = SEG_LEN as u8;
     } else {
-        while let Some(c) = chunks.next() {
+        for c in chunks.by_ref() {
             buf[..c.len()].copy_from_slice(c);
             buf[c.len()] = FIX_SEG_FLAG;
             buf = &mut buf[c.len()..];

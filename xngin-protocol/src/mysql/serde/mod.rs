@@ -2,13 +2,13 @@ mod de;
 mod ser;
 
 use crate::buf::ByteBuffer;
-use crate::error::{Error, Result};
 use crate::mysql::cmd::CmdCode;
+use crate::mysql::error::{Error, Result};
 use crate::mysql::flag::{CapabilityFlags, StatusFlags};
 use semistr::SemiStr;
 
-pub use de::{my_deser_packet, MyDeser, MyDeserExt};
-pub use ser::{MySer, MySerElem, MySerExt, MySerKind, MySerPacket, NewMySer};
+pub use de::{deser_le_u24, my_deser_packet, MyDeser, MyDeserExt};
+pub use ser::{MySer, MySerElem, MySerExt, MySerKind, MySerPackets, NewMySer};
 
 /// Server and client modes have different behaviors.
 pub enum SerdeMode {
@@ -25,9 +25,6 @@ pub struct SerdeCtx {
     /// Status flags indicates server status, e.g. transaction
     /// status, cursor status, result set status, etc.
     pub status_flags: StatusFlags,
-    /// local buffers, storing temporary serialization data.
-    /// They must be released once the serialization is done.
-    bufs: Vec<(*mut u8, usize)>,
     /// current command code if exists.
     /// this may be used to distinguish deserialization behavior.
     pub curr_cmd: Option<CmdCode>,
@@ -51,7 +48,6 @@ impl Default for SerdeCtx {
         SerdeCtx {
             cap_flags: CapabilityFlags::default(),
             status_flags: StatusFlags::empty(),
-            bufs: vec![],
             curr_cmd: None,
             pkt_nr: 0,
             max_payload_size: 0xffffff,
@@ -65,6 +61,11 @@ impl SerdeCtx {
     pub fn with_mode(mut self, mode: SerdeMode) -> Self {
         self.mode = mode;
         self
+    }
+
+    #[inline]
+    pub fn pkt_nr(&self) -> u8 {
+        self.pkt_nr
     }
 
     /// Update max payload size.
@@ -85,51 +86,22 @@ impl SerdeCtx {
     }
 
     #[inline]
+    pub fn set_pkt_nr(&mut self, pkt_nr: u8) {
+        self.pkt_nr = pkt_nr;
+    }
+
+    #[inline]
     pub fn check_and_inc_pkt_nr(&mut self, pkt_nr: u8) -> Result<()> {
         if self.pkt_nr != pkt_nr {
-            return Err(Error::PacketNumberMismatch(pkt_nr, self.pkt_nr));
+            return Err(Error::NetPacketOutOfOrder());
         }
         self.pkt_nr = self.pkt_nr.wrapping_add(1);
         Ok(())
     }
 
-    /// This method will move the ownership of buffer to context,
-    /// and returns its immutable reference.
-    /// The context will put it in a buffer list and deallocate
-    /// when calling [`SerdeCtx::release_bufs`] method.
-    ///
-    /// # Safety
-    ///
-    /// It's unsafe because the lifetime of returned slice is
-    /// arbitrary. It's user's duty to keep the buffer outlive
-    /// the reference.
-    /// The returned slice is only the readable part of this buffer.
     #[inline]
-    pub unsafe fn accept_buf<'a>(&mut self, buf: ByteBuffer) -> &'a [u8] {
-        let (ptr, len, r_idx, w_idx) = buf.into_raw_parts();
-        let s = std::slice::from_raw_parts(ptr.add(r_idx), w_idx - r_idx);
-        self.bufs.push((ptr, len));
-        s
-    }
-
-    /// Release buffers.
-    ///
-    /// # Safety
-    ///
-    /// User should make sure all references to buffers are dropped before
-    /// calling this method.
-    #[inline]
-    pub unsafe fn release_bufs(&mut self) {
-        for (ptr, len) in self.bufs.drain(..).rev() {
-            drop(ByteBuffer::from_raw_parts(ptr, len))
-        }
-    }
-}
-
-impl Drop for SerdeCtx {
-    #[inline]
-    fn drop(&mut self) {
-        unsafe { self.release_bufs() }
+    pub fn add_pkt_nr(&mut self, nr: usize) {
+        self.pkt_nr = ((self.pkt_nr as usize) + nr) as u8
     }
 }
 
@@ -173,7 +145,7 @@ impl TryFrom<LenEncInt> for u64 {
             LenEncInt::Len3(n) => Ok(n as u64),
             LenEncInt::Len4(n) => Ok(n as u64),
             LenEncInt::Len9(n) => Ok(n as u64),
-            _ => Err(Error::InvalidInput),
+            _ => Err(Error::InvalidLengthEncoding()),
         }
     }
 }
@@ -241,6 +213,19 @@ impl<'a> LenEncStr<'a> {
             _ => None,
         }
     }
+
+    /// Returns encoded(prefix) length and total length of this string.
+    #[inline]
+    pub fn len(&self) -> (LenEncInt, usize) {
+        match self {
+            LenEncStr::Null => (LenEncInt::Null, 1),
+            LenEncStr::Err => (LenEncInt::Err, 1),
+            LenEncStr::Bytes(bs) => {
+                let lei = LenEncInt::from(bs.len() as u64);
+                (lei, lei.len() + bs.len())
+            }
+        }
+    }
 }
 
 impl<'a> TryFrom<LenEncStr<'a>> for &'a [u8] {
@@ -249,7 +234,7 @@ impl<'a> TryFrom<LenEncStr<'a>> for &'a [u8] {
     fn try_from(src: LenEncStr<'a>) -> Result<Self> {
         match src {
             LenEncStr::Bytes(bs) => Ok(bs),
-            _ => Err(Error::InvalidInput),
+            _ => Err(Error::InvalidLengthEncoding()),
         }
     }
 }
@@ -260,10 +245,10 @@ impl TryFrom<LenEncStr<'_>> for SemiStr {
     fn try_from(src: LenEncStr) -> Result<Self> {
         match src {
             LenEncStr::Bytes(bs) => {
-                let s = std::str::from_utf8(bs)?;
-                SemiStr::try_from(s).map_err(|_| Error::StringTooLong)
+                let s = std::str::from_utf8(bs).map_err(|_| Error::InvalidUtf8String())?;
+                SemiStr::try_from(s).map_err(|_| Error::WrongStringLength())
             }
-            _ => Err(Error::InvalidInput),
+            _ => Err(Error::InvalidLengthEncoding()),
         }
     }
 }
@@ -321,9 +306,8 @@ pub(crate) mod tests {
         // serialize
         ctx.reset_pkt_nr();
         let (writable, _wg) = buf.writable().unwrap();
-        let orig_len = writable.len();
-        let writable = val.new_my_ser(ctx).my_ser(ctx, writable);
-        buf.advance_w_idx(orig_len - writable.len()).unwrap();
+        let w_len = val.new_my_ser(ctx).my_ser(ctx, writable, 0);
+        buf.advance_w_idx(w_len).unwrap();
     }
 
     #[allow(dead_code)]

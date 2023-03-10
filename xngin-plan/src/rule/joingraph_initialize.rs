@@ -1,8 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::graph::{Edge, EdgeID, Graph, VertexSet};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::op::{Op, OpMutVisitor};
-use crate::query::{Location, QuerySet};
+use crate::lgc::{Location, Op, OpMutVisitor, QuerySet};
 use bitflags::bitflags;
 use indexmap::IndexMap;
 use std::collections::HashSet;
@@ -293,7 +292,7 @@ impl BuildGraph<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{assert_j_plan1, get_join_graph, j_catalog, print_plan};
+    use crate::lgc::tests::{assert_j_plan1, get_join_graph, j_catalog, print_plan};
     use crate::lgc::LgcPlan;
     use crate::rule::derived_unfold;
 

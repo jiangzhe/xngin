@@ -9,7 +9,7 @@ members = [
     "xngin-plan",
     "xngin-protocol",
     "xngin-storage",
-    "xngin-runtime",
+    "xngin-server",
     "xngin-tpch-tests"
 ]
 exclude = ["xngin-bench"]

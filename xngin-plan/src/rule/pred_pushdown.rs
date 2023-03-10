@@ -1,8 +1,6 @@
-use crate::col::ProjCol;
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::op::{Op, OpMutVisitor};
-use crate::query::{QryIDs, QuerySet};
+use crate::lgc::{Op, OpMutVisitor, ProjCol, QryIDs, QuerySet};
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
 use std::collections::hash_map::Entry;
@@ -731,12 +729,11 @@ impl ExprMutVisitor for RewriteOutExpr<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{
+    use crate::lgc::tests::{
         assert_j_plan1, extract_join_kinds, get_subq_by_location, get_subq_filt_expr, j_catalog,
         print_plan,
     };
-    use crate::lgc::LgcPlan;
-    use crate::query::Location;
+    use crate::lgc::{LgcPlan, Location};
 
     #[test]
     fn test_pred_pushdown_single_table() {

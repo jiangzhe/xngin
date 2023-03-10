@@ -5,9 +5,7 @@ pub(crate) mod greedy;
 use crate::error::{Error, Result};
 use crate::join::graph::{Edge, Graph, VertexSet};
 use crate::join::{JoinKind, JoinOp};
-use crate::lgc::LgcPlan;
-use crate::op::{Op, OpMutVisitor};
-use crate::query::QuerySet;
+use crate::lgc::{LgcPlan, Op, OpMutVisitor, QuerySet};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem;
@@ -206,12 +204,12 @@ impl Reorder for Sequential {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::tests::{
+    use crate::join::estimate::Estimate;
+    use crate::join::graph::{Edge, Graph};
+    use crate::lgc::tests::{
         assert_j_plan1, extract_join_kinds, get_join_graph, get_tbl_id, j_catalog, print_plan,
         table_map,
     };
-    use crate::join::estimate::Estimate;
-    use crate::join::graph::{Edge, Graph};
     use crate::rule::joingraph_initialize;
     use xngin_catalog::TableID;
 
@@ -238,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_join_reorder_greedy() {
-        use crate::op::OpKind::*;
+        use crate::lgc::OpKind::*;
         let cat = j_catalog();
         let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![
@@ -296,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_join_reorder_dpsize() {
-        use crate::op::OpKind::*;
+        use crate::lgc::OpKind::*;
         let cat = j_catalog();
         let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![
@@ -355,7 +353,7 @@ mod tests {
 
     #[test]
     fn test_join_reorder_dphyp() {
-        use crate::op::OpKind::*;
+        use crate::lgc::OpKind::*;
         let cat = j_catalog();
         let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![

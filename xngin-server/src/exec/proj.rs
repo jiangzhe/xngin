@@ -1,17 +1,16 @@
-use crate::buf::{InputBuffer, OutputBuffer};
-use crate::cancel::Cancellable;
-use crate::error::{Error, Result};
+use crate::chan::{InputChannel, OutputChannel};
 use crate::exec::{ExecContext, Executable, Work};
 use async_trait::async_trait;
 use futures_lite::StreamExt;
 use std::sync::Arc;
 use xngin_compute::eval::QueryEvalPlan;
+use xngin_protocol::mysql::error::{Error, Result};
 use xngin_storage::block::Block;
 
 pub struct ProjExec {
     eval_plan: Arc<QueryEvalPlan>,
-    in_buf: InputBuffer,
-    out_buf: Option<OutputBuffer>,
+    input: InputChannel,
+    out: Option<OutputChannel>,
     parallel: usize,
 }
 
@@ -19,14 +18,14 @@ impl ProjExec {
     #[inline]
     pub fn new(
         eval_plan: Arc<QueryEvalPlan>,
-        in_buf: InputBuffer,
-        out_buf: OutputBuffer,
+        input: InputChannel,
+        out: OutputChannel,
         parallel: usize,
     ) -> Self {
         ProjExec {
             eval_plan,
-            in_buf,
-            out_buf: Some(out_buf),
+            input,
+            out: Some(out),
             parallel,
         }
     }
@@ -44,17 +43,22 @@ impl ProjExec {
 impl Executable for ProjExec {
     #[inline]
     async fn exec(&mut self, ctx: &ExecContext) -> Result<()> {
-        let out_buf = self.out_buf.take().ok_or(Error::RerunNotAllowed)?;
+        let out = self.out.take().ok_or(Error::InvalidExecutorState())?;
         let (dispatcher, res_rx) = ctx.dispatch::<ProjWork>(self.parallel);
         // proxy work to downstream
-        ctx.proxy_res(res_rx, &out_buf);
+        ctx.proxy_res(res_rx, out);
         // dispatch work to workers
-        let mut in_stream = self.in_buf.to_stream(&ctx.cancel)?;
-        while let Some(Cancellable::Ready(input)) = in_stream.next().await {
-            let work = self.new_work(input);
-            dispatcher.dispatch(work).await?;
+        let mut in_stream = self.input.to_stream(&ctx.cancel)?;
+        loop {
+            match in_stream.next().await {
+                Some(Ok(input)) => {
+                    let work = self.new_work(input);
+                    dispatcher.dispatch(work).await?;
+                }
+                Some(Err(e)) => return Err(e),
+                None => return Ok(()),
+            }
         }
-        Ok(())
     }
 }
 
@@ -73,6 +77,6 @@ impl Work for ProjWork {
         self.eval_plan
             .eval(&self.block)
             .map(|data| Block::new(n_records, data))
-            .map_err(Into::into)
+            .map_err(|e| Error::RuntimeError(Box::new(e.to_string())))
     }
 }

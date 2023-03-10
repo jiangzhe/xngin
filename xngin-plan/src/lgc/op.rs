@@ -7,10 +7,10 @@
 //! with schema validated.
 //!
 //! Each table/column is lookuped from catalog and assigned a unique id.
-use crate::col::ProjCol;
 use crate::error::Error;
 use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
-use crate::setop::{Setop, SetopKind, SubqOp};
+use crate::lgc::col::ProjCol;
+use crate::lgc::setop::{Setop, SetopKind, SubqOp};
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashSet;
 use xngin_catalog::{SchemaID, TableID};

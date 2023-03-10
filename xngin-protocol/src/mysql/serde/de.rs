@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::mysql::error::{ensure_empty, Error, Result};
 use crate::mysql::serde::{LenEncInt, LenEncStr, SerdeCtx};
 
 /// Defines how to deserialize objects from bytes.
@@ -93,7 +93,7 @@ macro_rules! impl_read_primitive {
         #[inline]
         fn $f2(&mut self) -> Result<$ty> {
             if self.len() < std::mem::size_of::<$ty>() {
-                return Err(Error::InsufficientInput);
+                return Err(Error::InsufficientInput());
             }
             Ok(self.$f1())
         }
@@ -109,7 +109,7 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
     #[inline]
     fn try_advance(&mut self, len: usize) -> Result<()> {
         if self.len() < len {
-            return Err(Error::InsufficientInput);
+            return Err(Error::InsufficientInput());
         }
         self.advance(len);
         Ok(())
@@ -125,7 +125,7 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
     #[inline]
     fn try_deser_u8(&mut self) -> Result<u8> {
         if self.is_empty() {
-            return Err(Error::InsufficientInput);
+            return Err(Error::InsufficientInput());
         }
         Ok(self.deser_u8())
     }
@@ -137,7 +137,7 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
 
     #[inline]
     fn deser_le_u24(&mut self) -> u32 {
-        let res = self[0] as u32 + ((self[1] as u32) << 8) + ((self[2] as u32) << 16);
+        let res = deser_le_u24(self);
         self.advance(3);
         res
     }
@@ -145,7 +145,7 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
     #[inline]
     fn try_deser_le_u24(&mut self) -> Result<u32> {
         if self.len() < 3 {
-            return Err(Error::InsufficientInput);
+            return Err(Error::InsufficientInput());
         }
         Ok(self.deser_le_u24())
     }
@@ -159,7 +159,7 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
     #[inline]
     fn try_deser_le_f32(&mut self) -> Result<f32> {
         if self.len() < std::mem::size_of::<f32>() {
-            return Err(Error::InsufficientInput);
+            return Err(Error::InsufficientInput());
         }
         Ok(self.deser_le_f32())
     }
@@ -173,7 +173,7 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
     #[inline]
     fn try_deser_le_f64(&mut self) -> Result<f64> {
         if self.len() < std::mem::size_of::<f64>() {
-            return Err(Error::InsufficientInput);
+            return Err(Error::InsufficientInput());
         }
         Ok(self.deser_le_f64())
     }
@@ -188,7 +188,7 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
     #[inline]
     fn try_deser_bytes(&mut self, len: usize) -> Result<&'a [u8]> {
         if self.len() < len {
-            return Err(Error::InsufficientInput);
+            return Err(Error::InsufficientInput());
         }
         Ok(self.deser_bytes(len))
     }
@@ -205,7 +205,7 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
                 self.advance(pos + 1);
                 Ok(res)
             }
-            None => Err(Error::InvalidInput),
+            None => Err(Error::MalformedPacket()),
         }
     }
 
@@ -293,6 +293,11 @@ impl<'a> MyDeserExt<'a> for &'a [u8] {
     }
 }
 
+#[inline]
+pub fn deser_le_u24(data: &[u8]) -> u32 {
+    data[0] as u32 + ((data[1] as u32) << 8) + ((data[2] as u32) << 16)
+}
+
 /// Deserialize MySQL packet from a fixed slice.
 #[inline]
 pub fn my_deser_packet<'a, T: MyDeser<'a>>(ctx: &mut SerdeCtx, mut buf: &'a [u8]) -> Result<T> {
@@ -304,12 +309,10 @@ pub fn my_deser_packet<'a, T: MyDeser<'a>>(ctx: &mut SerdeCtx, mut buf: &'a [u8]
     };
     ctx.check_and_inc_pkt_nr(pkt_nr)?;
     if payload_len != input.len() {
-        return Err(Error::InvalidPacketLength(payload_len, input.len()));
+        return Err(Error::MalformedPacket());
     }
     let (next, res) = T::my_deser(ctx, buf)?;
-    if !next.is_empty() {
-        return Err(Error::MalformedPacket);
-    }
+    ensure_empty(next)?;
     Ok(res)
 }
 

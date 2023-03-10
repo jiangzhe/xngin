@@ -1,10 +1,12 @@
-use crate::digraph::{DiGraph, NodeIndex};
+pub mod digraph;
+
 use crate::error::{Error, Result};
+use crate::lgc::LgcPlan;
+use crate::lgc::Op;
+use crate::lgc::{Location, QuerySet, Subquery};
+use digraph::{DiGraph, NodeIndex};
 use xngin_catalog::TableID;
 use xngin_compute::eval::{QueryEvalPlan, TableEvalPlan};
-use xngin_plan::lgc::LgcPlan;
-use xngin_plan::op::Op;
-use xngin_plan::query::{Location, QuerySet, Subquery};
 
 #[allow(dead_code)]
 pub struct PhyPlan {
@@ -17,7 +19,7 @@ impl PhyPlan {
     #[inline]
     pub fn new(lgc: &LgcPlan) -> Result<Self> {
         // todo: currently we ignore attached plans
-        let subq = lgc.root_query().ok_or(Error::EmptyLgcPlan)?;
+        let subq = lgc.root_query().ok_or(Error::EmptyPlan)?;
         let mut builder = Builder::new(&lgc.qry_set);
         let end_point = builder.build_subquery(subq)?;
         Ok(builder.build(end_point))
@@ -87,7 +89,10 @@ impl<'a> Builder<'a> {
                 Ok(curr_idx)
             }
             Op::Query(qry_id) => {
-                let subq = self.qry_set.get(qry_id).ok_or(Error::InvalidLgcNode)?;
+                let subq = self
+                    .qry_set
+                    .get(qry_id)
+                    .ok_or(Error::QueryNotFound(*qry_id))?;
                 self.build_subquery(subq)
             }
             _ => todo!(),
@@ -129,11 +134,11 @@ impl<'a> Builder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xngin_catalog::mem_impl::{ColumnSpec, MemCatalog, MemCatalogBuilder};
-    use xngin_catalog::{ColumnAttr, QueryCatalog};
+    use crate::lgc::LgcBuilder;
+    use crate::lgc::LgcPlan;
+    use xngin_catalog::mem_impl::MemCatalog;
+    use xngin_catalog::{Catalog, ColumnAttr, ColumnSpec, TableSpec};
     use xngin_datatype::PreciseType;
-    use xngin_plan::builder::PlanBuilder;
-    use xngin_plan::lgc::LgcPlan;
     use xngin_sql::parser::{dialect, parse_query_verbose};
 
     #[test]
@@ -146,24 +151,23 @@ mod tests {
     }
 
     fn phy_catalog() -> MemCatalog {
-        let mut builder = MemCatalogBuilder::default();
-        builder.add_schema("phy").unwrap();
-        builder
-            .add_table(
-                "phy",
-                "t0",
-                &vec![
-                    ColumnSpec::new("c0", PreciseType::i32(), ColumnAttr::empty()),
-                    ColumnSpec::new("c1", PreciseType::i32(), ColumnAttr::empty()),
-                ],
-            )
-            .unwrap();
-        builder.build()
+        let cata = MemCatalog::default();
+        cata.create_schema("phy").unwrap();
+        cata.create_table(TableSpec::new(
+            "phy",
+            "t0",
+            vec![
+                ColumnSpec::new("c0", PreciseType::i32(), ColumnAttr::empty()),
+                ColumnSpec::new("c1", PreciseType::i32(), ColumnAttr::empty()),
+            ],
+        ))
+        .unwrap();
+        cata
     }
 
-    fn build_lgc<C: QueryCatalog>(cat: &C, sql: &str) -> LgcPlan {
+    fn build_lgc<C: Catalog>(cat: &C, sql: &str) -> LgcPlan {
         let qe = parse_query_verbose(dialect::MySQL(sql)).unwrap();
-        PlanBuilder::new(cat, "phy")
+        LgcBuilder::new(cat, "phy")
             .unwrap()
             .build_plan(&qe)
             .unwrap()

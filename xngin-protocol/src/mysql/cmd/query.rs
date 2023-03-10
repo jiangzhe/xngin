@@ -1,7 +1,7 @@
 //! Defines MySQL commands.
-use crate::error::{Error, Result};
 use crate::mysql::cmd::CmdCode;
-use crate::mysql::serde::{MyDeser, MyDeserExt, MySerElem, MySerPacket, NewMySer, SerdeCtx};
+use crate::mysql::error::{Error, Result};
+use crate::mysql::serde::{MyDeser, MyDeserExt, MySerElem, MySerPackets, NewMySer, SerdeCtx};
 use std::borrow::{Borrow, Cow, ToOwned};
 
 /// Query Command with text format.
@@ -36,11 +36,11 @@ impl<'a> ComQuery<'a> {
 impl_from_ref!(ComQuery: ; query);
 
 impl<'a> NewMySer for ComQuery<'a> {
-    type Ser<'s> = MySerPacket<'s, 2> where Self: 's;
+    type Ser<'s> = MySerPackets<'s, 2> where Self: 's;
 
     #[inline]
-    fn new_my_ser(&self, ctx: &mut SerdeCtx) -> Self::Ser<'_> {
-        MySerPacket::new(
+    fn new_my_ser(&self, ctx: &SerdeCtx) -> Self::Ser<'_> {
+        MySerPackets::new(
             ctx,
             [
                 MySerElem::one_byte(self.code() as u8),
@@ -55,10 +55,10 @@ impl<'a> MyDeser<'a> for ComQuery<'a> {
         let input = &mut input;
         let code: CmdCode = input.try_deser_u8()?.try_into()?;
         if code != CmdCode::Query {
-            return Err(Error::InvalidInput);
+            return Err(Error::MalformedPacket());
         }
         let query = input.deser_to_end();
-        let query = std::str::from_utf8(query).map_err(|_| Error::InvalidInput)?;
+        let query = std::str::from_utf8(query).map_err(|_| Error::InvalidUtf8String())?;
         let res = ComQuery {
             query: Cow::Borrowed(query),
         };
