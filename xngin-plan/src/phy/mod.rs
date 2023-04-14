@@ -1,18 +1,18 @@
-pub mod digraph;
+mod builder;
 
+use builder::PhyBuilder;
 use crate::error::{Error, Result};
 use crate::lgc::LgcPlan;
-use crate::lgc::Op;
-use crate::lgc::{Location, QuerySet, Subquery};
-use digraph::{DiGraph, NodeIndex};
+use crate::digraph::{DiGraph, NodeIndex};
 use xngin_catalog::TableID;
 use xngin_compute::eval::{QueryEvalPlan, TableEvalPlan};
 
-#[allow(dead_code)]
+/// PhyPlan is a directed graph transformed from LgcPlan.
+/// One node can have multiple downstreams, e.g CTE node.
 pub struct PhyPlan {
-    graph: DiGraph<Phy, ()>,
-    start: Vec<NodeIndex>,
-    end: NodeIndex,
+    pub graph: DiGraph<Phy, ()>,
+    pub start: Vec<NodeIndex>,
+    pub end: NodeIndex,
 }
 
 impl PhyPlan {
@@ -20,9 +20,8 @@ impl PhyPlan {
     pub fn new(lgc: &LgcPlan) -> Result<Self> {
         // todo: currently we ignore attached plans
         let subq = lgc.root_query().ok_or(Error::EmptyPlan)?;
-        let mut builder = Builder::new(&lgc.qry_set);
-        let end_point = builder.build_subquery(subq)?;
-        Ok(builder.build(end_point))
+        PhyBuilder::new(&lgc.qry_set)
+            .build(subq)
     }
 }
 
@@ -32,103 +31,22 @@ pub struct Phy {
 }
 
 pub enum PhyKind {
-    TableScan {
-        eval_plan: TableEvalPlan,
-        table_id: TableID,
-    },
-    Project(QueryEvalPlan),
+    TableScan(PhyTableScan),
+    Proj(PhyProj),
+    Row(PhyRow),
 }
 
-struct Builder<'a> {
-    graph: DiGraph<Phy, ()>,
-    start: Vec<NodeIndex>,
-    qry_set: &'a QuerySet,
+pub struct PhyProj {
+    pub evals: QueryEvalPlan,
 }
 
-impl<'a> Builder<'a> {
-    #[inline]
-    fn new(qry_set: &'a QuerySet) -> Self {
-        Builder {
-            graph: DiGraph::new(),
-            start: vec![],
-            qry_set,
-        }
-    }
+pub struct PhyRow {
+    evals: QueryEvalPlan,
+}
 
-    #[inline]
-    fn build(self, end: NodeIndex) -> PhyPlan {
-        PhyPlan {
-            graph: self.graph,
-            start: self.start,
-            end,
-        }
-    }
-
-    #[inline]
-    fn build_subquery(&mut self, subq: &Subquery) -> Result<NodeIndex> {
-        match subq.location {
-            Location::Disk => self.build_disk_scan(&subq.root),
-            Location::Intermediate => self.build_intermediate(&subq.root),
-            Location::Virtual => todo!(),
-            Location::Memory | Location::Network => todo!(),
-        }
-    }
-
-    // recursively build the intermediate data flow
-    #[inline]
-    fn build_intermediate(&mut self, root: &Op) -> Result<NodeIndex> {
-        match root {
-            Op::Proj { cols, input } => {
-                let input_idx = self.build_intermediate(input)?;
-                let eval_plan = QueryEvalPlan::new(cols.iter().map(|c| &c.expr))?;
-                let proj = Phy {
-                    kind: PhyKind::Project(eval_plan),
-                };
-                let curr_idx = self.graph.add_node(proj);
-                self.graph.add_edge(input_idx, curr_idx, ());
-                Ok(curr_idx)
-            }
-            Op::Query(qry_id) => {
-                let subq = self
-                    .qry_set
-                    .get(qry_id)
-                    .ok_or(Error::QueryNotFound(*qry_id))?;
-                self.build_subquery(subq)
-            }
-            _ => todo!(),
-        }
-    }
-
-    // Table scan supports Proj and Table operators.
-    #[inline]
-    fn build_disk_scan(&mut self, mut root: &Op) -> Result<NodeIndex> {
-        let mut proj = None;
-        let table_id;
-        loop {
-            match root {
-                Op::Proj { cols, input } => {
-                    let eval_plan = TableEvalPlan::new(cols.iter().map(|c| &c.expr))?;
-                    proj = Some(eval_plan);
-                    root = &**input;
-                }
-                Op::Table(_, tid) => {
-                    table_id = Some(*tid);
-                    break;
-                }
-                _ => return Err(Error::UnsupportedPhyTableScan),
-            }
-        }
-        let (eval_plan, table_id) = proj.zip(table_id).ok_or(Error::UnsupportedPhyTableScan)?;
-        let node = Phy {
-            kind: PhyKind::TableScan {
-                eval_plan,
-                table_id,
-            },
-        };
-        let idx = self.graph.add_node(node);
-        self.start.push(idx);
-        Ok(idx)
-    }
+pub struct PhyTableScan {
+    evals: TableEvalPlan,
+    table_id: TableID,
 }
 
 #[cfg(test)]
@@ -169,7 +87,7 @@ mod tests {
         let qe = parse_query_verbose(dialect::MySQL(sql)).unwrap();
         LgcBuilder::new(cat, "phy")
             .unwrap()
-            .build_plan(&qe)
+            .build(&qe)
             .unwrap()
     }
 }

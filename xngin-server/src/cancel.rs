@@ -3,11 +3,11 @@ use futures_lite::Stream;
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
-use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use xngin_protocol::mysql::error::{Error, Result};
+use std::cell::UnsafeCell;
 
 /// Cancellation represents a handle that can cancel future and stream
 /// processing.
@@ -65,7 +65,7 @@ impl Cancellation {
 struct Inner {
     flag: AtomicBool,
     event: Event,
-    err: AtomicPtr<Error>,
+    err: UnsafeCell<Option<Error>>,
 }
 
 impl Inner {
@@ -74,7 +74,7 @@ impl Inner {
         Inner {
             flag: AtomicBool::new(false),
             event: Event::new(),
-            err: AtomicPtr::new(ptr::null_mut()),
+            err: UnsafeCell::new(None),
         }
     }
 
@@ -90,23 +90,22 @@ impl Inner {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            let boxed = Box::new(err);
-            let new = Box::leak(boxed);
-            self.err.store(new, Ordering::Release);
+            let ptr = self.err.get();
+            // Safety
+            //
+            // The pointer is guaranteed to be accessed by only one thread at same time.
+            unsafe { *ptr = Some(err) };
             self.event.notify(usize::MAX)
         }
     }
 
     #[inline]
     fn err(&self) -> Option<&Error> {
-        let err_ptr = self.err.load(Ordering::Acquire);
-        if err_ptr.is_null() {
-            return None;
-        }
+        let err_ptr = self.err.get();
         // safety:
         //
         // err_ptr won't be changed if set, so the pointer is always valid
-        unsafe { Some(&*err_ptr) }
+        unsafe { (*err_ptr).as_ref() }
     }
 }
 

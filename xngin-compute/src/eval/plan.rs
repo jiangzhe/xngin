@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::eval::{Builder, Eval, EvalRef};
+use crate::eval::{EvalBuilder, Eval, EvalRef};
 
 use std::mem;
 use xngin_catalog::TableID;
@@ -41,7 +41,7 @@ impl<T: DataSourceID> EvalPlan<T> {
     /// Create a new evaluation plan.
     #[inline]
     pub fn new<'a, I: IntoIterator<Item = &'a Expr>>(exprs: I) -> Result<Self> {
-        Builder::new().build(exprs)
+        EvalBuilder::new().build(exprs)
     }
 
     /// Create a new evaluation plan with filter expression.
@@ -50,7 +50,7 @@ impl<T: DataSourceID> EvalPlan<T> {
         exprs: I,
         cond_expr: &'a Expr,
     ) -> Result<Self> {
-        Builder::new().with_filter(exprs, cond_expr)
+        EvalBuilder::new().with_filter(exprs, cond_expr)
     }
 
     /// Evaluate one block.

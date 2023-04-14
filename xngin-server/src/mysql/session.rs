@@ -87,7 +87,7 @@ impl<'a, C: Catalog, T: AsyncRead + AsyncWrite + Unpin> Session<'a, C, T> {
                         match &qe.query {
                             Query::Row(..) => {
                                 let lgc = LgcBuilder::new(&self.server.catalog, default_schema)?
-                                    .build_plan(&qe)?;
+                                    .build(&qe)?;
                                 // // currently only support select row
                                 // let query = plan.root_query()
                                 //     .ok_or_else(|| Error::PlanError(Box::new(String::from("root query not found"))))?;

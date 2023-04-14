@@ -9,7 +9,7 @@ use xngin_datatype::PreciseType;
 use xngin_expr::{ColIndex, DataSourceID, Expr, ExprKind, FuncKind, Pred};
 
 #[derive(Debug)]
-pub(super) struct Builder<'a, T> {
+pub(super) struct EvalBuilder<'a, T> {
     input: Vec<(T, ColIndex)>,
     input_map: HashMap<InputKey<T>, (usize, PreciseType)>,
     // The third parameter is the base condition for current evaluation.
@@ -20,10 +20,10 @@ pub(super) struct Builder<'a, T> {
     eval_map: HashMap<EvalKey, usize>,
 }
 
-impl<'a, T> Builder<'a, T> {
+impl<'a, T> EvalBuilder<'a, T> {
     #[inline]
     pub(super) fn new() -> Self {
-        Builder {
+        EvalBuilder {
             input: vec![],
             input_map: HashMap::new(),
             cache: vec![],
@@ -33,7 +33,7 @@ impl<'a, T> Builder<'a, T> {
     }
 }
 
-impl<'a, T: DataSourceID> Builder<'a, T> {
+impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
     /// Create evaluation plan with list of expression.
     #[inline]
     pub fn build<I: IntoIterator<Item = &'a Expr>>(mut self, exprs: I) -> Result<EvalPlan<T>> {

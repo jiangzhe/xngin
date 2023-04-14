@@ -7,3 +7,4 @@ pub mod join;
 pub mod lgc;
 pub mod phy;
 pub mod rule;
+pub mod digraph;
