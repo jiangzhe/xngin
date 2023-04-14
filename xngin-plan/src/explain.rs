@@ -548,7 +548,7 @@ mod tests {
         ] {
             let builder = LgcBuilder::new(&cat, "tpch").unwrap();
             let qr = parse_query(MySQL(sql)).unwrap();
-            let plan = builder.build_plan(&qr).unwrap();
+            let plan = builder.build(&qr).unwrap();
             let mut s = String::new();
             let _ = plan.explain(&mut s).unwrap();
             println!("Explain plan:\n{}", s)

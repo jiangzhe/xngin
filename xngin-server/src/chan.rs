@@ -4,6 +4,8 @@ use futures_lite::Stream;
 use xngin_protocol::mysql::error::{Error, Result};
 use xngin_storage::block::Block;
 
+pub type ExecChannel = (InputChannel, OutputChannel);
+
 /// Channel of input data blocks backed by [`flume::Receiver`].
 #[derive(Clone)]
 pub struct InputChannel {
@@ -12,9 +14,9 @@ pub struct InputChannel {
 
 impl InputChannel {
     #[inline]
-    pub fn to_stream(&self, cancel: &Cancellation) -> Result<impl Stream<Item = Result<Block>>> {
+    pub fn to_stream(&self, cancel: &Cancellation) -> impl Stream<Item = Result<Block>> {
         let rx = self.rx.clone();
-        Ok(cancel.select_stream(rx.into_stream()))
+        cancel.select_stream(rx.into_stream())
     }
 }
 

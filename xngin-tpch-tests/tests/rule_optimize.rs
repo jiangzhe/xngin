@@ -166,7 +166,7 @@ fn check_tpch_rule_optimize<C: Catalog>(cat: &C, sql: &str) {
     let qry = parse_query_verbose(Ansi(sql)).unwrap();
     let dur_parse = inst.elapsed();
     let builder = LgcBuilder::new(cat, "tpch").unwrap();
-    let mut plan = builder.build_plan(&qry).unwrap();
+    let mut plan = builder.build(&qry).unwrap();
     let dur_build = inst.elapsed();
     rule_optimize(&mut plan).unwrap();
     let dur_opt = inst.elapsed();

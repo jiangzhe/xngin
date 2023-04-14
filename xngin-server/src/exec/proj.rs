@@ -1,5 +1,5 @@
 use crate::chan::{InputChannel, OutputChannel};
-use crate::exec::{ExecContext, Executable, Work};
+use crate::exec::{ExecCtx, Executable, Work};
 use async_trait::async_trait;
 use futures_lite::StreamExt;
 use std::sync::Arc;
@@ -12,6 +12,8 @@ pub struct ProjExec {
     input: InputChannel,
     out: Option<OutputChannel>,
     parallel: usize,
+    // Whether the projection should reserve order of input data.
+    reserve_order: bool,
 }
 
 impl ProjExec {
@@ -21,12 +23,14 @@ impl ProjExec {
         input: InputChannel,
         out: OutputChannel,
         parallel: usize,
+        reserve_order: bool,
     ) -> Self {
         ProjExec {
             eval_plan,
             input,
             out: Some(out),
             parallel,
+            reserve_order,
         }
     }
 
@@ -42,21 +46,26 @@ impl ProjExec {
 #[async_trait]
 impl Executable for ProjExec {
     #[inline]
-    async fn exec(&mut self, ctx: &ExecContext) -> Result<()> {
-        let out = self.out.take().ok_or(Error::InvalidExecutorState())?;
-        let (dispatcher, res_rx) = ctx.dispatch::<ProjWork>(self.parallel);
-        // proxy work to downstream
-        ctx.proxy_res(res_rx, out);
-        // dispatch work to workers
-        let mut in_stream = self.input.to_stream(&ctx.cancel)?;
-        loop {
-            match in_stream.next().await {
-                Some(Ok(input)) => {
-                    let work = self.new_work(input);
-                    dispatcher.dispatch(work).await?;
-                }
-                Some(Err(e)) => return Err(e),
-                None => return Ok(()),
+    async fn exec(&mut self, ctx: &ExecCtx) {
+        let out = if let Some(out) = self.out.take() {
+            out
+        } else {
+            log::error!("Projection executor starts more than once");
+            ctx.cancel.cancel(Error::InvalidExecutorState());
+            return
+        };
+        let mut in_stream = self.input.to_stream(&ctx.cancel);
+        if self.reserve_order {
+            let mut dispatcher = ctx.dispatch_ordered(self.parallel, out);
+            while let Some(Ok(input)) = in_stream.next().await {
+                let work = self.new_work(input);
+                dispatcher.dispatch(work).await;
+            }
+        } else {
+            let mut dispatcher = ctx.dispatch_unordered(self.parallel, out);
+            while let Some(Ok(input)) = in_stream.next().await {
+                let work = self.new_work(input);
+                dispatcher.dispatch(work).await;
             }
         }
     }
@@ -69,8 +78,6 @@ struct ProjWork {
 
 #[async_trait]
 impl Work for ProjWork {
-    type Output = Result<Block>;
-
     #[inline]
     async fn run(self) -> Result<Block> {
         let n_records = self.block.n_records;

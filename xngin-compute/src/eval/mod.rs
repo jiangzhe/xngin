@@ -7,7 +7,7 @@ use crate::arith::ArithKind;
 use crate::cmp::CmpKind;
 use crate::error::{Error, Result};
 use crate::logic::LogicKind;
-use builder::Builder;
+use builder::EvalBuilder;
 use xngin_datatype::{PreciseType, Typed};
 use xngin_expr::Const;
 use xngin_storage::attr::Attr;
@@ -418,7 +418,7 @@ mod tests {
         let f2 = Expr::pred_func(PredFuncKind::Less, vec![col1.clone(), Expr::const_i64(10)]);
         let mut filter = Expr::pred_conj(vec![f1, f2]);
         fix_ty(&mut filter);
-        let plan: QueryEvalPlan = Builder::new().with_filter(&[col1], &filter).unwrap();
+        let plan: QueryEvalPlan = EvalBuilder::new().with_filter(&[col1], &filter).unwrap();
         assert_eq!(1, plan.input.len());
         assert_eq!(1, plan.output.len());
         let attr1 = Attr::from((0..1024).map(|i| i as i64));

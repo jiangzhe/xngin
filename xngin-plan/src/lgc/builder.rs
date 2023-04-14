@@ -44,7 +44,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
     }
 
     #[inline]
-    pub fn build_plan(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<LgcPlan> {
+    pub fn build(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<LgcPlan> {
         let mut colgen = ColGen::default();
         let (root, _) = self.build_subquery(with, query, false, &mut colgen)?;
         Ok(LgcPlan {
