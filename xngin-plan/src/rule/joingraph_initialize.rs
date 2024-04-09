@@ -1,13 +1,13 @@
 use crate::error::{Error, Result};
 use crate::join::graph::{Edge, EdgeID, Graph, VertexSet};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::lgc::{Location, Op, OpMutVisitor, QuerySet};
+use crate::lgc::{Location, Op, OpKind, OpMutVisitor, QuerySet};
 use bitflags::bitflags;
 use indexmap::IndexMap;
 use std::collections::HashSet;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Expr, QueryID};
+use xngin_expr::{ExprKind, QueryID};
 
 bitflags! {
     struct Spec: u8 {
@@ -86,14 +86,14 @@ impl OpMutVisitor for InitGraph<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
-        match op {
-            Op::Join(join) => {
+        match &mut op.kind {
+            OpKind::Join(join) => {
                 let builder = BuildGraph::new(self.qry_set);
                 let graph = builder.build(join.as_mut()).branch()?;
-                *op = Op::join_graph(graph);
+                *op = Op::new(OpKind::join_graph(graph));
                 ControlFlow::Continue(())
             }
-            Op::Query(qry_id) => {
+            OpKind::Query(qry_id) => {
                 // no join in current tree, recursively detect all children
                 init_joingraph(self.qry_set, *qry_id).branch()
             }
@@ -147,7 +147,7 @@ impl BuildGraph<'_> {
                         // "a1 = c1" and added to the second join.
                         // This is a new edge we can use to directly join A and C.
                         // Join edge must has at least one equation between columns on both sides.
-                        let mut vset_conds: IndexMap<VertexSet, Vec<Expr>> = IndexMap::new();
+                        let mut vset_conds: IndexMap<VertexSet, Vec<ExprKind>> = IndexMap::new();
                         let mut tmp_qset = HashSet::new();
                         // inner join has no filter predicates.
                         assert!(filt.is_empty());
@@ -191,8 +191,8 @@ impl BuildGraph<'_> {
         l_vset: VertexSet,
         r_vset: VertexSet,
         mut e_vset: VertexSet,
-        cond: Vec<Expr>,
-        filt: Vec<Expr>,
+        cond: Vec<ExprKind>,
+        filt: Vec<ExprKind>,
     ) {
         e_vset |= self.update_elig_set(kind.left_spec(), l_vset, e_vset & l_vset);
         e_vset |= self.update_elig_set(kind.right_spec(), r_vset, e_vset & r_vset);
@@ -272,13 +272,19 @@ impl BuildGraph<'_> {
     fn process_jo(&mut self, jo: &mut JoinOp) -> Result<VertexSet> {
         let mut vset = VertexSet::default();
         match jo {
-            JoinOp(Op::Query(qry_id)) => {
+            JoinOp(Op {
+                kind: OpKind::Query(qry_id),
+                ..
+            }) => {
                 // recursively build join group in derived table
                 init_joingraph(self.qry_set, *qry_id)?;
                 let vid = self.graph.add_qry(*qry_id)?;
                 vset |= vid;
             }
-            JoinOp(Op::Join(join)) => {
+            JoinOp(Op {
+                kind: OpKind::Join(join),
+                ..
+            }) => {
                 // recursively add children to join graph
                 let child_vset = self.process_join(join.as_mut())?;
                 vset |= child_vset;

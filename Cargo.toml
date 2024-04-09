@@ -5,7 +5,6 @@ members = [
     "xngin-sql",
     "xngin-expr",
     "xngin-compute", 
-    "xngin-index",
     "xngin-plan",
     "xngin-protocol",
     "xngin-storage",

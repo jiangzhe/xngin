@@ -1,7 +1,7 @@
-use xngin_plan::phy::{PhyPlan, Phy, PhyKind};
-use xngin_plan::digraph::{DiGraph, NodeIndex};
-use xngin_protocol::mysql::error::{Error, Result};
 use crate::exec::ExecPlan;
+use xngin_plan::digraph::{DiGraph, NodeIndex};
+use xngin_plan::phy::{Phy, PhyKind, PhyPlan};
+use xngin_protocol::mysql::error::{Error, Result};
 // use xngin_storage::bitmap::{Bitmap, bitmap_u8s_set, bitmap_u8s_get};
 use std::collections::VecDeque;
 
@@ -14,28 +14,29 @@ pub struct ExecBuilder<'a> {
 impl<'a> ExecBuilder<'a> {
     #[inline]
     pub fn new(phy: &'a PhyPlan) -> Self {
-        ExecBuilder{
-            graph: &phy.graph, 
+        ExecBuilder {
+            graph: &phy.graph,
             start: phy.start.iter().cloned().collect(),
             end: phy.end,
         }
     }
 
-    /// Build 
+    /// Build
     #[inline]
     pub fn build(self) -> Result<ExecPlan> {
-        let Self{graph, mut start, end} = self;
+        let Self {
+            graph,
+            mut start,
+            end,
+        } = self;
         let mut nodes = VecDeque::new();
         while let Some(start_idx) = start.pop_front() {
-            let phy = graph.node(start_idx)
-                .ok_or(Error::InvalidExecutorState())?;
+            let phy = graph.node(start_idx).ok_or(Error::InvalidExecutorState())?;
             match &phy.kind {
-                PhyKind::Row(row) => {
-
-                }
+                PhyKind::Row(row) => {}
                 _ => return Err(Error::InvalidExecutorState()),
             }
         }
-        Ok(ExecPlan{nodes})
+        Ok(ExecPlan { nodes })
     }
 }

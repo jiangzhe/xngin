@@ -2,8 +2,9 @@ use crate::lgc::alias::QueryAliases;
 use fnv::FnvHashSet;
 use indexmap::IndexMap;
 use semistr::SemiStr;
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use xngin_expr::{ColIndex, Expr, QueryID};
+use xngin_expr::{ColIndex, ExprKind, GlobalID, QueryID};
 
 // Scopes is stack-like environment for query blocks.
 #[derive(Debug, Default)]
@@ -61,15 +62,15 @@ pub struct Scope {
     /// The converted query has a Proj operator upon Table operator,
     /// and no other operator or query involved.
     pub query_aliases: QueryAliases,
-    // output column list
-    // pub out_cols: Vec<(Expr, SmolStr)>,
-    // if set to true, unknown identifier can be passed to
-    // outer scope for search.
+    /// if set to true, unknown identifier can be passed to
+    /// outer scope for search.
     pub transitive: bool,
-    // Correlated variables in current scope.
+    /// Correlated variables in current scope.
     pub cor_vars: FnvHashSet<(QueryID, ColIndex)>,
-    // Correlated columns in current scope.
-    pub cor_cols: Vec<Expr>,
+    /// Correlated columns in current scope.
+    pub cor_cols: Vec<ExprKind>,
+    /// intra column information.
+    pub intra_cols: HashMap<GlobalID, ExprKind>,
 }
 
 impl Scope {

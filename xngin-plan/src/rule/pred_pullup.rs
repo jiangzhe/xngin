@@ -1,12 +1,12 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::lgc::{Op, OpMutVisitor, ProjCol, QuerySet};
+use crate::lgc::{Op, OpKind, OpMutVisitor, ProjCol, QuerySet};
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce, PartialExpr};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::{
-    Col, ColIndex, ColKind, Expr, ExprKind, ExprVisitor, FuncKind, GlobalID, Pred, PredFuncKind,
+    Col, ColIndex, ColKind, ExprKind, ExprVisitor, FuncKind, GlobalID, Pred, PredFuncKind,
     QueryCol, QueryID,
 };
 
@@ -52,7 +52,7 @@ struct PredPullup<'a> {
     // parent oprator
     p_preds: &'a mut HashMap<QueryCol, PartialExprSet>,
     // mapping current cols to parent cols
-    mapping: HashMap<QueryCol, Expr>,
+    mapping: HashMap<QueryCol, ExprKind>,
     // whether the parent columns have been translated.
     translated: bool,
     // current columns involved in current predicates.
@@ -107,7 +107,7 @@ impl<'a> PredPullup<'a> {
     }
 
     #[inline]
-    fn collect_p_preds(&mut self, c_preds: &[Expr]) -> Result<()> {
+    fn collect_p_preds(&mut self, c_preds: &[ExprKind]) -> Result<()> {
         if self.mapping.is_empty() || c_preds.is_empty() {
             return Ok(());
         }
@@ -124,7 +124,7 @@ impl<'a> PredPullup<'a> {
     }
 
     #[inline]
-    fn collect_c_cols(&mut self, c_preds: &[Expr]) {
+    fn collect_c_cols(&mut self, c_preds: &[ExprKind]) {
         if c_preds.is_empty() {
             return;
         }
@@ -145,30 +145,22 @@ impl<'a> PredPullup<'a> {
     #[inline]
     fn propagate_preds(
         &mut self,
-        conds: &[Expr],
+        conds: &[ExprKind],
     ) -> Vec<(GlobalID, QueryID, ColIndex, PartialExpr)> {
         let mut res = vec![];
         for c in conds {
-            if let ExprKind::Pred(Pred::Func { kind, args }) = &c.kind {
+            if let ExprKind::Pred(Pred::Func { kind, args }) = c {
                 if let (
                     PredFuncKind::Equal,
-                    [Expr {
-                        kind:
-                            ExprKind::Col(Col {
-                                gid: l_gid,
-                                kind: ColKind::QueryCol(l_qid),
-                                idx: l_idx,
-                            }),
-                        ..
-                    }, Expr {
-                        kind:
-                            ExprKind::Col(Col {
-                                gid: r_gid,
-                                kind: ColKind::QueryCol(r_qid),
-                                idx: r_idx,
-                            }),
-                        ..
-                    }],
+                    [ExprKind::Col(Col {
+                        gid: l_gid,
+                        kind: ColKind::Query(l_qid),
+                        idx: l_idx,
+                    }), ExprKind::Col(Col {
+                        gid: r_gid,
+                        kind: ColKind::Query(r_qid),
+                        idx: r_idx,
+                    })],
                 ) = (kind, &args[..])
                 {
                     if let Some(PartialExprSet(_, pes)) = self.c_preds.get(&(*l_qid, *l_idx)) {
@@ -193,25 +185,25 @@ impl OpMutVisitor for PredPullup<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
-        match op {
+        match &mut op.kind {
             // top down, translate parent cols to current cols, for first proj or aggr
-            Op::Proj { cols, .. } => {
-                self.translate_p_cols(cols);
+            OpKind::Proj { cols, .. } => {
+                self.translate_p_cols(cols.as_ref().unwrap());
             }
             // top down , translate parent cols
-            Op::Aggr(aggr) => {
+            OpKind::Aggr(aggr) => {
                 self.translate_p_cols(&aggr.proj);
                 // Here we do not collect c_cols because all predicates that
                 // can be pushed should have been pushed by rule pred pushdown.
                 // So remaining filters should contain aggf that can not be
                 // handled by current rule.
             }
-            Op::Filt { pred, .. } => {
+            OpKind::Filt { pred, .. } => {
                 // collect columns in filter predicates, which can be passed to
                 // child query to pull predicates
                 self.collect_c_cols(pred);
             }
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(_) => (),
                 Join::Qualified(QualifiedJoin {
                     kind,
@@ -248,7 +240,7 @@ impl OpMutVisitor for PredPullup<'_> {
                     _ => todo!(),
                 },
             },
-            Op::Query(qry_id) => {
+            OpKind::Query(qry_id) => {
                 // Here we collect all p_cols according to the child query id,
                 // and recursively call the predicate pullup.
                 let p_cols: HashMap<_, _> = self
@@ -264,47 +256,53 @@ impl OpMutVisitor for PredPullup<'_> {
                     .collect();
                 pullup_pred(self.qry_set, *qry_id, p_cols, &mut self.c_preds).branch()?;
             }
-            Op::Sort { .. }
-            | Op::Limit { .. }
-            | Op::Setop(_)
-            | Op::Attach(..)
-            | Op::Table(..)
-            | Op::JoinGraph(_)
-            | Op::Row(_)
-            | Op::Empty => (),
+            OpKind::Sort { .. }
+            | OpKind::Limit { .. }
+            | OpKind::Setop(_)
+            | OpKind::Attach(..)
+            | OpKind::Table(..)
+            | OpKind::JoinGraph(_)
+            | OpKind::Row(_)
+            | OpKind::Empty => (),
         }
         ControlFlow::Continue(())
     }
 
     #[inline]
     fn leave(&mut self, op: &mut Op) -> ControlFlow<Error> {
-        match op {
+        match &mut op.kind {
             // bottom up to Proj means all predicates in current tree are pulled up
             // but no Filt operator to gather them, so add one.
-            Op::Proj { input, .. } => {
+            OpKind::Proj { input, .. } => {
                 if !self.c_preds.is_empty() {
                     let mut pred = vec![];
                     for ((qid, idx), PartialExprSet(gid, pes)) in self.c_preds.drain() {
                         for pe in pes {
-                            let new_e = Expr::pred_func(
+                            let new_e = ExprKind::pred_func(
                                 pe.kind,
-                                vec![Expr::query_col(gid, qid, idx), Expr::new_const(pe.r_arg)],
+                                vec![
+                                    ExprKind::query_col(gid, qid, idx),
+                                    ExprKind::Const(pe.r_arg),
+                                ],
                             );
                             pred.push(new_e);
                         }
                     }
                     let old = mem::take(input);
-                    let filt = Op::Filt { pred, input: old };
+                    let filt = Op::new(OpKind::Filt { pred, input: old });
                     *input = Box::new(filt);
                 }
             }
-            Op::Aggr(aggr) => {
+            OpKind::Aggr(aggr) => {
                 if !self.c_preds.is_empty() {
                     for ((qid, idx), PartialExprSet(gid, pes)) in self.c_preds.drain() {
                         for pe in pes {
-                            let new_e = Expr::pred_func(
+                            let new_e = ExprKind::pred_func(
                                 pe.kind,
-                                vec![Expr::query_col(gid, qid, idx), Expr::new_const(pe.r_arg)],
+                                vec![
+                                    ExprKind::query_col(gid, qid, idx),
+                                    ExprKind::Const(pe.r_arg),
+                                ],
                             );
                             aggr.filt.push(new_e);
                         }
@@ -312,29 +310,35 @@ impl OpMutVisitor for PredPullup<'_> {
                 }
             }
             // bottom up and append all predicates to Filt
-            Op::Filt { pred, .. } => {
+            OpKind::Filt { pred, .. } => {
                 if !pred.is_empty() && !self.c_preds.is_empty() {
                     let new_preds = self.propagate_preds(pred);
                     for ((qid, idx), PartialExprSet(gid, pes)) in self.c_preds.drain() {
                         for pe in pes {
-                            let new_e = Expr::pred_func(
+                            let new_e = ExprKind::pred_func(
                                 pe.kind,
-                                vec![Expr::query_col(gid, qid, idx), Expr::new_const(pe.r_arg)],
+                                vec![
+                                    ExprKind::query_col(gid, qid, idx),
+                                    ExprKind::Const(pe.r_arg),
+                                ],
                             );
                             pred.push(new_e);
                         }
                     }
                     for (gid, qid, idx, pe) in new_preds {
-                        let new_e = Expr::pred_func(
+                        let new_e = ExprKind::pred_func(
                             pe.kind,
-                            vec![Expr::query_col(gid, qid, idx), Expr::new_const(pe.r_arg)],
+                            vec![
+                                ExprKind::query_col(gid, qid, idx),
+                                ExprKind::Const(pe.r_arg),
+                            ],
                         );
                         pred.push(new_e);
                     }
                 }
                 self.collect_p_preds(pred).branch()?;
             }
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(_) => (), // bypass cross join
                 // filt field in join is not processed, maybe enhance in future
                 Join::Qualified(QualifiedJoin {
@@ -366,11 +370,11 @@ impl OpMutVisitor for PredPullup<'_> {
                             // add right predicates to join condition, add others to c_preds
                             for (gid, qid, idx, pe) in new_preds {
                                 if r_qids.contains(&qid) {
-                                    let new_e = Expr::pred_func(
+                                    let new_e = ExprKind::pred_func(
                                         pe.kind,
                                         vec![
-                                            Expr::query_col(gid, qid, idx),
-                                            Expr::new_const(pe.r_arg),
+                                            ExprKind::query_col(gid, qid, idx),
+                                            ExprKind::Const(pe.r_arg),
                                         ],
                                     );
                                     cond.push(new_e);
@@ -395,15 +399,15 @@ impl OpMutVisitor for PredPullup<'_> {
                     _ => todo!(),
                 },
             },
-            Op::Sort { .. }
-            | Op::Limit { .. }
-            | Op::Setop(_)
-            | Op::Attach(..)
-            | Op::Table(..)
-            | Op::JoinGraph(_)
-            | Op::Query(_)
-            | Op::Row(_)
-            | Op::Empty => (),
+            OpKind::Sort { .. }
+            | OpKind::Limit { .. }
+            | OpKind::Setop(_)
+            | OpKind::Attach(..)
+            | OpKind::Table(..)
+            | OpKind::JoinGraph(_)
+            | OpKind::Query(_)
+            | OpKind::Row(_)
+            | OpKind::Empty => (),
         }
         ControlFlow::Continue(())
     }
@@ -411,7 +415,7 @@ impl OpMutVisitor for PredPullup<'_> {
 
 /// collect query columns in expression.
 #[inline]
-fn collect_non_aggr_qry_cols(e: &Expr, hs: &mut HashMap<QueryCol, GlobalID>) {
+fn collect_non_aggr_qry_cols(e: &ExprKind, hs: &mut HashMap<QueryCol, GlobalID>) {
     let mut c = CollectQryCols(hs);
     let _ = e.walk(&mut c);
 }
@@ -421,11 +425,11 @@ impl<'a> ExprVisitor<'a> for CollectQryCols<'_> {
     type Cont = ();
     type Break = ();
     #[inline]
-    fn leave(&mut self, e: &Expr) -> ControlFlow<()> {
-        match &e.kind {
+    fn leave(&mut self, e: &ExprKind) -> ControlFlow<()> {
+        match e {
             ExprKind::Col(Col {
                 gid,
-                kind: ColKind::QueryCol(qry_id),
+                kind: ColKind::Query(qry_id),
                 idx,
             }) => {
                 self.0.insert((*qry_id, *idx), *gid);
@@ -444,82 +448,61 @@ fn translate_col(
     p_gid: GlobalID,
     p_qid: QueryID,
     p_idx: ColIndex,
-    e: &Expr,
-) -> Option<(QueryCol, Expr)> {
-    let res = match &e.kind {
+    e: &ExprKind,
+) -> Option<(QueryCol, ExprKind)> {
+    let res = match e {
         ExprKind::Col(Col {
-            kind: ColKind::QueryCol(c_qid),
+            kind: ColKind::Query(c_qid),
             idx: c_idx,
             ..
         }) => {
             // direct mapping between columns: c_col -> p_col
-            let new_e = Expr::query_col(p_gid, p_qid, p_idx);
+            let new_e = ExprKind::query_col(p_gid, p_qid, p_idx);
             ((*c_qid, *c_idx), new_e)
         }
         ExprKind::Func { kind, args, .. } => match (kind, &args[..]) {
             (
                 FuncKind::Add,
-                [Expr {
-                    kind:
-                        ExprKind::Col(Col {
-                            kind: ColKind::QueryCol(c_qid),
-                            idx: c_idx,
-                            ..
-                        }),
+                [ExprKind::Col(Col {
+                    kind: ColKind::Query(c_qid),
+                    idx: c_idx,
                     ..
-                }, c @ Expr {
-                    kind: ExprKind::Const(_),
-                    ..
-                }],
+                }), c @ ExprKind::Const(_)],
             ) => {
                 // "p_col = c_col + const" => "c_col = p_col - const"
-                let new_e = Expr::func(
+                let new_e = ExprKind::func(
                     FuncKind::Sub,
-                    vec![Expr::query_col(p_gid, p_qid, p_idx), c.clone()],
+                    vec![ExprKind::query_col(p_gid, p_qid, p_idx), c.clone()],
                 );
                 ((*c_qid, *c_idx), new_e)
             }
             (
                 FuncKind::Sub,
-                [Expr {
-                    kind:
-                        ExprKind::Col(Col {
-                            kind: ColKind::QueryCol(c_qid),
-                            idx: c_idx,
-                            ..
-                        }),
+                [ExprKind::Col(Col {
+                    kind: ColKind::Query(c_qid),
+                    idx: c_idx,
                     ..
-                }, c @ Expr {
-                    kind: ExprKind::Const(_),
-                    ..
-                }],
+                }), c @ ExprKind::Const(_)],
             ) => {
                 // "p_col = c_col - const" => "c_col = p_col + const"
-                let new_e = Expr::func(
+                let new_e = ExprKind::func(
                     FuncKind::Add,
-                    vec![Expr::query_col(p_gid, p_qid, p_idx), c.clone()],
+                    vec![ExprKind::query_col(p_gid, p_qid, p_idx), c.clone()],
                 );
                 ((*c_qid, *c_idx), new_e)
             }
             (
                 FuncKind::Sub,
-                [c @ Expr {
-                    kind: ExprKind::Const(_),
+                [c @ ExprKind::Const(_), ExprKind::Col(Col {
+                    kind: ColKind::Query(c_qid),
+                    idx: c_idx,
                     ..
-                }, Expr {
-                    kind:
-                        ExprKind::Col(Col {
-                            kind: ColKind::QueryCol(c_qid),
-                            idx: c_idx,
-                            ..
-                        }),
-                    ..
-                }],
+                })],
             ) => {
                 // "p_col = const - c_col" => "c_col = const - p_col"
-                let new_e = Expr::func(
+                let new_e = ExprKind::func(
                     FuncKind::Sub,
-                    vec![c.clone(), Expr::query_col(p_gid, p_qid, p_idx)],
+                    vec![c.clone(), ExprKind::query_col(p_gid, p_qid, p_idx)],
                 );
                 ((*c_qid, *c_idx), new_e)
             }
@@ -534,13 +517,13 @@ fn translate_col(
 // todo: add in, between, like, regexp, etc.
 #[inline]
 fn translate_pred(
-    c_pred: &Expr,
-    mapping: &HashMap<QueryCol, Expr>,
+    c_pred: &ExprKind,
+    mapping: &HashMap<QueryCol, ExprKind>,
 ) -> Result<Option<(GlobalID, QueryID, ColIndex, PartialExpr)>> {
     let mut new_p = c_pred.clone();
-    let res = update_simplify_nested(&mut new_p, NullCoalesce::False, |e| match &e.kind {
+    let res = update_simplify_nested(&mut new_p, NullCoalesce::False, |e| match e {
         ExprKind::Col(Col {
-            kind: ColKind::QueryCol(qry_id),
+            kind: ColKind::Query(qry_id),
             idx,
             ..
         }) => {
@@ -554,7 +537,7 @@ fn translate_pred(
         _ => Ok(()),
     });
     match res {
-        Ok(_) => match &new_p.kind {
+        Ok(_) => match new_p {
             ExprKind::Pred(Pred::Func { kind, args }) => match (kind, &args[..]) {
                 (
                     PredFuncKind::Equal
@@ -563,21 +546,14 @@ fn translate_pred(
                     | PredFuncKind::Less
                     | PredFuncKind::LessEqual
                     | PredFuncKind::NotEqual,
-                    [Expr {
-                        kind:
-                            ExprKind::Col(Col {
-                                gid,
-                                kind: ColKind::QueryCol(qry_id),
-                                idx,
-                            }),
-                        ..
-                    }, Expr {
-                        kind: ExprKind::Const(c),
-                        ..
-                    }],
+                    [ExprKind::Col(Col {
+                        gid,
+                        kind: ColKind::Query(qry_id),
+                        idx,
+                    }), ExprKind::Const(c)],
                 ) => {
                     let partial_e = PartialExpr {
-                        kind: *kind,
+                        kind,
                         r_arg: c.clone(),
                     };
                     Ok(Some((*gid, *qry_id, *idx, partial_e)))

@@ -3,14 +3,17 @@ pub mod error;
 pub mod expr;
 pub mod fold;
 pub mod func;
-pub mod infer;
+pub mod id;
 pub mod pred;
 pub mod source;
+pub mod util;
 
 pub use crate::expr::*;
 pub use crate::func::*;
+pub use crate::id::*;
 pub use crate::pred::*;
 pub use crate::source::*;
+pub use crate::util::*;
 
 #[cfg(test)]
 mod tests {

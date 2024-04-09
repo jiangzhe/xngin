@@ -1,9 +1,11 @@
 use crate::join::graph::Edge;
 use crate::join::{Join, JoinGraph, QualifiedJoin};
-use crate::lgc::{Aggr, Apply, LgcPlan, Op, OpVisitor, QuerySet, Setop, SortItem};
+use crate::lgc::{
+    Aggr, Apply, LgcPlan, Op, OpKind, OpOutput, OpVisitor, QuerySet, Setop, SortItem,
+};
 use std::fmt::{self, Write};
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{AggKind, Col, ColKind, Const, Expr, ExprKind, Pred, QueryID, Setq};
+use xngin_expr::{AggKind, Col, ColKind, Const, ExprKind, Pred, QueryID, Setq};
 
 const INDENT: usize = 4;
 const BRANCH_1: char = '└';
@@ -52,46 +54,62 @@ impl Explain for LgcPlan {
 
 impl Explain for Op {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        match self {
-            Op::Proj { cols, .. } => {
-                f.write_str("Proj{")?;
-                write_refs(f, cols.iter().map(|c| &c.expr), ", ")?;
-                f.write_str("}")
+        match &self.kind {
+            OpKind::Proj { cols, .. } => {
+                if let OpOutput::Ref(cols) = &self.output {
+                    f.write_str("Proj{")?;
+                    write_refs(f, cols.iter().map(|c| &c.expr), ", ")?;
+                    f.write_str("}")
+                } else if let Some(cols) = cols {
+                    f.write_str("Proj{")?;
+                    write_refs(f, cols.iter().map(|c| &c.expr), ", ")?;
+                    f.write_str("}")
+                } else {
+                    return Err(fmt::Error);
+                }
             }
-            Op::Filt { pred, .. } => {
+            OpKind::Filt { pred, .. } => {
                 f.write_str("Filt{")?;
                 if !pred.is_empty() {
                     write_refs(f, pred, " and ")?;
                 }
                 f.write_char('}')
             }
-            Op::Aggr(aggr) => aggr.explain(f),
-            Op::Sort { items, .. } => {
+            OpKind::Aggr(aggr) => aggr.explain(f),
+            OpKind::Sort { items, .. } => {
                 f.write_str("Sort{")?;
                 write_refs(f, items, ", ")?;
                 f.write_char('}')
             }
-            Op::Join(join) => join.explain(f),
-            Op::JoinGraph(graph) => graph.explain(f),
-            Op::Setop(setop) => setop.explain(f),
-            Op::Limit { start, end, .. } => {
+            OpKind::Join(join) => join.explain(f),
+            OpKind::JoinGraph(graph) => graph.explain(f),
+            OpKind::Setop(setop) => setop.explain(f),
+            OpKind::Limit { start, end, .. } => {
                 write!(f, "Limit{{{}, {}}}", start, end)
             }
-            Op::Attach(_, qry_id) => {
+            OpKind::Attach(_, qry_id) => {
                 f.write_str("Attach{")?;
                 qry_id.explain(f)?;
                 f.write_char('}')
             }
-            Op::Row(row) => {
-                f.write_str("Row{")?;
-                write_refs(f, row.iter().map(|c| &c.expr), ", ")?;
-                f.write_char('}')
+            OpKind::Row(row) => {
+                if let OpOutput::Ref(row) = &self.output {
+                    f.write_str("Row{")?;
+                    write_refs(f, row.iter().map(|c| &c.expr), ", ")?;
+                    f.write_char('}')
+                } else if let Some(row) = row {
+                    f.write_str("Row{")?;
+                    write_refs(f, row.iter().map(|c| &c.expr), ", ")?;
+                    f.write_char('}')
+                } else {
+                    return Err(fmt::Error);
+                }
             }
-            Op::Table(_, table_id) => {
+            OpKind::Table(_, table_id) => {
                 write!(f, "Table{{{}}}", table_id.value())
             }
-            Op::Query(_) => f.write_str("(subquery todo)"),
-            Op::Empty => f.write_str("Empty"),
+            OpKind::Query(_) => f.write_str("(subquery todo)"),
+            OpKind::Empty => f.write_str("Empty"),
         }
     }
 }
@@ -109,9 +127,17 @@ impl Explain for SortItem {
 impl Explain for Aggr {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         f.write_str("Aggr{")?;
-        f.write_str("proj=[")?;
+        f.write_str("groups=[")?;
+        write_refs(f, &self.groups, ", ")?;
+        f.write_str("], proj=[")?;
         write_refs(f, self.proj.iter().map(|c| &c.expr), ", ")?;
-        f.write_str("]}")
+        if self.filt.is_empty() {
+            f.write_str("]}")
+        } else {
+            f.write_str("], filt=[")?;
+            write_refs(f, &self.filt, ", ")?;
+            f.write_str("]}")
+        }
     }
 }
 
@@ -212,9 +238,9 @@ impl Explain for Setop {
 
 /* Implements Explain for all expressions */
 
-impl Explain for Expr {
+impl Explain for ExprKind {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        match &self.kind {
+        match self {
             ExprKind::Const(c) => c.explain(f),
             ExprKind::Col(c) => c.explain(f),
             ExprKind::Aggf { kind, q, arg } => {
@@ -307,7 +333,7 @@ impl Explain for Const {
 impl Explain for Col {
     fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
         match &self.kind {
-            ColKind::TableCol(table_id, alias) => write!(
+            ColKind::Table(table_id, alias, _) => write!(
                 f,
                 "t{}.{}[{}]#{}",
                 table_id.value(),
@@ -315,17 +341,24 @@ impl Explain for Col {
                 self.idx.value(),
                 self.gid.value()
             ),
-            ColKind::QueryCol(query_id) => write!(
+            ColKind::Query(query_id) => write!(
                 f,
                 "q{}[{}]#{}",
                 query_id.value(),
                 self.idx.value(),
                 self.gid.value()
             ),
-            ColKind::CorrelatedCol(query_id) => write!(
+            ColKind::Correlated(query_id) => write!(
                 f,
                 "cq{}[{}]#{}",
                 query_id.value(),
+                self.idx.value(),
+                self.gid.value()
+            ),
+            ColKind::Intra(child_id) => write!(
+                f,
+                "i{}[{}]#{}",
+                child_id,
                 self.idx.value(),
                 self.gid.value()
             ),
@@ -441,7 +474,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<fmt::Error> {
         // special handling Subquery
-        if let Op::Query(query_id) = op {
+        if let OpKind::Query(query_id) = &op.kind {
             return if let Some(subq) = self.queries.get(query_id) {
                 let mut qe = QueryExplain {
                     title: Some(format!("(q{}) ", **query_id)),
@@ -454,7 +487,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
                 ControlFlow::Break(fmt::Error)
             };
         }
-        let child_cnt = op.inputs().len();
+        let child_cnt = op.kind.inputs().len();
         self.write_prefix().branch()?;
         // process at parent level
         if let Some(span) = self.spans.pop() {

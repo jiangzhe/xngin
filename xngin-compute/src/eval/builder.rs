@@ -6,10 +6,10 @@ use crate::logic::LogicKind;
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
 use xngin_datatype::PreciseType;
-use xngin_expr::{ColIndex, DataSourceID, Expr, ExprKind, FuncKind, Pred};
+use xngin_expr::{ColIndex, DataSourceID, ExprKind, FuncKind, Pred, TypeInfer, TypeInferer};
 
 #[derive(Debug)]
-pub(super) struct EvalBuilder<'a, T> {
+pub(super) struct EvalBuilder<'a, T, I> {
     input: Vec<(T, ColIndex)>,
     input_map: HashMap<InputKey<T>, (usize, PreciseType)>,
     // The third parameter is the base condition for current evaluation.
@@ -18,25 +18,28 @@ pub(super) struct EvalBuilder<'a, T> {
     // for some intermediate evaluation, there is no corresponding expression,
     // so we just store it in a separate map for reuse.
     eval_map: HashMap<EvalKey, usize>,
+    // type inferer
+    inferer: &'a mut I,
 }
 
-impl<'a, T> EvalBuilder<'a, T> {
+impl<'a, T, I> EvalBuilder<'a, T, I> {
     #[inline]
-    pub(super) fn new() -> Self {
+    pub(super) fn new(inferer: &'a mut I) -> Self {
         EvalBuilder {
             input: vec![],
             input_map: HashMap::new(),
             cache: vec![],
             expr_map: HashMap::new(),
             eval_map: HashMap::new(),
+            inferer,
         }
     }
 }
 
-impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
+impl<'a, T: DataSourceID, I: TypeInferer> EvalBuilder<'a, T, I> {
     /// Create evaluation plan with list of expression.
     #[inline]
-    pub fn build<I: IntoIterator<Item = &'a Expr>>(mut self, exprs: I) -> Result<EvalPlan<T>> {
+    pub fn build<E: IntoIterator<Item = &'a ExprKind>>(mut self, exprs: E) -> Result<EvalPlan<T>> {
         let mut output = vec![];
         for e in exprs {
             let (out, _) = self.find_ref(e, None)?;
@@ -52,10 +55,10 @@ impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
 
     /// Create evaluation plan with list of expression and filter.
     #[inline]
-    pub fn with_filter<I: IntoIterator<Item = &'a Expr>>(
+    pub fn with_filter<E: IntoIterator<Item = &'a ExprKind>>(
         mut self,
-        exprs: I,
-        filter: &'a Expr,
+        exprs: E,
+        filter: &'a ExprKind,
     ) -> Result<EvalPlan<T>> {
         let mut output = vec![];
         let (sel, _) = self.find_ref(filter, None)?;
@@ -74,7 +77,11 @@ impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
 
     /// Try to find evaluation ref from cache, if not exists, generate and store it.
     #[inline]
-    fn find_ref(&mut self, e: &'a Expr, base: Option<EvalRef>) -> Result<(EvalRef, PreciseType)> {
+    fn find_ref(
+        &mut self,
+        e: &'a ExprKind,
+        base: Option<EvalRef>,
+    ) -> Result<(EvalRef, PreciseType)> {
         // first search and generate column evaluation
         if let Some((dsid, idx)) = T::from_expr(e) {
             // here we can ignore condition because input is already computed,
@@ -85,9 +92,10 @@ impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
             }
             // otherwise, we should check input directly
             let in_idx = self.input.len();
-            self.input_map.insert(key, (in_idx, e.ty));
+            let ty = e.infer(self.inferer)?;
+            self.input_map.insert(key, (in_idx, ty));
             self.input.push((dsid, idx));
-            return Ok((EvalRef::Input(in_idx), e.ty));
+            return Ok((EvalRef::Input(in_idx), ty));
         }
         // otherwise, generate and store evaluation in cache
         self.gen_expr(e, base)
@@ -95,7 +103,11 @@ impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
 
     /// Generate evaluation based on expression and store it in cache.
     #[inline]
-    fn gen_expr(&mut self, e: &'a Expr, base: Option<EvalRef>) -> Result<(EvalRef, PreciseType)> {
+    fn gen_expr(
+        &mut self,
+        e: &'a ExprKind,
+        base: Option<EvalRef>,
+    ) -> Result<(EvalRef, PreciseType)> {
         let key = ExprKey::One(e, base);
         if let Some((idx, ty)) = self.expr_map.get(&key) {
             return Ok((EvalRef::Cache(*idx), *ty));
@@ -110,8 +122,8 @@ impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
 
     /// Generate evaluation by expression.
     #[inline]
-    fn gen(&mut self, e: &'a Expr, base: Option<EvalRef>) -> Result<Eval> {
-        let res = match &e.kind {
+    fn gen(&mut self, e: &'a ExprKind, base: Option<EvalRef>) -> Result<Eval> {
+        let res = match e {
             ExprKind::Col(_) => unreachable!(), // column should be resolved via input cache.
             // const evaluation always ignore condition.
             ExprKind::Const(c) => Eval::new_const(c.clone()),
@@ -119,17 +131,18 @@ impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
                 kind: FuncKind::Add,
                 args,
             } => {
+                let ty = e.infer(self.inferer)?;
                 let (l_ref, l_ty) = self.find_ref(&args[0], base)?;
                 let lhs = Eval::new_ref(l_ref, l_ty);
                 let (r_ref, r_ty) = self.find_ref(&args[1], base)?;
                 let rhs = Eval::new_ref(r_ref, r_ty);
-                Eval::arith(ArithKind::Add, lhs, rhs, e.ty)
+                Eval::arith(ArithKind::Add, lhs, rhs, ty)
             }
             // Conjunctive expression is different from others, due to the nature of conditional
             // evaluation.
             // Not all values are computed under the given cond.
             ExprKind::Pred(Pred::Conj(conjs)) => {
-                let conj_exprs: SmallVec<[&'a Expr; 2]> = conjs.iter().collect();
+                let conj_exprs: SmallVec<[&'a ExprKind; 2]> = conjs.iter().collect();
                 self.gen_conj(&conj_exprs, base)?
             }
             ExprKind::Pred(Pred::Func { kind, args }) => {
@@ -149,7 +162,7 @@ impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
     }
 
     #[inline]
-    fn gen_conj(&mut self, conj_exprs: &[&'a Expr], base: Option<EvalRef>) -> Result<Eval> {
+    fn gen_conj(&mut self, conj_exprs: &[&'a ExprKind], base: Option<EvalRef>) -> Result<Eval> {
         match conj_exprs.len() {
             0 | 1 => unreachable!(),
             2 => {
@@ -172,7 +185,7 @@ impl<'a, T: DataSourceID> EvalBuilder<'a, T> {
                 // e.g. If we have SQL: "SELECT a > 0 and b < 0, a > 0 and c < 0",
                 // The common expression "a > 0" can be generated only once and reused.
                 // The key must include base condition
-                let conj_exprs: SmallVec<[&'a Expr; 2]> = head.iter().copied().collect();
+                let conj_exprs: SmallVec<[&'a ExprKind; 2]> = head.iter().copied().collect();
                 let key = ExprKey::And(conj_exprs, base);
                 let lhs = if let Some((idx, _)) = self.expr_map.get(&key) {
                     EvalRef::Cache(*idx)
@@ -227,14 +240,14 @@ struct InputKey<T>(T, ColIndex);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ExprKey<'a> {
-    One(&'a Expr, Option<EvalRef>),
-    And(SmallVec<[&'a Expr; 2]>, Option<EvalRef>),
-    Or(SmallVec<[&'a Expr; 2]>, Option<EvalRef>),
+    One(&'a ExprKind, Option<EvalRef>),
+    And(SmallVec<[&'a ExprKind; 2]>, Option<EvalRef>),
+    Or(SmallVec<[&'a ExprKind; 2]>, Option<EvalRef>),
 }
 
 impl<'a> ExprKey<'a> {
     #[inline]
-    fn exprs(&self) -> SmallVec<[&'a Expr; 2]> {
+    fn exprs(&self) -> SmallVec<[&'a ExprKind; 2]> {
         match self {
             ExprKey::One(e, _) => smallvec![*e],
             ExprKey::And(es, _) | ExprKey::Or(es, _) => es.clone(),

@@ -25,6 +25,8 @@ pub enum Error {
     IndexOutOfBound,
     #[error("Invalid codec for selection")]
     InvalidCodecForSel,
+    #[error("{0}")]
+    ExpressionError(#[from] xngin_expr::error::Error),
 }
 
 impl From<StorageError> for Error {

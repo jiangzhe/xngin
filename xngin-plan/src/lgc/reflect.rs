@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::{self, Join, JoinKind, JoinOp};
 use crate::lgc::col::{AliasKind, ProjCol};
-use crate::lgc::op::{Op, SortItem};
+use crate::lgc::op::{Op, OpKind, OpOutput, SortItem};
 use crate::lgc::query::QuerySet;
 use crate::lgc::LgcPlan;
 use aosa::StringArena;
@@ -99,16 +99,23 @@ fn reflect_op<'a, C: Catalog>(
     op: &Op,
     catalog: &C,
 ) -> Result<AstOp<'a>> {
-    let res = match op {
-        Op::Proj { cols, input } => {
+    let res = match &op.kind {
+        OpKind::Proj { cols, input } => {
             let child = reflect_op(ctx, arena, qs, root, input, catalog)?;
+            let cols = if let Some(cols) = cols {
+                &cols[..]
+            } else if let OpOutput::Ref(output) = &op.output {
+                &output[..]
+            } else {
+                return Err(Error::InvalidPlanStructureForReflection);
+            };
             reflect_proj(ctx, arena, cols, qs, child, catalog)?
         }
-        Op::Filt { pred, input } => {
+        OpKind::Filt { pred, input } => {
             let child = reflect_op(ctx, arena, qs, root, input, catalog)?;
             reflect_filt(ctx, arena, pred, qs, child, catalog)?
         }
-        Op::Aggr(aggr) => {
+        OpKind::Aggr(aggr) => {
             let child = reflect_op(ctx, arena, qs, root, &aggr.input, catalog)?;
             reflect_aggr(
                 ctx,
@@ -121,8 +128,8 @@ fn reflect_op<'a, C: Catalog>(
                 catalog,
             )?
         }
-        Op::Join(join) => reflect_join(ctx, arena, qs, root, join, true, catalog)?,
-        Op::Sort {
+        OpKind::Join(join) => reflect_join(ctx, arena, qs, root, join, true, catalog)?,
+        OpKind::Sort {
             items,
             limit,
             input,
@@ -130,14 +137,21 @@ fn reflect_op<'a, C: Catalog>(
             let child = reflect_op(ctx, arena, qs, root, input, catalog)?;
             reflect_sort(ctx, arena, items, *limit, qs, child, catalog)?
         }
-        Op::Limit { start, end, input } => {
+        OpKind::Limit { start, end, input } => {
             let child = reflect_op(ctx, arena, qs, root, input, catalog)?;
             reflect_limit(*start, *end, child)?
         }
-        Op::Table(schema_id, tbl_id) => {
+        OpKind::Table(schema_id, tbl_id) => {
             reflect_table(ctx, arena, root, *schema_id, *tbl_id, catalog)?
         }
-        Op::Row(cols) => {
+        OpKind::Row(cols) => {
+            let cols = if let Some(cols) = cols {
+                &cols[..]
+            } else if let OpOutput::Ref(output) = &op.output {
+                &output[..]
+            } else {
+                return Err(Error::InvalidPlanStructureForReflection);
+            };
             let mut row = Vec::with_capacity(cols.len());
             for c in cols {
                 let e = transform_expr(ctx, arena, qs, &c.expr, catalog)?;
@@ -151,7 +165,7 @@ fn reflect_op<'a, C: Catalog>(
             }
             AstOp::SelectRow(row)
         }
-        Op::Query(qry_id) => reflect_query(ctx, arena, qs, *qry_id, catalog)?,
+        OpKind::Query(qry_id) => reflect_query(ctx, arena, qs, *qry_id, catalog)?,
         _ => todo!(),
     };
     Ok(res)
@@ -279,7 +293,7 @@ fn reflect_proj<'a, C: Catalog>(
 fn reflect_filt<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
-    preds: &[expr::Expr],
+    preds: &[expr::ExprKind],
     qs: &QuerySet,
     child: AstOp<'a>,
     catalog: &C,
@@ -417,9 +431,9 @@ fn reflect_filt<'a, C: Catalog>(
 fn reflect_aggr<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
-    groups: &[expr::Expr],
+    groups: &[expr::ExprKind],
     proj: &[ProjCol],
-    having: &[expr::Expr],
+    having: &[expr::ExprKind],
     qs: &QuerySet,
     child: AstOp<'a>,
     catalog: &C,
@@ -763,13 +777,13 @@ fn implicit_cross_join<'a, C: Catalog>(
 ) -> Result<Vec<TableRef<'a>>> {
     let mut tbls = Vec::with_capacity(jos.len());
     for jo in jos {
-        match jo.as_ref() {
-            Op::Join(_) => {
+        match &jo.as_ref().kind {
+            OpKind::Join(_) => {
                 // join inside cross join is not supported
                 tbls.clear();
                 return Ok(tbls);
             }
-            Op::Query(_) => {
+            OpKind::Query(_) => {
                 let tbl = reflect_join_op(ctx, arena, qs, root, jo, catalog)?;
                 tbls.push(tbl);
             }
@@ -824,8 +838,8 @@ fn reflect_join_op<'a, C: Catalog>(
     jo: &Op,
     catalog: &C,
 ) -> Result<TableRef<'a>> {
-    let res = match jo {
-        Op::Query(qry_id) => {
+    let res = match &jo.kind {
+        OpKind::Query(qry_id) => {
             let ast = reflect_query(ctx, arena, qs, *qry_id, catalog)?;
             match ast {
                 AstOp::Partial(AstPartial::TableScan {
@@ -843,7 +857,7 @@ fn reflect_join_op<'a, C: Catalog>(
                 _ => unreachable!(),
             }
         }
-        Op::Join(join) => match &**join {
+        OpKind::Join(join) => match &**join {
             Join::Cross(curr_jos) => {
                 // unfold nested cross joins
                 let ast = reflect_cross_join(ctx, arena, qs, root, curr_jos, false, catalog)?;
@@ -987,7 +1001,7 @@ fn transform_conj_preds<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
-    preds: &[expr::Expr],
+    preds: &[expr::ExprKind],
     catalog: &C,
 ) -> Result<Expr<'a>> {
     if preds.len() == 1 {
@@ -1002,7 +1016,7 @@ fn transform_exprs<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
-    exprs: &[expr::Expr],
+    exprs: &[expr::ExprKind],
     catalog: &C,
 ) -> Result<Vec<Expr<'a>>> {
     let mut res = Vec::with_capacity(exprs.len());
@@ -1034,21 +1048,22 @@ fn transform_expr<'a, C: Catalog>(
     ctx: &mut AstContext<'a>,
     arena: &'a StringArena,
     qs: &QuerySet,
-    expr: &expr::Expr,
+    expr: &ExprKind,
     catalog: &C,
 ) -> Result<Expr<'a>> {
-    let res = match &expr.kind {
+    let res = match expr {
         ExprKind::Const(c) => {
             let lit = transform_const(c, arena, &mut ctx.str_buf)?;
             Expr::Literal(lit)
         }
         ExprKind::Col(c) => match &c.kind {
-            ColKind::TableCol(_, col_name) => {
+            ColKind::Table(_, col_name, _) => {
                 let col_name = arena.add(col_name.as_str())?;
                 // just column name is enough, as table is its single source.
                 Expr::ColumnRef(vec![Ident::regular(col_name)])
             }
-            ColKind::QueryCol(qry_id) | ColKind::CorrelatedCol(qry_id) => {
+            ColKind::Intra(..) => todo!("cannot reflect intra column"),
+            ColKind::Query(qry_id) | ColKind::Correlated(qry_id) => {
                 let tbl_alias = ctx
                     .find_qry_alias(qry_id)
                     .ok_or(Error::QueryNotFound(*qry_id))?;
@@ -1274,7 +1289,7 @@ fn transform_func<'a, C: Catalog>(
     arena: &'a StringArena,
     qs: &QuerySet,
     kind: FuncKind,
-    args: &[expr::Expr],
+    args: &[expr::ExprKind],
     catalog: &C,
 ) -> Result<Expr<'a>> {
     let mut exprs = transform_exprs(ctx, arena, qs, args, catalog)?;
@@ -1332,7 +1347,7 @@ fn transform_aggf<'a, C: Catalog>(
     qs: &QuerySet,
     kind: expr::AggKind,
     q: expr::Setq,
-    arg: &expr::Expr,
+    arg: &expr::ExprKind,
     catalog: &C,
 ) -> Result<Expr<'a>> {
     let kind = match kind {

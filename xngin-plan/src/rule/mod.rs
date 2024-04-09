@@ -14,7 +14,8 @@ pub mod op_eliminate;
 pub mod outerjoin_reduce;
 pub mod pred_pullup;
 pub mod pred_pushdown;
-pub mod type_fix;
+// pub mod fix;
+// pub mod output_fix;
 
 pub use col_prune::col_prune;
 pub use derived_unfold::derived_unfold;
@@ -24,7 +25,7 @@ pub use op_eliminate::op_eliminate;
 pub use outerjoin_reduce::outerjoin_reduce;
 pub use pred_pullup::pred_pullup;
 pub use pred_pushdown::pred_pushdown;
-pub use type_fix::type_fix;
+// pub use fix::fix;
 
 bitflags! {
     pub struct RuleEffect: u8 {
@@ -63,24 +64,22 @@ pub fn rule_optimize_each(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()>
     for _ in 0..10 {
         match eff {
             RuleEffect::OPEXPR => {
-                eff = RuleEffect::NONE;
                 eff |= expr_simplify(qry_set, qry_id)?;
                 eff |= op_eliminate(qry_set, qry_id)?;
                 eff |= pred_pushdown(qry_set, qry_id)?;
             }
             RuleEffect::OP => {
-                eff = RuleEffect::NONE;
                 eff |= expr_simplify(qry_set, qry_id)?;
             }
             RuleEffect::EXPR => {
-                eff = RuleEffect::NONE;
                 eff |= pred_pushdown(qry_set, qry_id)?;
                 eff |= op_eliminate(qry_set, qry_id)?;
             }
             _ => break,
         }
+        eff = RuleEffect::NONE;
     }
-    joingraph_initialize(qry_set, qry_id)?;
+    final_rule_optimize(qry_set, qry_id)?;
     Ok(())
 }
 
@@ -92,6 +91,9 @@ pub fn init_rule_optimize(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<Rul
     eff |= col_prune(qry_set, qry_id)?; // onetime
                                         // Run expression simplify as second step, fold constants, normalize expressions.
     eff |= expr_simplify(qry_set, qry_id)?;
+    // todo: we should fix type before op eliminate because once operator is removed,
+    // we can not know anything about the output columns.
+    // eff |= type_fix(qry_set, qry_id)?;
     // Run operator eliminate after expression simplify, to remove unnecessary operators.
     eff |= op_eliminate(qry_set, qry_id)?;
     // Run outerjoin reduce to update join type top down.
@@ -107,4 +109,10 @@ pub fn init_rule_optimize(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<Rul
     // unfold derived tables to gather more tables to join graph.
     eff |= derived_unfold(qry_set, qry_id)?; // onetime
     Ok(eff)
+}
+
+#[inline]
+pub fn final_rule_optimize(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
+    joingraph_initialize(qry_set, qry_id)?;
+    Ok(())
 }

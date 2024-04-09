@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::lgc::{Op, OpMutVisitor, ProjCol, QryIDs, QuerySet};
+use crate::lgc::{Op, OpKind, OpMutVisitor, ProjCol, QryIDs, QuerySet};
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
 use std::collections::hash_map::Entry;
@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::Fold;
-use xngin_expr::{Col, ColKind, Const, Expr, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
+use xngin_expr::{Col, ColKind, Const, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Pushdown predicates.
 #[inline]
@@ -34,8 +34,8 @@ impl OpMutVisitor for PredPushdown<'_> {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
-        match op {
-            Op::Filt { pred, input } => {
+        match &mut op.kind {
+            OpKind::Filt { pred, input } => {
                 let mut fallback = vec![];
                 let mut exprs = mem::take(pred);
                 loop {
@@ -79,7 +79,7 @@ impl OpMutVisitor for PredPushdown<'_> {
                     }
                 }
             }
-            Op::Query(qry_id) => {
+            OpKind::Query(qry_id) => {
                 eff |= pushdown_pred(self.qry_set, *qry_id).branch()?;
             }
             _ => (),
@@ -100,11 +100,11 @@ impl<'a> ExprVisitor<'a> for ExprAttr {
     type Cont = ();
     type Break = ();
     #[inline]
-    fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
-        match &e.kind {
+    fn enter(&mut self, e: &ExprKind) -> ControlFlow<()> {
+        match e {
             ExprKind::Aggf { .. } => self.has_aggf = true,
             ExprKind::Col(Col {
-                kind: ColKind::QueryCol(qry_id),
+                kind: ColKind::Query(qry_id),
                 ..
             }) => match &mut self.qry_ids {
                 QryIDs::Empty => {
@@ -133,7 +133,7 @@ impl<'a> ExprVisitor<'a> for ExprAttr {
 
 #[derive(Clone)]
 struct ExprItem {
-    e: Expr,
+    e: ExprKind,
     // lazy field
     attr: Option<ExprAttr>,
     reject_nulls: Option<HashMap<QueryID, bool>>,
@@ -141,7 +141,7 @@ struct ExprItem {
 
 impl ExprItem {
     #[inline]
-    fn new(e: Expr) -> Self {
+    fn new(e: ExprKind) -> Self {
         ExprItem {
             e,
             attr: None,
@@ -165,12 +165,12 @@ impl ExprItem {
             let res = match reject_nulls.entry(qry_id) {
                 Entry::Occupied(occ) => *occ.get(),
                 Entry::Vacant(vac) => {
-                    let rn = self.e.clone().reject_null(|e| match &e.kind {
+                    let rn = self.e.clone().reject_null(|e| match e {
                         ExprKind::Col(Col {
-                            kind: ColKind::QueryCol(qid),
+                            kind: ColKind::Query(qid),
                             ..
                         }) if *qid == qry_id => {
-                            *e = Expr::const_null();
+                            *e = ExprKind::const_null();
                         }
                         _ => (),
                     })?;
@@ -181,12 +181,12 @@ impl ExprItem {
             Ok(res)
         } else {
             let mut reject_nulls = HashMap::new();
-            let rn = self.e.clone().reject_null(|e| match &e.kind {
+            let rn = self.e.clone().reject_null(|e| match e {
                 ExprKind::Col(Col {
-                    kind: ColKind::QueryCol(qid),
+                    kind: ColKind::Query(qid),
                     ..
                 }) if *qid == qry_id => {
-                    *e = Expr::const_null();
+                    *e = ExprKind::const_null();
                 }
                 _ => (),
             })?;
@@ -213,21 +213,21 @@ fn push_single(
     mut p: ExprItem,
 ) -> Result<(RuleEffect, Option<ExprItem>)> {
     let mut eff = RuleEffect::NONE;
-    let res = match op {
-        Op::Query(qry_id) => {
+    let res = match &mut op.kind {
+        OpKind::Query(qry_id) => {
             if let Some(subq) = qry_set.get(qry_id) {
                 p.rewrite(*qry_id, subq.out_cols());
                 // after rewriting, Simplify it before pushing
                 simplify_nested(&mut p.e, NullCoalesce::Null)?;
-                match &p.e.kind {
+                match &p.e {
                     ExprKind::Const(Const::Null) => {
-                        *op = Op::Empty;
+                        *op = Op::empty();
                         eff |= RuleEffect::OP;
                         return Ok((eff, None));
                     }
                     ExprKind::Const(c) => {
                         if c.is_zero().unwrap_or_default() {
-                            *op = Op::Empty;
+                            *op = Op::empty();
                             eff |= RuleEffect::OP;
                             return Ok((eff, None));
                         } else {
@@ -250,18 +250,18 @@ fn push_single(
             }
         }
         // Table always rejects
-        Op::Table(..) => Some(p),
+        OpKind::Table(..) => Some(p),
         // Empty just ignores
-        Op::Empty => None,
-        Op::Row(_) => todo!(), // todo: evaluate immediately
+        OpKind::Empty => None,
+        OpKind::Row(_) => todo!(), // todo: evaluate immediately
         // Proj/Sort/Limit/Attach will try pushing pred, and if fails just accept.
         // todo: pushdown to limit should be forbidden
-        Op::Proj { .. } | Op::Sort { .. } | Op::Limit { .. } | Op::Attach(..) => {
+        OpKind::Proj { .. } | OpKind::Sort { .. } | OpKind::Limit { .. } | OpKind::Attach(..) => {
             let (e, item) = push_or_accept(qry_set, op, p)?;
             eff |= e;
             item
         }
-        Op::Aggr(aggr) => {
+        OpKind::Aggr(aggr) => {
             if p.load_attr().has_aggf {
                 Some(p)
             } else {
@@ -274,12 +274,12 @@ fn push_single(
                 None
             }
         }
-        Op::Filt { pred, input } => match push_single(qry_set, input, p)? {
+        OpKind::Filt { pred, input } => match push_single(qry_set, input, p)? {
             (e, Some(p)) => {
                 eff |= e;
                 let mut old = mem::take(pred);
                 old.push(p.e);
-                let mut new = Expr::pred_conj(old);
+                let mut new = ExprKind::pred_conj(old);
                 eff |= simplify_nested(&mut new, NullCoalesce::False)?;
                 *pred = new.into_conj();
                 None
@@ -290,7 +290,7 @@ fn push_single(
                 None
             }
         },
-        Op::Setop(so) => {
+        OpKind::Setop(so) => {
             // push to both side and won't fail
             let (e, item) = push_single(qry_set, so.left.as_mut(), p.clone())?;
             assert!(item.is_none());
@@ -302,8 +302,8 @@ fn push_single(
             assert!(item.is_none());
             None
         }
-        Op::JoinGraph(_) => unreachable!("Predicates pushdown to join graph is not supported"),
-        Op::Join(join) => match join.as_mut() {
+        OpKind::JoinGraph(_) => unreachable!("Predicates pushdown to join graph is not supported"),
+        OpKind::Join(join) => match join.as_mut() {
             Join::Cross(jos) => {
                 if p.load_attr().has_aggf {
                     // do not push predicates with aggregate functions
@@ -688,11 +688,11 @@ fn push_or_accept(
     op: &mut Op,
     pred: ExprItem,
 ) -> Result<(RuleEffect, Option<ExprItem>)> {
-    let input = op.input_mut().unwrap(); // won't fail
+    let input = op.kind.input_mut().unwrap(); // won't fail
     match push_single(qry_set, input, pred)? {
         (eff, Some(pred)) => {
             let child = mem::take(input);
-            let new_filt = Op::filt(vec![pred.e], child);
+            let new_filt = Op::new(OpKind::filt(vec![pred.e], child));
             *input = new_filt;
             // as child reject it, we do not merge effect, as parent will update it
             Ok((eff, None))
@@ -710,12 +710,12 @@ impl ExprMutVisitor for RewriteOutExpr<'_> {
     type Cont = ();
     type Break = ();
     #[inline]
-    fn leave(&mut self, e: &mut Expr) -> ControlFlow<()> {
+    fn leave(&mut self, e: &mut ExprKind) -> ControlFlow<()> {
         if let ExprKind::Col(Col {
-            kind: ColKind::QueryCol(qry_id),
+            kind: ColKind::Query(qry_id),
             idx,
             ..
-        }) = &e.kind
+        }) = e
         {
             if *qry_id == self.qry_id {
                 let new_c = &self.out[idx.value() as usize];
@@ -785,8 +785,8 @@ mod tests {
                 pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
-                if let Op::Proj { input, .. } = &subq.root {
-                    assert!(matches!(input.as_ref(), Op::Empty));
+                if let OpKind::Proj { input, .. } = &subq.root.kind {
+                    assert!(input.is_empty());
                 }
             },
         );
@@ -797,8 +797,8 @@ mod tests {
                 pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 let subq = q1.root_query().unwrap();
-                if let Op::Proj { input, .. } = &subq.root {
-                    assert!(matches!(input.as_ref(), Op::Empty));
+                if let OpKind::Proj { input, .. } = &subq.root.kind {
+                    assert!(input.is_empty());
                 }
             },
         )

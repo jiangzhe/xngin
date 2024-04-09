@@ -194,39 +194,42 @@ impl EvalRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xngin_expr::infer::fix_rec;
-    use xngin_expr::{ColIndex, Expr, FuncKind, GlobalID, PredFuncKind, QueryID};
+    use xngin_expr::util::{TypeFix, TypeInferer};
+    use xngin_expr::{Col, ColIndex, ColKind, ExprKind, FuncKind, GlobalID, PredFuncKind, QueryID};
     use xngin_storage::attr::Attr;
     use xngin_storage::block::Block;
 
     #[test]
     fn test_build_eval() {
-        let col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
-        let col2 = Expr::query_col(GlobalID::from(2), QueryID::from(0), ColIndex::from(1));
+        let col1 = ExprKind::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
+        let col2 = ExprKind::query_col(GlobalID::from(2), QueryID::from(0), ColIndex::from(1));
         for (exprs, (n_input, n_cache, n_output)) in vec![
             // select c1
             (vec![col1.clone()], (1, 0, 1)),
             // select c1 + 1
             (
-                vec![Expr::func(
+                vec![ExprKind::func(
                     FuncKind::Add,
-                    vec![col1.clone(), Expr::new_const(Const::I64(1))],
+                    vec![col1.clone(), ExprKind::Const(Const::I64(1))],
                 )],
                 (1, 2, 1),
             ),
             // select c1 + c2
             (
-                vec![Expr::func(FuncKind::Add, vec![col1.clone(), col2.clone()])],
+                vec![ExprKind::func(
+                    FuncKind::Add,
+                    vec![col1.clone(), col2.clone()],
+                )],
                 (2, 1, 1),
             ),
             // select c1 + 1 + c2
             (
-                vec![Expr::func(
+                vec![ExprKind::func(
                     FuncKind::Add,
                     vec![
-                        Expr::func(
+                        ExprKind::func(
                             FuncKind::Add,
-                            vec![col1.clone(), Expr::new_const(Const::I64(1))],
+                            vec![col1.clone(), ExprKind::Const(Const::I64(1))],
                         ),
                         col2.clone(),
                     ],
@@ -238,31 +241,31 @@ mod tests {
             // select c1+1, c1+1
             (
                 vec![
-                    Expr::func(
+                    ExprKind::func(
                         FuncKind::Add,
-                        vec![col1.clone(), Expr::new_const(Const::I64(1))],
+                        vec![col1.clone(), ExprKind::Const(Const::I64(1))],
                     ),
-                    Expr::func(
+                    ExprKind::func(
                         FuncKind::Add,
-                        vec![col1.clone(), Expr::new_const(Const::I64(1))],
+                        vec![col1.clone(), ExprKind::Const(Const::I64(1))],
                     ),
                 ],
                 (1, 2, 2),
             ),
             // select c1 >= 0 and c1 <= 100 and c1 <> 10
             (
-                vec![Expr::pred_conj(vec![
-                    Expr::pred_func(
+                vec![ExprKind::pred_conj(vec![
+                    ExprKind::pred_func(
                         PredFuncKind::GreaterEqual,
-                        vec![col1.clone(), Expr::new_const(Const::I64(0))],
+                        vec![col1.clone(), ExprKind::Const(Const::I64(0))],
                     ),
-                    Expr::pred_func(
+                    ExprKind::pred_func(
                         PredFuncKind::LessEqual,
-                        vec![col1.clone(), Expr::new_const(Const::I64(100))],
+                        vec![col1.clone(), ExprKind::Const(Const::I64(100))],
                     ),
-                    Expr::pred_func(
+                    ExprKind::pred_func(
                         PredFuncKind::NotEqual,
-                        vec![col1.clone(), Expr::new_const(Const::I64(10))],
+                        vec![col1.clone(), ExprKind::Const(Const::I64(10))],
                     ),
                 ])],
                 // evals=["0", "c1>=0", AndThen(..), "100", "c1<=100", And(..), AndThen(..), "10", "c1<>10", And(..)]
@@ -282,8 +285,8 @@ mod tests {
         let attr1 = Attr::from((0..size).map(|i| i as i64));
         let attr2 = attr1.to_owned();
         let block = Block::new(1024, vec![attr1, attr2]);
-        let col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
-        let col2 = Expr::query_col(GlobalID::from(2), QueryID::from(0), ColIndex::from(1));
+        let col1 = ExprKind::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
+        let col2 = ExprKind::query_col(GlobalID::from(2), QueryID::from(0), ColIndex::from(1));
         // select c1
         let es = vec![col1.clone()];
         let plan = build_plan(es);
@@ -295,9 +298,9 @@ mod tests {
         let expected: Vec<_> = (0..1024).into_iter().map(|i| i as i64).collect();
         assert_eq!(&expected, data);
         // select c1 + 1
-        let es = vec![Expr::func(
+        let es = vec![ExprKind::func(
             FuncKind::Add,
-            vec![col1.clone(), Expr::new_const(Const::I64(1))],
+            vec![col1.clone(), ExprKind::Const(Const::I64(1))],
         )];
         let plan = build_plan(es);
         let res = plan.eval(&block).unwrap();
@@ -309,13 +312,13 @@ mod tests {
         assert_eq!(&expected, data);
         // select c1 + 1, c1 + 1
         let es = vec![
-            Expr::func(
+            ExprKind::func(
                 FuncKind::Add,
-                vec![col1.clone(), Expr::new_const(Const::I64(1))],
+                vec![col1.clone(), ExprKind::Const(Const::I64(1))],
             ),
-            Expr::func(
+            ExprKind::func(
                 FuncKind::Add,
-                vec![col1.clone(), Expr::new_const(Const::I64(1))],
+                vec![col1.clone(), ExprKind::Const(Const::I64(1))],
             ),
         ];
         let plan = build_plan(es);
@@ -331,7 +334,10 @@ mod tests {
         assert!(res[1].validity.is_all());
         assert_eq!(&expected, data);
         // select c1 + c2
-        let es = vec![Expr::func(FuncKind::Add, vec![col1.clone(), col2.clone()])];
+        let es = vec![ExprKind::func(
+            FuncKind::Add,
+            vec![col1.clone(), col2.clone()],
+        )];
         let plan = build_plan(es);
         let res = plan.eval(&block).unwrap();
         assert_eq!(1, res.len());
@@ -342,11 +348,11 @@ mod tests {
         assert_eq!(&expected, data);
         // select c1 + 1, c1 + c2
         let es = vec![
-            Expr::func(
+            ExprKind::func(
                 FuncKind::Add,
-                vec![col1.clone(), Expr::new_const(Const::I64(1))],
+                vec![col1.clone(), ExprKind::Const(Const::I64(1))],
             ),
-            Expr::func(FuncKind::Add, vec![col1.clone(), col2.clone()]),
+            ExprKind::func(FuncKind::Add, vec![col1.clone(), col2.clone()]),
         ];
         let plan = build_plan(es);
         let res = plan.eval(&block).unwrap();
@@ -362,18 +368,18 @@ mod tests {
         let expected: Vec<_> = (0..1024).into_iter().map(|i| (i + i) as i64).collect();
         assert_eq!(&expected, data);
         // select c1 >= 0 and c1 <= 100 and c1 <> 10
-        let es = vec![Expr::pred_conj(vec![
-            Expr::pred_func(
+        let es = vec![ExprKind::pred_conj(vec![
+            ExprKind::pred_func(
                 PredFuncKind::GreaterEqual,
-                vec![col1.clone(), Expr::new_const(Const::I64(0))],
+                vec![col1.clone(), ExprKind::Const(Const::I64(0))],
             ),
-            Expr::pred_func(
+            ExprKind::pred_func(
                 PredFuncKind::LessEqual,
-                vec![col1.clone(), Expr::new_const(Const::I64(100))],
+                vec![col1.clone(), ExprKind::Const(Const::I64(100))],
             ),
-            Expr::pred_func(
+            ExprKind::pred_func(
                 PredFuncKind::NotEqual,
-                vec![col1.clone(), Expr::new_const(Const::I64(10))],
+                vec![col1.clone(), ExprKind::Const(Const::I64(10))],
             ),
         ])];
         let plan = build_plan(es);
@@ -387,12 +393,12 @@ mod tests {
 
     #[test]
     fn test_sel_eval() {
-        let mut col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
-        fix_ty(&mut col1);
-        let mut filter =
-            Expr::pred_func(PredFuncKind::Equal, vec![col1.clone(), Expr::const_i64(0)]);
-        fix_ty(&mut filter);
-        let plan = QueryEvalPlan::with_filter(&[col1], &filter).unwrap();
+        let col1 = ExprKind::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
+        let filter = ExprKind::pred_func(
+            PredFuncKind::Equal,
+            vec![col1.clone(), ExprKind::const_i64(0)],
+        );
+        let plan = QueryEvalPlan::with_filter(&[col1], &filter, &mut IntColInferer).unwrap();
         assert_eq!(1, plan.input.len());
         assert_eq!(1, plan.output.len());
         let attr1 = Attr::from((0..1024).map(|i| i as i64));
@@ -409,16 +415,19 @@ mod tests {
 
     #[test]
     fn test_conj_eval() {
-        let mut col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
-        fix_ty(&mut col1);
-        let f1 = Expr::pred_func(
+        let col1 = ExprKind::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
+        let f1 = ExprKind::pred_func(
             PredFuncKind::Greater,
-            vec![col1.clone(), Expr::const_i64(0)],
+            vec![col1.clone(), ExprKind::const_i64(0)],
         );
-        let f2 = Expr::pred_func(PredFuncKind::Less, vec![col1.clone(), Expr::const_i64(10)]);
-        let mut filter = Expr::pred_conj(vec![f1, f2]);
-        fix_ty(&mut filter);
-        let plan: QueryEvalPlan = EvalBuilder::new().with_filter(&[col1], &filter).unwrap();
+        let f2 = ExprKind::pred_func(
+            PredFuncKind::Less,
+            vec![col1.clone(), ExprKind::const_i64(10)],
+        );
+        let filter = ExprKind::pred_conj(vec![f1, f2]);
+        let plan: QueryEvalPlan = EvalBuilder::new(&mut IntColInferer)
+            .with_filter(&[col1], &filter)
+            .unwrap();
         assert_eq!(1, plan.input.len());
         assert_eq!(1, plan.output.len());
         let attr1 = Attr::from((0..1024).map(|i| i as i64));
@@ -431,15 +440,24 @@ mod tests {
     }
 
     #[inline]
-    fn fix_ty(e: &mut Expr) {
-        fix_rec(e, |_, _| Some(PreciseType::i64())).unwrap();
+    fn build_plan(mut exprs: Vec<ExprKind>) -> QueryEvalPlan {
+        let mut inferer = IntColInferer;
+        for e in &mut exprs {
+            e.fix(&mut inferer).unwrap();
+        }
+        QueryEvalPlan::new(&exprs, &mut inferer).unwrap()
     }
 
-    #[inline]
-    fn build_plan(mut exprs: Vec<Expr>) -> QueryEvalPlan {
-        for e in &mut exprs {
-            fix_ty(e);
+    struct IntColInferer;
+    impl TypeInferer for IntColInferer {
+        fn confirm(&mut self, e: &ExprKind) -> Option<PreciseType> {
+            match e {
+                ExprKind::Col(Col { kind, .. }) => match kind {
+                    ColKind::Query(..) | ColKind::Correlated(..) => Some(PreciseType::i64()),
+                    _ => None,
+                },
+                _ => None,
+            }
         }
-        QueryEvalPlan::new(&exprs).unwrap()
     }
 }

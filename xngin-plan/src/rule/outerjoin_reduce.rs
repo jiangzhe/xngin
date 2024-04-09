@@ -1,13 +1,13 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, QualifiedJoin};
-use crate::lgc::{Location, Op, OpMutVisitor, ProjCol, QuerySet};
+use crate::lgc::{Location, Op, OpKind, OpMutVisitor, ProjCol, QuerySet};
 use crate::rule::expr_simplify::{simplify_single, NullCoalesce};
 use crate::rule::RuleEffect;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::Fold;
-use xngin_expr::{Col, ColKind, Expr, ExprKind, ExprMutVisitor, QueryID};
+use xngin_expr::{Col, ColKind, ExprKind, ExprMutVisitor, QueryID};
 
 /// Reduce outer join based on predicate analysis.
 /// This rule recognize null rejecting predicates in advance
@@ -23,7 +23,7 @@ pub fn outerjoin_reduce(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleE
 fn reduce_outerjoin(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
-    rn_map: Option<&HashMap<QueryID, Vec<Expr>>>,
+    rn_map: Option<&HashMap<QueryID, Vec<ExprKind>>>,
 ) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, loc, op| {
         if loc != Location::Intermediate {
@@ -47,7 +47,7 @@ fn reduce_outerjoin(
 
 struct Reduce<'a> {
     qry_set: &'a mut QuerySet,
-    rn_map: &'a mut HashMap<QueryID, Vec<Expr>>,
+    rn_map: &'a mut HashMap<QueryID, Vec<ExprKind>>,
 }
 
 impl OpMutVisitor for Reduce<'_> {
@@ -56,13 +56,13 @@ impl OpMutVisitor for Reduce<'_> {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
-        match op {
-            Op::Filt { pred, .. } => analyze_conj_preds(pred, self.rn_map).branch()?,
-            Op::Aggr(aggr) => analyze_conj_preds(&aggr.filt, self.rn_map).branch()?,
-            Op::Query(qry_id) => {
+        match &mut op.kind {
+            OpKind::Filt { pred, .. } => analyze_conj_preds(pred, self.rn_map).branch()?,
+            OpKind::Aggr(aggr) => analyze_conj_preds(&aggr.filt, self.rn_map).branch()?,
+            OpKind::Query(qry_id) => {
                 eff |= reduce_outerjoin(self.qry_set, *qry_id, Some(self.rn_map)).branch()?;
             }
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(_) => (), // do not operate on cross join
                 Join::Qualified(QualifiedJoin {
                     kind,
@@ -161,23 +161,26 @@ impl OpMutVisitor for Reduce<'_> {
                     }
                 }
             },
-            Op::JoinGraph(_) => {
+            OpKind::JoinGraph(_) => {
                 unreachable!("Outerjoin reduce should be applied before initializing join graph")
             }
-            Op::Proj { .. }
-            | Op::Sort { .. }
-            | Op::Limit { .. }
-            | Op::Empty
-            | Op::Setop(_)
-            | Op::Attach(..) => (),
-            Op::Table(..) | Op::Row(_) => unreachable!(),
+            OpKind::Proj { .. }
+            | OpKind::Sort { .. }
+            | OpKind::Limit { .. }
+            | OpKind::Empty
+            | OpKind::Setop(_)
+            | OpKind::Attach(..) => (),
+            OpKind::Table(..) | OpKind::Row(_) => unreachable!(),
         }
         ControlFlow::Continue(eff)
     }
 }
 
 #[inline]
-fn analyze_conj_preds(exprs: &[Expr], rn_map: &mut HashMap<QueryID, Vec<Expr>>) -> Result<()> {
+fn analyze_conj_preds(
+    exprs: &[ExprKind],
+    rn_map: &mut HashMap<QueryID, Vec<ExprKind>>,
+) -> Result<()> {
     if exprs.is_empty() {
         return Ok(());
     }
@@ -199,9 +202,9 @@ fn analyze_conj_preds(exprs: &[Expr], rn_map: &mut HashMap<QueryID, Vec<Expr>>) 
 #[inline]
 fn translate_rn_exprs(
     qry_id: QueryID,
-    exprs: &[Expr],
+    exprs: &[ExprKind],
     mapping: &[ProjCol],
-) -> Result<HashMap<QueryID, Vec<Expr>>> {
+) -> Result<HashMap<QueryID, Vec<ExprKind>>> {
     let mut res = HashMap::new();
     let mut tmp = HashSet::new();
     for e in exprs {
@@ -229,16 +232,16 @@ fn translate_rn_exprs(
 }
 
 #[inline]
-pub(crate) fn reject_null_single(expr: &Expr, qry_id: QueryID) -> Result<bool> {
+pub(crate) fn reject_null_single(expr: &ExprKind, qry_id: QueryID) -> Result<bool> {
     expr.clone()
         .reject_null(|e| {
             if let ExprKind::Col(Col {
-                kind: ColKind::QueryCol(qid),
+                kind: ColKind::Query(qid),
                 ..
-            }) = &e.kind
+            }) = e
             {
                 if *qid == qry_id {
-                    *e = Expr::const_null();
+                    *e = ExprKind::const_null();
                 }
             }
         })
@@ -260,12 +263,12 @@ impl ExprMutVisitor for TransformCollectSimplify<'_> {
     type Cont = ();
     type Break = Error;
     #[inline]
-    fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+    fn enter(&mut self, e: &mut ExprKind) -> ControlFlow<Error> {
         if let ExprKind::Col(Col {
-            kind: ColKind::QueryCol(qry_id),
+            kind: ColKind::Query(qry_id),
             idx,
             ..
-        }) = &e.kind
+        }) = e
         {
             if *qry_id == self.old {
                 let mut new_e = self.mapping[idx.value() as usize].expr.clone();
@@ -277,10 +280,10 @@ impl ExprMutVisitor for TransformCollectSimplify<'_> {
     }
 
     #[inline]
-    fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error> {
-        match &e.kind {
+    fn leave(&mut self, e: &mut ExprKind) -> ControlFlow<Error> {
+        match e {
             ExprKind::Col(Col {
-                kind: ColKind::QueryCol(qry_id),
+                kind: ColKind::Query(qry_id),
                 ..
             }) => {
                 self.new_ids.insert(*qry_id);

@@ -1,11 +1,11 @@
 use crate::error::{Error, Result};
-use crate::lgc::{Location, Op, OpMutVisitor, OpVisitor, ProjCol, QuerySet, Subquery};
+use crate::lgc::{Location, Op, OpKind, OpMutVisitor, OpVisitor, ProjCol, QuerySet, Subquery};
 use crate::rule::RuleEffect;
 use fnv::FnvHashMap;
 use std::collections::BTreeMap;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, ColIndex, ColKind, Expr, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
+use xngin_expr::{Col, ColIndex, ColKind, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Column pruning will remove unnecessary columns from the given plan.
 /// It is invoked top down. First collect all output columns from current
@@ -27,8 +27,6 @@ fn prune_col(
             // skip other types of queries
             return Ok(RuleEffect::NONE);
         }
-        // let mut curr_use_set = FnvHashMap::default();
-        // let mut c = Collect(&mut curr_use_set);
         let mut c = Collect(use_set);
         let _ = subq.root.walk(&mut c);
         // add variables used in correlated subqueries
@@ -39,12 +37,7 @@ fn prune_col(
                 .or_default()
                 .insert(*idx, ColIndex::from(0));
         }
-        // update_use_set(&mut curr_use_set);
         update_use_set(use_set);
-        // merge into global use set
-        // for (k, v) in curr_use_set {
-        //     use_set.insert(k, v);
-        // }
         let mut op = mem::take(&mut subq.root);
         let mut m = Modify { qry_set, use_set };
         let res = op.walk_mut(&mut m).unbranch();
@@ -61,7 +54,7 @@ impl OpVisitor for Collect<'_> {
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-        for e in op.exprs() {
+        for e in op.kind.exprs() {
             let _ = e.walk(self);
         }
         ControlFlow::Continue(())
@@ -71,12 +64,12 @@ impl<'a> ExprVisitor<'a> for Collect<'_> {
     type Cont = ();
     type Break = ();
     #[inline]
-    fn enter(&mut self, e: &Expr) -> ControlFlow<()> {
+    fn enter(&mut self, e: &ExprKind) -> ControlFlow<()> {
         if let ExprKind::Col(Col {
-            kind: ColKind::QueryCol(qry_id),
+            kind: ColKind::Query(qry_id),
             idx,
             ..
-        }) = &e.kind
+        }) = e
         {
             self.0
                 .entry(*qry_id)
@@ -97,11 +90,10 @@ impl OpMutVisitor for Modify<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        match op {
-            Op::Query(qry_id) => {
+        match &mut op.kind {
+            OpKind::Query(qry_id) => {
                 // modify child query, we do not count the deletion of expression as effect
                 let mapping = self.use_set.get(qry_id);
-                println!("use_set in modify is {:?}", self.use_set);
                 self.qry_set
                     .transform_subq(*qry_id, |subq| modify_subq(subq, mapping))
                     .branch()?;
@@ -110,7 +102,7 @@ impl OpMutVisitor for Modify<'_> {
             }
             _ => {
                 let mut eff = RuleEffect::NONE;
-                for e in op.exprs_mut() {
+                for e in op.kind.exprs_mut() {
                     eff |= e.walk_mut(self)?;
                 }
                 ControlFlow::Continue(eff)
@@ -123,16 +115,16 @@ impl ExprMutVisitor for Modify<'_> {
     type Cont = RuleEffect;
     type Break = Error;
     #[inline]
-    fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
+    fn enter(&mut self, e: &mut ExprKind) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
-        match &mut e.kind {
+        match e {
             ExprKind::Col(Col {
-                kind: ColKind::QueryCol(qry_id),
+                kind: ColKind::Query(qry_id),
                 idx,
                 ..
             })
             | ExprKind::Col(Col {
-                kind: ColKind::CorrelatedCol(qry_id),
+                kind: ColKind::Correlated(qry_id),
                 idx,
                 ..
             }) => {
@@ -153,15 +145,15 @@ impl ExprMutVisitor for Modify<'_> {
 
 #[inline]
 fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<ColIndex, ColIndex>>) {
-    match &mut subq.root {
-        Op::Proj { cols, .. } => {
-            *cols = retain(mem::take(cols), mapping);
+    match &mut subq.root.kind {
+        OpKind::Proj { cols, .. } => {
+            *cols = Some(retain(cols.take().unwrap(), mapping));
         }
-        Op::Aggr(aggr) => {
+        OpKind::Aggr(aggr) => {
             aggr.proj = retain(mem::take(&mut aggr.proj), mapping);
         }
-        Op::Row(row) => {
-            *row = retain(mem::take(row), mapping);
+        OpKind::Row(row) => {
+            *row = Some(retain(row.take().unwrap(), mapping));
         }
         _ => {
             let cols: Vec<_> = if let Some(mapping) = mapping {
@@ -181,7 +173,7 @@ fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<ColIndex, ColIndex
                 vec![]
             };
             let old = mem::take(&mut subq.root);
-            subq.root = Op::proj(cols, old);
+            subq.root = Op::new(OpKind::proj(cols, old));
         }
     }
 }
@@ -470,5 +462,15 @@ mod tests {
                 assert_eq!(1, subq[0].out_cols().len());
             },
         )
+    }
+
+    #[test]
+    fn test_col_prune_sort() {
+        assert_j_plan("select c0 from t1 order by c1", |sql, mut plan| {
+            col_prune(&mut plan.qry_set, plan.root).unwrap();
+            print_plan(sql, &plan);
+            // let subq = get_lvl_queries(&plan, 2);
+            // assert_eq!(1, subq[0].out_cols().len());
+        })
     }
 }

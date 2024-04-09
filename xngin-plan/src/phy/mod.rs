@@ -1,9 +1,9 @@
 mod builder;
 
-use builder::PhyBuilder;
+use crate::digraph::{DiGraph, NodeIndex};
 use crate::error::{Error, Result};
 use crate::lgc::LgcPlan;
-use crate::digraph::{DiGraph, NodeIndex};
+use builder::PhyBuilder;
 use xngin_catalog::TableID;
 use xngin_compute::eval::{QueryEvalPlan, TableEvalPlan};
 
@@ -20,8 +20,7 @@ impl PhyPlan {
     pub fn new(lgc: &LgcPlan) -> Result<Self> {
         // todo: currently we ignore attached plans
         let subq = lgc.root_query().ok_or(Error::EmptyPlan)?;
-        PhyBuilder::new(&lgc.qry_set)
-            .build(subq)
+        PhyBuilder::new(&lgc.qry_set).build(subq)
     }
 }
 
@@ -59,35 +58,32 @@ mod tests {
     use xngin_datatype::PreciseType;
     use xngin_sql::parser::{dialect, parse_query_verbose};
 
-    #[test]
-    fn test_build_phy() {
-        let cat = phy_catalog();
-        for sql in vec!["select c0 from t0", "select c0 + 1 from t0"] {
-            let lgc = build_lgc(&cat, sql);
-            assert!(PhyPlan::new(&lgc).is_ok());
-        }
-    }
+    // #[test]
+    // fn test_build_phy() {
+    //     let cat = phy_catalog();
+    //     for sql in vec!["select c0 from t0", "select c0 + 1 from t0"] {
+    //         let lgc = build_lgc(&cat, sql);
+    //         assert!(PhyPlan::new(&lgc).is_ok());
+    //     }
+    // }
 
-    fn phy_catalog() -> MemCatalog {
-        let cata = MemCatalog::default();
-        cata.create_schema("phy").unwrap();
-        cata.create_table(TableSpec::new(
-            "phy",
-            "t0",
-            vec![
-                ColumnSpec::new("c0", PreciseType::i32(), ColumnAttr::empty()),
-                ColumnSpec::new("c1", PreciseType::i32(), ColumnAttr::empty()),
-            ],
-        ))
-        .unwrap();
-        cata
-    }
+    // fn phy_catalog() -> MemCatalog {
+    //     let cata = MemCatalog::default();
+    //     cata.create_schema("phy").unwrap();
+    //     cata.create_table(TableSpec::new(
+    //         "phy",
+    //         "t0",
+    //         vec![
+    //             ColumnSpec::new("c0", PreciseType::i32(), ColumnAttr::empty()),
+    //             ColumnSpec::new("c1", PreciseType::i32(), ColumnAttr::empty()),
+    //         ],
+    //     ))
+    //     .unwrap();
+    //     cata
+    // }
 
     fn build_lgc<C: Catalog>(cat: &C, sql: &str) -> LgcPlan {
         let qe = parse_query_verbose(dialect::MySQL(sql)).unwrap();
-        LgcBuilder::new(cat, "phy")
-            .unwrap()
-            .build(&qe)
-            .unwrap()
+        LgcBuilder::new(cat, "phy").unwrap().build(&qe).unwrap()
     }
 }

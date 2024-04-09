@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinOp};
 use crate::lgc::col::{AliasKind, ProjCol};
-use crate::lgc::op::{Op, OpMutVisitor, OpVisitor};
+use crate::lgc::op::{Op, OpKind, OpMutVisitor, OpVisitor};
 use crate::lgc::scope::Scope;
 use fnv::FnvHashMap;
 use std::collections::HashSet;
@@ -39,7 +39,7 @@ impl Subquery {
     /// Construct an empty subquery, which will be updated immediately.
     pub fn empty() -> Self {
         Subquery {
-            root: Op::Empty,
+            root: Op::empty(),
             scope: Scope::default(),
             location: Location::Disk,
         }
@@ -55,14 +55,19 @@ impl Subquery {
         }
     }
 
+    /// Returns output columns of this subquery.
     #[inline]
     pub fn out_cols(&self) -> &[ProjCol] {
         self.root.out_cols().unwrap()
     }
 
+    /// Returns mutable output columns of this subquery.
+    ///
+    /// Note: if this method is called after output fix optimization is done.
+    /// it will return None.
     #[inline]
-    pub fn out_cols_mut(&mut self) -> &mut [ProjCol] {
-        self.root.out_cols_mut().unwrap()
+    pub fn out_cols_mut(&mut self) -> Option<&mut Vec<ProjCol>> {
+        self.root.out_cols_mut()
     }
 
     #[inline]
@@ -80,8 +85,8 @@ impl Subquery {
             type Cont = ();
             type Break = ();
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-                match op {
-                    Op::Table(schema_id, table_id) => {
+                match &op.kind {
+                    OpKind::Table(schema_id, table_id) => {
                         self.0 = Some((*schema_id, *table_id));
                         ControlFlow::Break(())
                     }
@@ -230,14 +235,14 @@ struct UpsertQuery<'a> {
 impl UpsertQuery<'_> {
     #[inline]
     fn modify_join_op(&mut self, jo: &mut JoinOp) {
-        match jo.as_mut() {
-            Op::Query(query_id) => {
+        match &mut jo.as_mut().kind {
+            OpKind::Query(query_id) => {
                 let query = self.qs.get(query_id).cloned().unwrap(); // won't fail
                 let new_query_id = self.qs.upsert_query(query);
                 self.mapping.insert(*query_id, new_query_id);
                 *query_id = new_query_id;
             }
-            Op::Join(j) => {
+            OpKind::Join(j) => {
                 self.modify_join(j);
             }
             _ => unreachable!(),
@@ -265,15 +270,15 @@ impl<'a> OpMutVisitor for UpsertQuery<'a> {
     type Break = ();
     #[inline]
     fn leave(&mut self, op: &mut Op) -> ControlFlow<()> {
-        match op {
-            Op::Query(query_id) => {
+        match &mut op.kind {
+            OpKind::Query(query_id) => {
                 // only perform additional copy to subquery
                 let query = self.qs.get(query_id).cloned().unwrap(); // won't fail
                 let new_query_id = self.qs.upsert_query(query);
                 self.mapping.insert(*query_id, new_query_id);
                 *query_id = new_query_id;
             }
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(cj) => {
                     for jo in cj {
                         self.modify_join_op(jo)

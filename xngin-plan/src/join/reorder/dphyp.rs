@@ -3,7 +3,7 @@ use crate::join::estimate::Estimate;
 use crate::join::graph::{Edge, EdgeID, Graph, VertexID, VertexSet};
 use crate::join::reorder::{JoinEdge, Reorder, Tree};
 use crate::join::{JoinKind, JoinOp};
-use crate::lgc::Op;
+use crate::lgc::{Op, OpKind};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
@@ -296,7 +296,7 @@ fn build_join_tree(
         Tree::Single { .. } => {
             let vid = vset.single().unwrap();
             let qid = graph.vid_to_qid(vid)?;
-            Ok(Op::Query(qid))
+            Ok(Op::new(OpKind::Query(qid)))
         }
         Tree::Join(JoinEdge {
             l_vset,
@@ -310,13 +310,13 @@ fn build_join_tree(
             let right = build_join_tree(graph, best_plans, *r_vset, r_tree)?;
             let cond: Vec<_> = graph.preds(edge.cond.clone()).cloned().collect();
             let filt: Vec<_> = graph.preds(edge.filt.clone()).cloned().collect();
-            let op = Op::qualified_join(
+            let op = Op::new(OpKind::qualified_join(
                 edge.kind,
                 JoinOp::try_from(left)?,
                 JoinOp::try_from(right)?,
                 cond,
                 filt,
-            );
+            ));
             Ok(op)
         }
     }

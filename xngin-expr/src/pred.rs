@@ -1,24 +1,27 @@
-use crate::expr::Expr;
+use crate::expr::ExprKind;
 
 /// Predicate represents filter conditions in conjunctive form.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Pred {
-    Conj(Vec<Expr>),
-    Disj(Vec<Expr>),
-    Xor(Vec<Expr>),
+    Conj(Vec<ExprKind>),
+    Disj(Vec<ExprKind>),
+    Xor(Vec<ExprKind>),
     // Wrapped expression must return bool.
     // It can be achieved by adding cast function.
-    Func { kind: PredFuncKind, args: Vec<Expr> },
-    Not(Box<Expr>),
-    InSubquery(Box<Expr>, Box<Expr>),
-    NotInSubquery(Box<Expr>, Box<Expr>),
-    Exists(Box<Expr>),
-    NotExists(Box<Expr>),
+    Func {
+        kind: PredFuncKind,
+        args: Vec<ExprKind>,
+    },
+    Not(Box<ExprKind>),
+    InSubquery(Box<ExprKind>, Box<ExprKind>),
+    NotInSubquery(Box<ExprKind>, Box<ExprKind>),
+    Exists(Box<ExprKind>),
+    NotExists(Box<ExprKind>),
 }
 
 impl Pred {
     #[inline]
-    pub fn func(kind: PredFuncKind, args: Vec<Expr>) -> Self {
+    pub fn func(kind: PredFuncKind, args: Vec<ExprKind>) -> Self {
         debug_assert_eq!(kind.n_args(), args.len());
         Pred::Func { kind, args }
     }
