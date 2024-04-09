@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
-use crate::lgc::op::Op;
+use crate::lgc::op::{Op, OpKind};
+use std::ops::{Deref, DerefMut};
 use xngin_expr::{QueryID, Setq};
 
 #[derive(Debug, Clone)]
@@ -37,14 +38,10 @@ impl SetopKind {
 pub struct SubqOp(Op);
 
 impl SubqOp {
+    // create a new subquery operator.
     #[inline]
     pub fn query(qry_id: QueryID) -> Self {
-        SubqOp(Op::Query(qry_id))
-    }
-
-    #[inline]
-    pub fn empty() -> Self {
-        SubqOp(Op::Empty)
+        SubqOp(Op::new(OpKind::Query(qry_id)))
     }
 }
 
@@ -59,9 +56,8 @@ impl TryFrom<Op> for SubqOp {
     type Error = Error;
     #[inline]
     fn try_from(src: Op) -> Result<Self> {
-        match src {
-            Op::Query(qry_id) => Ok(SubqOp::query(qry_id)),
-            Op::Empty => Ok(SubqOp::empty()),
+        match &src.kind {
+            OpKind::Query(_) | OpKind::Empty => Ok(SubqOp(src)),
             _ => Err(Error::InvalidOpertorTransformation),
         }
     }
@@ -77,6 +73,21 @@ impl AsRef<Op> for SubqOp {
 impl AsMut<Op> for SubqOp {
     #[inline]
     fn as_mut(&mut self) -> &mut Op {
+        &mut self.0
+    }
+}
+
+impl Deref for SubqOp {
+    type Target = Op;
+    #[inline]
+    fn deref(&self) -> &Op {
+        &self.0
+    }
+}
+
+impl DerefMut for SubqOp {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Op {
         &mut self.0
     }
 }

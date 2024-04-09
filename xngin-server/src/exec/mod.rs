@@ -1,10 +1,10 @@
 //! Execution implementation of physical plans.
-//! 
+//!
 //! Each Physical node will be converted into an execution node.
 //! All nodes compose a DAG and data flows from upstream such as
 //! table scans to downstream.
-mod proj;
 mod builder;
+mod proj;
 
 use crate::cancel::Cancellation;
 use crate::chan::OutputChannel;
@@ -12,13 +12,13 @@ use crate::exec::builder::ExecBuilder;
 use async_executor::Executor;
 use async_trait::async_trait;
 use flume::{Receiver, Sender};
+use futures_lite::Stream;
 pub use proj::ProjExec;
+use std::collections::VecDeque;
 use std::sync::Arc;
+use xngin_plan::phy::PhyPlan;
 use xngin_protocol::mysql::error::Result;
 use xngin_storage::block::Block;
-use xngin_plan::phy::PhyPlan;
-use futures_lite::Stream;
-use std::collections::VecDeque;
 
 pub struct ExecPlan {
     /// topology sorted executable nodes.
@@ -62,12 +62,12 @@ impl<'a> ExecCtx<'a> {
                         match work.run().await {
                             Ok(res) => {
                                 if out.send(res).await.is_err() {
-                                    return
+                                    return;
                                 }
                             }
                             Err(e) => {
                                 cancel.cancel(e);
-                                return
+                                return;
                             }
                         }
                     }
@@ -81,7 +81,11 @@ impl<'a> ExecCtx<'a> {
     /// Each work will returned by a onetime channel and transfered one by one.
     /// So the output will reserve input order.
     #[inline]
-    pub(crate) fn dispatch_ordered<W: Work>(&self, parallel: usize, out: OutputChannel) -> OrderedDispatcher<W> {
+    pub(crate) fn dispatch_ordered<W: Work>(
+        &self,
+        parallel: usize,
+        out: OutputChannel,
+    ) -> OrderedDispatcher<W> {
         let (in_tx, in_rx) = flume::bounded::<(W, Sender<Result<Block>>)>(parallel);
         let (out_tx, out_rx) = flume::bounded::<Receiver<Result<Block>>>(parallel);
         // setup workers
@@ -92,7 +96,7 @@ impl<'a> ExecCtx<'a> {
                     while let Ok((work, res_tx)) = in_rx.recv_async().await {
                         let res = work.run().await;
                         if res_tx.send_async(res).await.is_err() {
-                            return
+                            return;
                         }
                     }
                 })
@@ -177,8 +181,9 @@ mod tests {
     use futures_lite::StreamExt;
     use xngin_compute::eval::QueryEvalPlan;
     use xngin_datatype::PreciseType;
-    use xngin_expr::infer::fix_rec;
-    use xngin_expr::{ColIndex, Const, Expr, FuncKind, GlobalID, QueryID};
+    use xngin_expr::{
+        Col, ColIndex, ColKind, Const, ExprKind, FuncKind, GlobalID, QueryID, TypeFix, TypeInferer,
+    };
     use xngin_storage::attr::Attr;
 
     #[test]
@@ -187,16 +192,17 @@ mod tests {
         let attr1 = Attr::from((0..size).into_iter().map(|i| i as i64));
         let attr2 = attr1.to_owned();
         let block = Block::new(1024, vec![attr1, attr2]);
-        let col1 = Expr::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
+        let col1 = ExprKind::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
         // select c1 + 1
-        let es = vec![Expr::func(
+        let es = vec![ExprKind::func(
             FuncKind::Add,
-            vec![col1.clone(), Expr::new_const(Const::I64(1))],
+            vec![col1.clone(), ExprKind::Const(Const::I64(1))],
         )];
         let eval_plan = build_plan(es);
         let (upstream_in, upstream_out) = chan::unbounded(1024);
         let (downstream_in, downstream_out) = chan::unbounded(1024);
-        let mut proj_exec = ProjExec::new(Arc::new(eval_plan), upstream_in, downstream_out, 1, false);
+        let mut proj_exec =
+            ProjExec::new(Arc::new(eval_plan), upstream_in, downstream_out, 1, false);
         // setup execution context
         let executor = single_thread_executor();
         let cancel = Cancellation::new();
@@ -224,10 +230,24 @@ mod tests {
     }
 
     #[inline]
-    fn build_plan(mut exprs: Vec<Expr>) -> QueryEvalPlan {
+    fn build_plan(mut exprs: Vec<ExprKind>) -> QueryEvalPlan {
+        let mut inferer = IntColInferer;
         for e in &mut exprs {
-            fix_rec(e, |_, _| Some(PreciseType::i64())).unwrap();
+            e.fix(&mut inferer).unwrap();
         }
-        QueryEvalPlan::new(&exprs).unwrap()
+        QueryEvalPlan::new(&exprs, &mut inferer).unwrap()
+    }
+
+    struct IntColInferer;
+    impl TypeInferer for IntColInferer {
+        fn confirm(&mut self, e: &ExprKind) -> Option<PreciseType> {
+            match e {
+                ExprKind::Col(Col { kind, .. }) => match kind {
+                    ColKind::Query(..) | ColKind::Correlated(..) => Some(PreciseType::i64()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
     }
 }

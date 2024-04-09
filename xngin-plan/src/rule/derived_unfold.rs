@@ -1,13 +1,13 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::lgc::{
-    Location, Op, OpMutVisitor, OpVisitor, ProjCol, QuerySet, Setop, SubqOp, Subquery,
+    Location, Op, OpKind, OpMutVisitor, OpVisitor, ProjCol, QuerySet, Setop, SubqOp, Subquery,
 };
 use crate::rule::RuleEffect;
 use std::collections::HashMap;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, ColIndex, ColKind, Expr, ExprKind, ExprMutVisitor, QueryCol, QueryID};
+use xngin_expr::{Col, ColIndex, ColKind, ExprKind, ExprMutVisitor, QueryCol, QueryID};
 
 /// Unfold derived table.
 ///
@@ -28,7 +28,7 @@ pub fn derived_unfold(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEff
 fn unfold_derived(
     qry_set: &mut QuerySet,
     qry_id: QueryID,
-    mapping: &mut HashMap<QueryCol, Expr>,
+    mapping: &mut HashMap<QueryCol, ExprKind>,
     mode: Mode,
 ) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, loc, op| {
@@ -53,7 +53,7 @@ struct Unfold<'a> {
     qry_set: &'a mut QuerySet,
     stack: Vec<Op>,
     // map query column with position to inner expression.
-    mapping: &'a mut HashMap<QueryCol, Expr>,
+    mapping: &'a mut HashMap<QueryCol, ExprKind>,
     mode: Mode,
 }
 
@@ -61,7 +61,7 @@ impl<'a> Unfold<'a> {
     #[inline]
     fn new(
         qry_set: &'a mut QuerySet,
-        mapping: &'a mut HashMap<QueryCol, Expr>,
+        mapping: &'a mut HashMap<QueryCol, ExprKind>,
         mode: Mode,
     ) -> Self {
         Unfold {
@@ -78,13 +78,13 @@ impl OpMutVisitor for Unfold<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        match op {
-            Op::Query(qry_id) => {
+        match &mut op.kind {
+            OpKind::Query(qry_id) => {
                 // recursively unfold child query
                 let mut mapping = HashMap::new();
                 unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full).branch()
             }
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(_) => ControlFlow::Continue(RuleEffect::NONE),
                 Join::Qualified(QualifiedJoin {
                     kind: JoinKind::Left,
@@ -117,12 +117,12 @@ impl OpMutVisitor for Unfold<'_> {
                 }
                 _ => ControlFlow::Continue(RuleEffect::NONE), // other joins is fine to bypass
             },
-            Op::Setop(so) => {
+            OpKind::Setop(so) => {
                 // setop does not support unfolding into current query
                 let mut eff = RuleEffect::NONE;
                 let Setop { left, right, .. } = so.as_mut();
                 let right = mem::take(right);
-                if let Op::Query(qry_id) = right.as_ref() {
+                if let OpKind::Query(qry_id) = &right.kind {
                     let mut mapping = HashMap::new();
                     eff |=
                         unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full).branch()?;
@@ -131,7 +131,7 @@ impl OpMutVisitor for Unfold<'_> {
                     unreachable!()
                 }
                 let left = mem::take(left);
-                if let Op::Query(qry_id) = left.as_ref() {
+                if let OpKind::Query(qry_id) = &left.kind {
                     let mut mapping = HashMap::new();
                     eff |=
                         unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full).branch()?;
@@ -139,22 +139,22 @@ impl OpMutVisitor for Unfold<'_> {
                 }
                 ControlFlow::Continue(eff)
             }
-            Op::JoinGraph(_) => todo!(),
-            Op::Proj { .. }
-            | Op::Filt { .. }
-            | Op::Aggr(_)
-            | Op::Sort { .. }
-            | Op::Limit { .. }
-            | Op::Attach(..) => ControlFlow::Continue(RuleEffect::NONE), // fine to bypass
-            Op::Empty => ControlFlow::Continue(RuleEffect::NONE), // as join op is set to empty, it's safe to bypass
-            Op::Table(..) | Op::Row(_) => unreachable!(),
+            OpKind::JoinGraph(_) => todo!(),
+            OpKind::Proj { .. }
+            | OpKind::Filt { .. }
+            | OpKind::Aggr(_)
+            | OpKind::Sort { .. }
+            | OpKind::Limit { .. }
+            | OpKind::Attach(..) => ControlFlow::Continue(RuleEffect::NONE), // fine to bypass
+            OpKind::Empty => ControlFlow::Continue(RuleEffect::NONE), // as join op is set to empty, it's safe to bypass
+            OpKind::Table(..) | OpKind::Row(_) => unreachable!(),
         }
     }
 
     #[inline]
     fn leave(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        match op {
-            Op::Query(qry_id) => {
+        match &mut op.kind {
+            OpKind::Query(qry_id) => {
                 return match self.qry_set.get_mut(qry_id) {
                     Some(subq) => {
                         match try_unfold_subq(subq, self.mode) {
@@ -174,7 +174,7 @@ impl OpMutVisitor for Unfold<'_> {
                     None => ControlFlow::Break(Error::QueryNotFound(*qry_id)),
                 };
             }
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(_) => (),
                 Join::Qualified(QualifiedJoin {
                     kind: JoinKind::Left,
@@ -197,14 +197,14 @@ impl OpMutVisitor for Unfold<'_> {
                 }
                 _ => (),
             },
-            Op::Setop(so) => {
+            OpKind::Setop(so) => {
                 let Setop { left, right, .. } = so.as_mut();
                 let sq = SubqOp::try_from(self.stack.pop().unwrap()).branch()?;
                 *left = sq;
                 let sq = SubqOp::try_from(self.stack.pop().unwrap()).branch()?;
                 *right = sq;
             }
-            Op::JoinGraph(_) => todo!(),
+            OpKind::JoinGraph(_) => todo!(),
             _ => (),
         }
         // rewrite all expressions in current operator
@@ -242,9 +242,9 @@ fn try_unfold_subq(subq: &mut Subquery, mode: Mode) -> Option<(Op, Vec<ProjCol>)
             // because it may break SQL semantics such as outer join, etc.
             if subq.out_cols().iter().any(|c| {
                 !matches!(
-                    c.expr.kind,
+                    c.expr,
                     ExprKind::Col(Col {
-                        kind: ColKind::QueryCol(..),
+                        kind: ColKind::Query(..),
                         ..
                     })
                 )
@@ -283,17 +283,17 @@ impl OpVisitor for Detect {
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-        match op {
-            Op::Aggr(_)
-            | Op::Filt { .. }
-            | Op::Sort { .. }
-            | Op::Limit { .. }
-            | Op::Setop(_)
-            | Op::Attach(..) => {
+        match &op.kind {
+            OpKind::Aggr(_)
+            | OpKind::Filt { .. }
+            | OpKind::Sort { .. }
+            | OpKind::Limit { .. }
+            | OpKind::Setop(_)
+            | OpKind::Attach(..) => {
                 self.res = false;
                 ControlFlow::Break(())
             }
-            Op::Proj { .. } => {
+            OpKind::Proj { .. } => {
                 if !self.top_proj {
                     self.top_proj = true;
                     ControlFlow::Continue(())
@@ -302,7 +302,7 @@ impl OpVisitor for Detect {
                     ControlFlow::Break(())
                 }
             }
-            Op::Join(_) | Op::Query(_) => {
+            OpKind::Join(_) | OpKind::Query(_) => {
                 if !self.top_proj {
                     self.res = false;
                     ControlFlow::Break(())
@@ -310,7 +310,9 @@ impl OpVisitor for Detect {
                     ControlFlow::Continue(())
                 }
             }
-            Op::JoinGraph(_) | Op::Row(_) | Op::Table(..) | Op::Empty => unreachable!(),
+            OpKind::JoinGraph(_) | OpKind::Row(_) | OpKind::Table(..) | OpKind::Empty => {
+                unreachable!()
+            }
         }
     }
 }
@@ -318,24 +320,27 @@ impl OpVisitor for Detect {
 #[inline]
 fn extract(op: &mut Op) -> (Op, Vec<ProjCol>) {
     match mem::take(op) {
-        Op::Proj { cols, input } => (*input, cols),
+        Op {
+            output: _,
+            kind: OpKind::Proj { cols, input },
+        } => (*input, cols.unwrap()),
         _ => unreachable!(),
     }
 }
 
 #[inline]
-fn rewrite_exprs(op: &mut Op, mapping: &HashMap<QueryCol, Expr>) -> RuleEffect {
-    struct Rewrite<'a>(&'a HashMap<QueryCol, Expr>);
+fn rewrite_exprs(op: &mut Op, mapping: &HashMap<QueryCol, ExprKind>) -> RuleEffect {
+    struct Rewrite<'a>(&'a HashMap<QueryCol, ExprKind>);
     impl ExprMutVisitor for Rewrite<'_> {
         type Cont = RuleEffect;
         type Break = ();
         #[inline]
-        fn leave(&mut self, e: &mut Expr) -> ControlFlow<(), RuleEffect> {
+        fn leave(&mut self, e: &mut ExprKind) -> ControlFlow<(), RuleEffect> {
             if let ExprKind::Col(Col {
-                kind: ColKind::QueryCol(qry_id),
+                kind: ColKind::Query(qry_id),
                 idx,
                 ..
-            }) = &e.kind
+            }) = e
             {
                 if let Some(new) = self.0.get(&(*qry_id, *idx)) {
                     *e = new.clone();
@@ -350,7 +355,7 @@ fn rewrite_exprs(op: &mut Op, mapping: &HashMap<QueryCol, Expr>) -> RuleEffect {
         return eff;
     }
     let mut r = Rewrite(mapping);
-    for e in op.exprs_mut() {
+    for e in op.kind.exprs_mut() {
         match e.walk_mut(&mut r) {
             ControlFlow::Break(_) => (),
             ControlFlow::Continue(ef) => eff |= ef,
@@ -363,7 +368,7 @@ fn rewrite_exprs(op: &mut Op, mapping: &HashMap<QueryCol, Expr>) -> RuleEffect {
 mod tests {
     use super::*;
     use crate::lgc::tests::{assert_j_plan1, j_catalog, print_plan};
-    use crate::lgc::OpKind::*;
+    use crate::lgc::OpTy::*;
     use crate::rule::{col_prune, pred_pushdown};
 
     #[test]

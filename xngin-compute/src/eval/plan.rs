@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
-use crate::eval::{EvalBuilder, Eval, EvalRef};
+use crate::eval::{Eval, EvalBuilder, EvalRef};
 
 use std::mem;
 use xngin_catalog::TableID;
-use xngin_expr::{ColIndex, DataSourceID, Expr, QueryID};
+use xngin_expr::{ColIndex, DataSourceID, ExprKind, QueryID, TypeInferer};
 use xngin_storage::attr::Attr;
 use xngin_storage::block::Block;
 use xngin_storage::sel::Sel;
@@ -40,17 +40,21 @@ pub struct EvalPlan<T> {
 impl<T: DataSourceID> EvalPlan<T> {
     /// Create a new evaluation plan.
     #[inline]
-    pub fn new<'a, I: IntoIterator<Item = &'a Expr>>(exprs: I) -> Result<Self> {
-        EvalBuilder::new().build(exprs)
+    pub fn new<'a, E: IntoIterator<Item = &'a ExprKind>, I: TypeInferer>(
+        exprs: E,
+        inferer: &'a mut I,
+    ) -> Result<Self> {
+        EvalBuilder::new(inferer).build(exprs)
     }
 
     /// Create a new evaluation plan with filter expression.
     #[inline]
-    pub fn with_filter<'a, I: IntoIterator<Item = &'a Expr>>(
-        exprs: I,
-        cond_expr: &'a Expr,
+    pub fn with_filter<'a, E: IntoIterator<Item = &'a ExprKind>, I: TypeInferer>(
+        exprs: E,
+        cond_expr: &'a ExprKind,
+        inferer: &'a mut I,
     ) -> Result<Self> {
-        EvalBuilder::new().with_filter(exprs, cond_expr)
+        EvalBuilder::new(inferer).with_filter(exprs, cond_expr)
     }
 
     /// Evaluate one block.

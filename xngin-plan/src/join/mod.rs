@@ -3,10 +3,10 @@ pub mod graph;
 pub mod reorder;
 
 use crate::error::{Error, Result};
-use crate::lgc::Op;
+use crate::lgc::{Op, OpKind};
 use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
-use xngin_expr::{Expr, QueryID};
+use xngin_expr::{ExprKind, QueryID};
 
 // alias of join graph
 pub use graph::Graph as JoinGraph;
@@ -92,10 +92,10 @@ pub struct QualifiedJoin {
     pub right: JoinOp,
     // pub cond: Expr,
     // Join condition
-    pub cond: Vec<Expr>,
+    pub cond: Vec<ExprKind>,
     // Additional filter applied after join.
     // Initialized as empty but can be filled in optimization.
-    pub filt: Vec<Expr>,
+    pub filt: Vec<ExprKind>,
 }
 
 /// JoinOp is subset of Op, which only includes
@@ -108,17 +108,17 @@ pub struct JoinOp(pub(crate) Op);
 impl JoinOp {
     #[inline]
     pub fn query(qry_id: QueryID) -> Self {
-        JoinOp(Op::Query(qry_id))
+        JoinOp(Op::new(OpKind::Query(qry_id)))
     }
 
     #[inline]
     pub fn cross(tables: Vec<JoinOp>) -> Self {
-        JoinOp(Op::cross_join(tables))
+        JoinOp(Op::new(OpKind::cross_join(tables)))
     }
 
     #[inline]
     pub fn empty() -> Self {
-        JoinOp(Op::Empty)
+        JoinOp(Op::empty())
     }
 
     #[inline]
@@ -126,30 +126,32 @@ impl JoinOp {
         kind: JoinKind,
         left: JoinOp,
         right: JoinOp,
-        cond: Vec<Expr>,
-        filt: Vec<Expr>,
+        cond: Vec<ExprKind>,
+        filt: Vec<ExprKind>,
     ) -> Self {
-        JoinOp(Op::qualified_join(kind, left, right, cond, filt))
+        JoinOp(Op::new(OpKind::qualified_join(
+            kind, left, right, cond, filt,
+        )))
     }
 
     #[inline]
     pub fn collect_qry_ids(&self, qry_ids: &mut HashSet<QueryID>) {
-        match self.as_ref() {
-            Op::Empty => (),
-            Op::Query(qry_id) => {
+        match &self.kind {
+            OpKind::Empty => (),
+            OpKind::Query(qry_id) => {
                 qry_ids.insert(*qry_id);
             }
-            Op::Join(join) => join.collect_qry_ids(qry_ids),
+            OpKind::Join(join) => join.collect_qry_ids(qry_ids),
             _ => unreachable!(),
         }
     }
 
     #[inline]
     pub fn contains_qry_id(&self, qry_id: QueryID) -> bool {
-        match self.as_ref() {
-            Op::Empty => false,
-            Op::Query(qid) => *qid == qry_id,
-            Op::Join(join) => join.contains_qry_id(qry_id),
+        match &self.kind {
+            OpKind::Empty => false,
+            OpKind::Query(qid) => *qid == qry_id,
+            OpKind::Join(join) => join.contains_qry_id(qry_id),
             _ => unreachable!(),
         }
     }
@@ -166,10 +168,8 @@ impl TryFrom<Op> for JoinOp {
     type Error = Error;
     #[inline]
     fn try_from(src: Op) -> Result<Self> {
-        match src {
-            Op::Query(qry_id) => Ok(JoinOp::query(qry_id)),
-            Op::Join(_) => Ok(JoinOp(src)),
-            Op::Empty => Ok(JoinOp::empty()),
+        match &src.kind {
+            OpKind::Query(_) | OpKind::Join(_) | OpKind::Empty => Ok(JoinOp(src)),
             _ => Err(Error::InvalidOpertorTransformation),
         }
     }

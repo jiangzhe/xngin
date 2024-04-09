@@ -1,11 +1,11 @@
 use crate::error::{Error, Result};
 use crate::join::JoinKind;
-use crate::lgc::Op;
+use crate::lgc::{Op, OpKind};
 use indexmap::IndexMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Deref, DerefMut};
-use xngin_expr::{Expr, QueryID};
+use xngin_expr::{ExprKind, QueryID};
 
 // Support at most 31 tables in single join graph.
 // The threshold is actually very high for DP algorithm
@@ -25,7 +25,7 @@ pub struct Graph {
     edge_map: IndexMap<VertexSet, EdgeIDs>,
     qs: Vec<Op>,
     edge_arena: Arena<Edge>,
-    pred_arena: Arena<Expr>,
+    pred_arena: Arena<ExprKind>,
     hyp_edge_refs: Option<Vec<HyperEdgeRef>>,
 }
 
@@ -40,7 +40,7 @@ impl Graph {
         self.vs |= vid;
         self.v2q.insert(vid, qry_id);
         self.q2v.insert(qry_id, vid);
-        self.qs.push(Op::Query(qry_id));
+        self.qs.push(Op::new(OpKind::Query(qry_id)));
         Ok(vid)
     }
 
@@ -48,8 +48,8 @@ impl Graph {
     pub fn queries(&self) -> Vec<QueryID> {
         self.qs
             .iter()
-            .filter_map(|op| match op {
-                Op::Query(qry_id) => Some(*qry_id),
+            .filter_map(|op| match &op.kind {
+                OpKind::Query(qry_id) => Some(*qry_id),
                 _ => None,
             })
             .collect()
@@ -86,12 +86,12 @@ impl Graph {
     }
 
     #[inline]
-    pub fn exprs(&self) -> impl IntoIterator<Item = &Expr> {
+    pub fn exprs(&self) -> impl IntoIterator<Item = &ExprKind> {
         self.pred_arena.iter()
     }
 
     #[inline]
-    pub fn exprs_mut(&mut self) -> impl IntoIterator<Item = &mut Expr> {
+    pub fn exprs_mut(&mut self) -> impl IntoIterator<Item = &mut ExprKind> {
         self.pred_arena.iter_mut()
     }
 
@@ -116,12 +116,12 @@ impl Graph {
     }
 
     #[inline]
-    pub fn pred(&self, pid: PredID) -> &Expr {
+    pub fn pred(&self, pid: PredID) -> &ExprKind {
         &self.pred_arena[pid.0 as usize]
     }
 
     #[inline]
-    pub fn preds(&self, pids: PredIDs) -> impl Iterator<Item = &Expr> {
+    pub fn preds(&self, pids: PredIDs) -> impl Iterator<Item = &ExprKind> {
         pids.into_iter().map(|pid| self.pred(pid))
     }
 
@@ -171,8 +171,8 @@ impl Graph {
         l_vset: VertexSet,
         r_vset: VertexSet,
         e_vset: VertexSet,
-        cond: Vec<Expr>,
-        filt: Vec<Expr>,
+        cond: Vec<ExprKind>,
+        filt: Vec<ExprKind>,
     ) {
         let Graph {
             edge_map,
@@ -282,13 +282,11 @@ pub struct Edge {
     pub e_vset: VertexSet,
     // Join conditions that should be evaluated in join.
     // They are conjunctive.
-    // pub cond: Vec<Expr>,
     pub cond: SmallVec<[PredID; 8]>,
     // Filt which should be applied after the join.
     // Inner join will always has this field empty because
     // all filters can be evaluated as join condition in join phase.
     // They are conjunctive.
-    // pub filt: Vec<Expr>,
     pub filt: SmallVec<[PredID; 8]>,
 }
 

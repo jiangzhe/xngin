@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, QualifiedJoin};
-use crate::lgc::{Op, OpMutVisitor, QuerySet};
+use crate::lgc::{Op, OpKind, OpMutVisitor, QuerySet};
 use crate::rule::RuleEffect;
 use indexmap::{IndexMap, IndexSet};
 use std::cmp::Ordering;
@@ -9,7 +9,7 @@ use xngin_datatype::AlignPartialOrd;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use xngin_expr::fold::*;
 use xngin_expr::{
-    Col, ColIndex, ColKind, Const, Expr, ExprKind, ExprMutVisitor, FuncKind, GlobalID, Pred,
+    Col, ColIndex, ColKind, Const, ExprKind, ExprMutVisitor, FuncKind, GlobalID, Pred,
     PredFuncKind, QueryCol, QueryID,
 };
 
@@ -62,9 +62,9 @@ impl OpMutVisitor for ExprSimplify<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        match op {
-            Op::Query(qry_id) => simplify_expr(self.qry_set, *qry_id).branch(),
-            Op::Filt { pred, .. } => {
+        match &mut op.kind {
+            OpKind::Query(qry_id) => simplify_expr(self.qry_set, *qry_id).branch(),
+            OpKind::Filt { pred, .. } => {
                 let mut eff = RuleEffect::NONE;
                 for p in pred.iter_mut() {
                     eff |= simplify_nested(p, NullCoalesce::False).branch()?;
@@ -73,7 +73,7 @@ impl OpMutVisitor for ExprSimplify<'_> {
                 eff |= simplify_conj(pred, NullCoalesce::False).branch()?;
                 ControlFlow::Continue(eff)
             }
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(_) => ControlFlow::Continue(RuleEffect::NONE),
                 Join::Qualified(QualifiedJoin { cond, filt, .. }) => {
                     let mut eff = RuleEffect::NONE;
@@ -94,7 +94,7 @@ impl OpMutVisitor for ExprSimplify<'_> {
             },
             _ => {
                 let mut eff = RuleEffect::NONE;
-                for e in op.exprs_mut() {
+                for e in op.kind.exprs_mut() {
                     eff |= simplify_nested(e, NullCoalesce::Null).branch()?;
                     normalize_single(e);
                 }
@@ -105,33 +105,33 @@ impl OpMutVisitor for ExprSimplify<'_> {
 }
 
 #[inline]
-pub(crate) fn simplify_nested(e: &mut Expr, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
+pub(crate) fn simplify_nested(e: &mut ExprKind, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
     update_simplify_nested(e, null_coalesce, |_| Ok(()))
 }
 
 #[inline]
-pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr) -> Result<()>>(
-    e: &mut Expr,
+pub(crate) fn update_simplify_nested<F: FnMut(&mut ExprKind) -> Result<()>>(
+    e: &mut ExprKind,
     null_coalesce: NullCoalesce,
     f: F,
 ) -> Result<RuleEffect> {
     struct SimplifyNested<F>(F, NullCoalesce);
-    impl<F: FnMut(&mut Expr) -> Result<()>> ExprMutVisitor for SimplifyNested<F> {
+    impl<F: FnMut(&mut ExprKind) -> Result<()>> ExprMutVisitor for SimplifyNested<F> {
         type Cont = RuleEffect;
         type Break = Error;
         #[inline]
-        fn enter(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
-            if let ExprKind::Pred(Pred::Not(_)) = &e.kind {
+        fn enter(&mut self, e: &mut ExprKind) -> ControlFlow<Error, RuleEffect> {
+            if let ExprKind::Pred(Pred::Not(_)) = e {
                 self.1.flip();
             }
             ControlFlow::Continue(RuleEffect::NONE)
         }
 
         #[inline]
-        fn leave(&mut self, e: &mut Expr) -> ControlFlow<Error, RuleEffect> {
+        fn leave(&mut self, e: &mut ExprKind) -> ControlFlow<Error, RuleEffect> {
             // we should not change not in enter method, otherwise, we may miss the flip() call
             // on NullCoalesce.
-            let not = matches!(&e.kind, ExprKind::Pred(Pred::Not(_)));
+            let not = matches!(e, ExprKind::Pred(Pred::Not(_)));
             let cf = update_simplify_single(e, self.1, &mut self.0).branch();
             if not {
                 self.1.flip()
@@ -145,25 +145,16 @@ pub(crate) fn update_simplify_nested<F: FnMut(&mut Expr) -> Result<()>>(
 
 // normalize considers
 #[inline]
-pub(crate) fn normalize_single(e: &mut Expr) {
-    if let ExprKind::Pred(Pred::Func { kind, args }) = &mut e.kind {
+pub(crate) fn normalize_single(e: &mut ExprKind) {
+    if let ExprKind::Pred(Pred::Func { kind, args }) = e {
         if let Some(flipped_kind) = kind.pos_flip() {
             match &mut args[..] {
-                [Expr {
-                    kind: e1 @ ExprKind::Const(_),
-                    ..
-                }, Expr { kind: e2, .. }] => {
+                [e1 @ ExprKind::Const(_), e2] => {
                     // "const cmp expr" => "expr cmp const"
                     mem::swap(e1, e2);
                     *kind = flipped_kind;
                 }
-                [Expr {
-                    kind: ExprKind::Col(c1),
-                    ..
-                }, Expr {
-                    kind: ExprKind::Col(c2),
-                    ..
-                }] => {
+                [ExprKind::Col(c1), ExprKind::Col(c2)] => {
                     // if e1 and e2 are columns, fixed the order so that
                     // "e1 cmp e2" always has InternalOrder(e1) < InternalOrder(e2)
                     if c1 > c2 {
@@ -180,7 +171,7 @@ pub(crate) fn normalize_single(e: &mut Expr) {
 /// Simplify single expression.
 /// This method will only simplify the top level of the expression.
 #[inline]
-pub(crate) fn simplify_single(e: &mut Expr, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
+pub(crate) fn simplify_single(e: &mut ExprKind, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
     update_simplify_single(e, null_coalesce, |_| Ok(()))
 }
 
@@ -196,7 +187,7 @@ fn append_conj_cmp(
     new_k: PredFuncKind,
     new_c: Const,
     null_coalesce: NullCoalesce,
-    conv: &mut IndexSet<Expr>,
+    conv: &mut IndexSet<ExprKind>,
 ) -> ConjCmpEffect {
     let mut to_remove = vec![];
     for (i, (old_k, old_c)) in cmps.iter_mut().enumerate() {
@@ -241,9 +232,9 @@ fn append_conj_cmp(
                         NullCoalesce::True => {
                             // if column is not null, returns false, if column is null, coalesce to true,
                             // so we can replace it with IsNull(col)
-                            let e = Expr::pred_func(
+                            let e = ExprKind::pred_func(
                                 PredFuncKind::IsNull,
-                                vec![Expr::query_col(gid, qry_id, idx)],
+                                vec![ExprKind::query_col(gid, qry_id, idx)],
                             );
                             conv.insert(e);
                             to_remove.push(i);
@@ -267,9 +258,9 @@ fn append_conj_cmp(
                             NullCoalesce::True => {
                                 // if column is not null, returns false, if column is null, coalesce to true,
                                 // so we can replace it with IsNull(col)
-                                let e = Expr::pred_func(
+                                let e = ExprKind::pred_func(
                                     PredFuncKind::IsNull,
-                                    vec![Expr::query_col(gid, qry_id, idx)],
+                                    vec![ExprKind::query_col(gid, qry_id, idx)],
                                 );
                                 conv.insert(e);
                                 to_remove.push(i);
@@ -318,9 +309,9 @@ fn append_conj_cmp(
                         NullCoalesce::True => {
                             // if column is not null, returns false, if column is null, coalesce to true,
                             // so we can replace it with IsNull(col)
-                            let e = Expr::pred_func(
+                            let e = ExprKind::pred_func(
                                 PredFuncKind::IsNull,
-                                vec![Expr::query_col(gid, qry_id, idx)],
+                                vec![ExprKind::query_col(gid, qry_id, idx)],
                             );
                             conv.insert(e);
                             to_remove.push(i);
@@ -344,9 +335,9 @@ fn append_conj_cmp(
                             NullCoalesce::True => {
                                 // if column is not null, returns false, if column is null, coalesce to true,
                                 // so we can replace it with IsNull(col)
-                                let e = Expr::pred_func(
+                                let e = ExprKind::pred_func(
                                     PredFuncKind::IsNull,
-                                    vec![Expr::query_col(gid, qry_id, idx)],
+                                    vec![ExprKind::query_col(gid, qry_id, idx)],
                                 );
                                 conv.insert(e);
                                 to_remove.push(i);
@@ -374,9 +365,9 @@ fn append_conj_cmp(
                         NullCoalesce::True => {
                             // if column is not null, returns false, if column is null, coalesce to true,
                             // so we can replace it with IsNull(col)
-                            let e = Expr::pred_func(
+                            let e = ExprKind::pred_func(
                                 PredFuncKind::IsNull,
-                                vec![Expr::query_col(gid, qry_id, idx)],
+                                vec![ExprKind::query_col(gid, qry_id, idx)],
                             );
                             conv.insert(e);
                             to_remove.push(i);
@@ -404,9 +395,9 @@ fn append_conj_cmp(
                         NullCoalesce::True => {
                             // if column is not null, returns false, if column is null, coalesce to true,
                             // so we can replace it with IsNull(col)
-                            let e = Expr::pred_func(
+                            let e = ExprKind::pred_func(
                                 PredFuncKind::IsNull,
-                                vec![Expr::query_col(gid, qry_id, idx)],
+                                vec![ExprKind::query_col(gid, qry_id, idx)],
                             );
                             conv.insert(e);
                             to_remove.push(i);
@@ -516,18 +507,18 @@ fn append_conj_cmp(
 // If returned value is not empty, use it to replace the original expression list,
 // this is called short circuit.
 fn simplify_conj_short_circuit(
-    es: &mut Vec<Expr>,
+    es: &mut Vec<ExprKind>,
     null_coalesce: NullCoalesce,
     eff: &mut RuleEffect,
-) -> Option<Expr> {
+) -> Option<ExprKind> {
     let mut eset = IndexSet::new();
     let mut cmps: IndexMap<QueryCol, QueryColPredicates> = IndexMap::new();
     for e in es.drain(..) {
-        match &e.kind {
+        match &e {
             ExprKind::Const(c) => {
                 if let Some(zero) = c.is_zero() {
                     if zero {
-                        return Some(Expr::const_bool(false));
+                        return Some(ExprKind::const_bool(false));
                     }
                     // otherwise, remove it as redundant
                     *eff |= RuleEffect::EXPR;
@@ -538,7 +529,7 @@ fn simplify_conj_short_circuit(
                                 *eff |= RuleEffect::EXPR;
                             }
                         }
-                        NullCoalesce::False => return Some(Expr::const_bool(false)),
+                        NullCoalesce::False => return Some(ExprKind::const_bool(false)),
                         NullCoalesce::True => {
                             // remove it
                             *eff |= RuleEffect::EXPR;
@@ -547,7 +538,7 @@ fn simplify_conj_short_circuit(
                 }
             }
             _ => {
-                if let ExprKind::Pred(Pred::Func { kind: new_k, args }) = &e.kind {
+                if let ExprKind::Pred(Pred::Func { kind: new_k, args }) = &e {
                     match (new_k, &args[..]) {
                         (
                             PredFuncKind::Equal
@@ -556,18 +547,11 @@ fn simplify_conj_short_circuit(
                             | PredFuncKind::GreaterEqual
                             | PredFuncKind::Less
                             | PredFuncKind::LessEqual,
-                            [Expr {
-                                kind:
-                                    ExprKind::Col(Col {
-                                        gid,
-                                        kind: ColKind::QueryCol(qry_id),
-                                        idx,
-                                    }),
-                                ..
-                            }, Expr {
-                                kind: ExprKind::Const(new_c),
-                                ..
-                            }],
+                            [ExprKind::Col(Col {
+                                gid,
+                                kind: ColKind::Query(qry_id),
+                                idx,
+                            }), ExprKind::Const(new_c)],
                         ) => {
                             let ent =
                                 cmps.entry((*qry_id, *idx))
@@ -587,7 +571,7 @@ fn simplify_conj_short_circuit(
                                 ConjCmpEffect::Reduce => {
                                     *eff |= RuleEffect::EXPR;
                                 }
-                                ConjCmpEffect::Reject => return Some(Expr::const_bool(false)),
+                                ConjCmpEffect::Reject => return Some(ExprKind::const_bool(false)),
                             }
                         }
                         _ => {
@@ -606,9 +590,9 @@ fn simplify_conj_short_circuit(
         if pes.preds.len() == 1 {
             // keep it as is
             let (kind, c) = pes.preds.pop().unwrap();
-            let e = Expr::pred_func(
+            let e = ExprKind::pred_func(
                 kind,
-                vec![Expr::query_col(pes.gid, qid, idx), Expr::new_const(c)],
+                vec![ExprKind::query_col(pes.gid, qid, idx), ExprKind::Const(c)],
             );
             eset.insert(e);
         } else {
@@ -629,7 +613,7 @@ fn simplify_conj_short_circuit(
                         ConjCmpEffect::Reduce => {
                             progress = true;
                         }
-                        ConjCmpEffect::Reject => return Some(Expr::const_bool(false)),
+                        ConjCmpEffect::Reject => return Some(ExprKind::const_bool(false)),
                     }
                 }
                 if !progress {
@@ -637,9 +621,9 @@ fn simplify_conj_short_circuit(
                 }
             }
             for (k, c) in pes.preds {
-                let e = Expr::pred_func(
+                let e = ExprKind::pred_func(
                     k,
-                    vec![Expr::query_col(pes.gid, qid, idx), Expr::new_const(c)],
+                    vec![ExprKind::query_col(pes.gid, qid, idx), ExprKind::Const(c)],
                 );
                 eset.insert(e);
             }
@@ -684,7 +668,10 @@ fn check_ord_left_eq(ord: Ordering, r_kind: PredFuncKind) -> bool {
 /// Simplify expressions in conjunctive normal form.
 /// The provided expressions should be already simplified.
 #[inline]
-pub(crate) fn simplify_conj(es: &mut Vec<Expr>, null_coalesce: NullCoalesce) -> Result<RuleEffect> {
+pub(crate) fn simplify_conj(
+    es: &mut Vec<ExprKind>,
+    null_coalesce: NullCoalesce,
+) -> Result<RuleEffect> {
     let mut eff = RuleEffect::NONE;
     if let Some(e) = simplify_conj_short_circuit(es, null_coalesce, &mut eff) {
         es.clear();
@@ -696,15 +683,15 @@ pub(crate) fn simplify_conj(es: &mut Vec<Expr>, null_coalesce: NullCoalesce) -> 
 
 /// Try updating the expression, and then simplify it.
 #[inline]
-fn update_simplify_single<F: FnMut(&mut Expr) -> Result<()>>(
-    e: &mut Expr,
+fn update_simplify_single<F: FnMut(&mut ExprKind) -> Result<()>>(
+    e: &mut ExprKind,
     null_coalesce: NullCoalesce,
     mut f: F,
 ) -> Result<RuleEffect> {
     let mut eff = RuleEffect::NONE;
     // we don't count the replacement as expression change
     f(e)?;
-    match &mut e.kind {
+    match e {
         ExprKind::Func { kind, args, .. } => {
             if let Some(new) = simplify_func(*kind, args)? {
                 *e = new;
@@ -743,655 +730,462 @@ fn update_simplify_single<F: FnMut(&mut Expr) -> Result<()>>(
 /// Note: 1+(2+e) => e+3 -- won't happen after rule 5, only for add/mul
 /// 8. commutative and associative, e.g.
 /// (e1+1)+(e2+2) => (e1+e2)+3
-fn simplify_func(fkind: FuncKind, fargs: &mut [Expr]) -> Result<Option<Expr>> {
-    let res = match fkind {
-        FuncKind::Neg => match &mut fargs[0].kind {
-            // rule 1: --e => e
-            // todo: should cast to f64 if original expression is not numeric
-            ExprKind::Func { kind, args, .. } if *kind == FuncKind::Neg => {
-                Some(mem::take(&mut args[0]))
-            }
-            // rule 2: -c => new_c
-            ExprKind::Const(c) => fold_neg_const(c)?.map(Expr::new_const),
-            _ => None,
-        },
-        FuncKind::Add => match fargs {
-            // rule 3: 1+1 => 2
-            [Expr {
-                kind: ExprKind::Const(c1),
-                ..
-            }, Expr {
-                kind: ExprKind::Const(c2),
-                ..
-            }] => fold_add_const(c1, c2)?.map(Expr::new_const),
-            [e, Expr {
-                kind: ExprKind::Const(c1),
-                ..
-            }] => {
-                if c1.is_zero().unwrap_or_default() {
-                    // rule 4: e+0 => e
-                    let e = mem::take(e);
-                    Some(coerce_numeric(e))
-                } else if let ExprKind::Func { kind, args, .. } = &mut e.kind {
-                    match (kind, &mut args[..]) {
-                        // rule 6: (e1+c2)+c1 => e1 + (c2+c1)
-                        (
-                            FuncKind::Add,
-                            [e1, Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }],
-                        ) => fold_add_const(c2, c1)?.map(|c3| {
-                            let e1 = mem::take(e1);
-                            expr_add_const(e1, c3)
-                        }),
-                        // rule 6: (e1-c2)+c1 => e1 - (c2-c1)
-                        (
-                            FuncKind::Sub,
-                            [e1, Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }],
-                        ) => fold_sub_const(c2, c1)?.map(|c3| {
-                            let e1 = mem::take(e1);
-                            expr_sub_const(e1, c3)
-                        }),
-                        // rule 6: (c2-e1)+c1 => (c2+c1) - e1
-                        (
-                            FuncKind::Sub,
-                            [Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }, e1],
-                        ) => fold_add_const(c2, c1)?.map(|c3| {
-                            let e1 = mem::take(e1);
-                            const_sub_expr(c3, e1)
-                        }),
-
-                        _ => None,
-                    }
-                } else {
-                    None
+fn simplify_func(fkind: FuncKind, fargs: &mut [ExprKind]) -> Result<Option<ExprKind>> {
+    let res =
+        match fkind {
+            FuncKind::Neg => match &mut fargs[0] {
+                // rule 1: --e => e
+                // todo: should cast to f64 if original expression is not numeric
+                ExprKind::Func { kind, args, .. } if *kind == FuncKind::Neg => {
+                    Some(mem::take(&mut args[0]))
                 }
-            }
-            [Expr {
-                kind: ExprKind::Const(c1),
-                ..
-            }, e] => {
-                if c1.is_zero().unwrap_or_default() {
-                    // rule 4: 0+e => e
-                    let e = mem::take(e);
-                    Some(coerce_numeric(e))
-                } else {
-                    match &mut e.kind {
-                        ExprKind::Func { kind, args, .. } => {
-                            match (kind, &mut args[..]) {
-                                // rule 7: c1 + (e1+c2) => e1 + (c1+c2)
-                                (
-                                    FuncKind::Add,
-                                    [e1, Expr {
-                                        kind: ExprKind::Const(c2),
-                                        ..
-                                    }],
-                                ) => fold_add_const(c1, c2)?.map(|c3| {
+                // rule 2: -c => new_c
+                ExprKind::Const(c) => fold_neg_const(c)?.map(ExprKind::Const),
+                _ => None,
+            },
+            FuncKind::Add => match fargs {
+                // rule 3: 1+1 => 2
+                [ExprKind::Const(c1), ExprKind::Const(c2)] => {
+                    fold_add_const(c1, c2)?.map(ExprKind::Const)
+                }
+                [e, ExprKind::Const(c1)] => {
+                    if c1.is_zero().unwrap_or_default() {
+                        // rule 4: e+0 => e
+                        let e = mem::take(e);
+                        Some(coerce_numeric(e))
+                    } else if let ExprKind::Func { kind, args, .. } = e {
+                        match (kind, &mut args[..]) {
+                            // rule 6: (e1+c2)+c1 => e1 + (c2+c1)
+                            (FuncKind::Add, [e1, ExprKind::Const(c2)]) => fold_add_const(c2, c1)?
+                                .map(|c3| {
                                     let e1 = mem::take(e1);
                                     expr_add_const(e1, c3)
                                 }),
-                                // rule 7: c1 + (e1-c2) => e1 + (c1-c2)
-                                (
-                                    FuncKind::Sub,
-                                    [e1, Expr {
-                                        kind: ExprKind::Const(c2),
-                                        ..
-                                    }],
-                                ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            // rule 6: (e1-c2)+c1 => e1 - (c2-c1)
+                            (FuncKind::Sub, [e1, ExprKind::Const(c2)]) => fold_sub_const(c2, c1)?
+                                .map(|c3| {
                                     let e1 = mem::take(e1);
-                                    expr_add_const(e1, c3)
+                                    expr_sub_const(e1, c3)
                                 }),
-                                // rule 7: c1 + (c2-e1) => (c1+c2) - e1
-                                (
-                                    FuncKind::Sub,
-                                    [Expr {
-                                        kind: ExprKind::Const(c2),
-                                        ..
-                                    }, e1],
-                                ) => fold_add_const(c1, c2)?.map(|c3| {
+                            // rule 6: (c2-e1)+c1 => (c2+c1) - e1
+                            (FuncKind::Sub, [ExprKind::Const(c2), e1]) => fold_add_const(c2, c1)?
+                                .map(|c3| {
                                     let e1 = mem::take(e1);
                                     const_sub_expr(c3, e1)
                                 }),
-                                // rule 5: c1 + e1 => e1 + c1
-                                _ => {
-                                    let e1 = mem::take(e);
-                                    let c1 = mem::take(c1);
-                                    Some(Expr::func(FuncKind::Add, vec![e1, Expr::new_const(c1)]))
+
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
+                [ExprKind::Const(c1), e] => {
+                    if c1.is_zero().unwrap_or_default() {
+                        // rule 4: 0+e => e
+                        let e = mem::take(e);
+                        Some(coerce_numeric(e))
+                    } else {
+                        match e {
+                            ExprKind::Func { kind, args, .. } => {
+                                match (kind, &mut args[..]) {
+                                    // rule 7: c1 + (e1+c2) => e1 + (c1+c2)
+                                    (FuncKind::Add, [e1, ExprKind::Const(c2)]) => {
+                                        fold_add_const(c1, c2)?.map(|c3| {
+                                            let e1 = mem::take(e1);
+                                            expr_add_const(e1, c3)
+                                        })
+                                    }
+                                    // rule 7: c1 + (e1-c2) => e1 + (c1-c2)
+                                    (FuncKind::Sub, [e1, ExprKind::Const(c2)]) => {
+                                        fold_sub_const(c1, c2)?.map(|c3| {
+                                            let e1 = mem::take(e1);
+                                            expr_add_const(e1, c3)
+                                        })
+                                    }
+                                    // rule 7: c1 + (c2-e1) => (c1+c2) - e1
+                                    (FuncKind::Sub, [ExprKind::Const(c2), e1]) => {
+                                        fold_add_const(c1, c2)?.map(|c3| {
+                                            let e1 = mem::take(e1);
+                                            const_sub_expr(c3, e1)
+                                        })
+                                    }
+                                    // rule 5: c1 + e1 => e1 + c1
+                                    _ => {
+                                        let e1 = mem::take(e);
+                                        let c1 = mem::take(c1);
+                                        Some(ExprKind::func(
+                                            FuncKind::Add,
+                                            vec![e1, ExprKind::Const(c1)],
+                                        ))
+                                    }
                                 }
                             }
-                        }
-                        // rule 5
-                        _ => {
-                            let e1 = mem::take(e);
-                            let c1 = mem::take(c1);
-                            Some(Expr::func(FuncKind::Add, vec![e1, Expr::new_const(c1)]))
+                            // rule 5
+                            _ => {
+                                let e1 = mem::take(e);
+                                let c1 = mem::take(c1);
+                                Some(ExprKind::func(FuncKind::Add, vec![e1, ExprKind::Const(c1)]))
+                            }
                         }
                     }
                 }
-            }
-            [Expr {
-                kind: ExprKind::Func {
+                [ExprKind::Func {
                     kind: k1, args: a1, ..
-                },
-                ..
-            }, Expr {
-                kind: ExprKind::Func {
+                }, ExprKind::Func {
                     kind: k2, args: a2, ..
-                },
-                ..
-            }] => {
-                match (k1, k2, &mut a1[..], &mut a2[..]) {
-                    // rule 8.1: (e1+c1)+(e2+c2) => (e1+e2) + (c1+c2)
-                    (
-                        FuncKind::Add,
-                        FuncKind::Add,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        expr_add_const(e, c3)
-                    }),
-                    // rule 8.2: (e1+c1)+(e2-c2) => (e1+e2) + (c1-c2)
-                    (
-                        FuncKind::Add,
-                        FuncKind::Sub,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        expr_add_const(e, c3)
-                    }),
-                    // rule 8.3: (e1-c1)+(e2+c2) => (e1+e2) - (c1-c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Add,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        expr_sub_const(e, c3)
-                    }),
-                    // rule 8.4: (e1-c1)+(e2-c2) => (e1+e2) - (c1+c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Sub,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        expr_sub_const(e, c3)
-                    }),
-                    // rule 8.5: (c1-e1)+(e2-c2) => (e2-e1) + (c1-c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Sub,
-                        [Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }, e1],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e2, e1]);
-                        expr_add_const(e, c3)
-                    }),
-                    // rule 8.6: (c1-e1)+(e2+c2) => (e2-e1) + (c1+c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Add,
-                        [Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }, e1],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e2, e1]);
-                        expr_add_const(e, c3)
-                    }),
-                    // rule 8.7: (c1-e1)+(c2-e2) => (c1+c2) - (e1+e2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Sub,
-                        [Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }, e1],
-                        [Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }, e2],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        const_sub_expr(c3, e)
-                    }),
-                    // rule 8.8: (e1-c1)+(c2-e2) => (e1-e2) - (c1-c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Sub,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }, e2],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
-                        expr_sub_const(e, c3)
-                    }),
-                    // rule 8.9: (e1+c1)+(c2-e2) => (e1-e2) + (c1+c2)
-                    (
-                        FuncKind::Add,
-                        FuncKind::Sub,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }, e2],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
-                        expr_add_const(e, c3)
-                    }),
-                    _ => None,
-                }
-            }
-            _ => None,
-        },
-        FuncKind::Sub => match fargs {
-            // rule 3: 1-1 => 0
-            [Expr {
-                kind: ExprKind::Const(c1),
-                ..
-            }, Expr {
-                kind: ExprKind::Const(c2),
-                ..
-            }] => fold_sub_const(c1, c2)?.map(Expr::new_const),
-            [e, Expr {
-                kind: ExprKind::Const(c1),
-                ..
-            }] => {
-                if c1.is_zero().unwrap_or_default() {
-                    // rule 4: e-0 => e
-                    let e = mem::take(e);
-                    Some(coerce_numeric(e))
-                } else if let ExprKind::Func { kind, args, .. } = &mut e.kind {
-                    match (kind, &mut args[..]) {
-                        // rule 6: (e1+c2)-c1 => e1 + (c2-c1)
+                }] => {
+                    match (k1, k2, &mut a1[..], &mut a2[..]) {
+                        // rule 8.1: (e1+c1)+(e2+c2) => (e1+e2) + (c1+c2)
                         (
                             FuncKind::Add,
-                            [e1, Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }],
-                        ) => fold_sub_const(c2, c1)?.map(|c3| {
+                            FuncKind::Add,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
                             let e1 = mem::take(e1);
-                            expr_add_const(e1, c3)
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            expr_add_const(e, c3)
                         }),
-                        // rule 6: (e1-c2)-c1 => e1 - (c2+c1)
+                        // rule 8.2: (e1+c1)+(e2-c2) => (e1+e2) + (c1-c2)
+                        (
+                            FuncKind::Add,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            expr_add_const(e, c3)
+                        }),
+                        // rule 8.3: (e1-c1)+(e2+c2) => (e1+e2) - (c1-c2)
                         (
                             FuncKind::Sub,
-                            [e1, Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }],
-                        ) => fold_add_const(c2, c1)?.map(|c3| {
+                            FuncKind::Add,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
                             let e1 = mem::take(e1);
-                            expr_sub_const(e1, c3)
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            expr_sub_const(e, c3)
                         }),
-                        // rule 6: (c2-e1)-c1 => (c2-c1) - e1
+                        // rule 8.4: (e1-c1)+(e2-c2) => (e1+e2) - (c1+c2)
                         (
                             FuncKind::Sub,
-                            [Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }, e1],
-                        ) => fold_sub_const(c2, c1)?.map(|c3| {
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
                             let e1 = mem::take(e1);
-                            const_sub_expr(c3, e1)
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            expr_sub_const(e, c3)
+                        }),
+                        // rule 8.5: (c1-e1)+(e2-c2) => (e2-e1) + (c1-c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [ExprKind::Const(c1), e1],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e2, e1]);
+                            expr_add_const(e, c3)
+                        }),
+                        // rule 8.6: (c1-e1)+(e2+c2) => (e2-e1) + (c1+c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Add,
+                            [ExprKind::Const(c1), e1],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e2, e1]);
+                            expr_add_const(e, c3)
+                        }),
+                        // rule 8.7: (c1-e1)+(c2-e2) => (c1+c2) - (e1+e2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [ExprKind::Const(c1), e1],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            const_sub_expr(c3, e)
+                        }),
+                        // rule 8.8: (e1-c1)+(c2-e2) => (e1-e2) - (c1-c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e1, e2]);
+                            expr_sub_const(e, c3)
+                        }),
+                        // rule 8.9: (e1+c1)+(c2-e2) => (e1-e2) + (c1+c2)
+                        (
+                            FuncKind::Add,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e1, e2]);
+                            expr_add_const(e, c3)
                         }),
                         _ => None,
                     }
-                } else {
-                    None
                 }
-            }
-            [Expr {
-                kind: ExprKind::Const(c1),
-                ..
-            }, e] => {
-                match &mut e.kind {
-                    ExprKind::Func { kind, args, .. } => match (kind, &mut args[..]) {
-                        // rule 7: c1 - (e1+c2) => (c1-c2) - e1
-                        (
-                            FuncKind::Add,
-                            [e1, Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }],
-                        ) => fold_sub_const(c1, c2)?.map(|c3| {
-                            let e1 = mem::take(e1);
-                            const_sub_expr(c3, e1)
-                        }),
-                        // rule 7: c1 - (e1-c2) => (c1+c2) - e1
-                        (
-                            FuncKind::Sub,
-                            [e1, Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }],
-                        ) => fold_add_const(c1, c2)?.map(|c3| {
-                            let e1 = mem::take(e1);
-                            const_sub_expr(c3, e1)
-                        }),
-                        // rule 7: c1 - (c2-e1) => e1 + (c1-c2)
-                        (
-                            FuncKind::Sub,
-                            [Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }, e1],
-                        ) => fold_sub_const(c1, c2)?.map(|c3| {
-                            let e1 = mem::take(e1);
-                            expr_add_const(e1, c3)
-                        }),
+                _ => None,
+            },
+            FuncKind::Sub => match fargs {
+                // rule 3: 1-1 => 0
+                [ExprKind::Const(c1), ExprKind::Const(c2)] => {
+                    fold_sub_const(c1, c2)?.map(ExprKind::Const)
+                }
+                [e, ExprKind::Const(c1)] => {
+                    if c1.is_zero().unwrap_or_default() {
+                        // rule 4: e-0 => e
+                        let e = mem::take(e);
+                        Some(coerce_numeric(e))
+                    } else if let ExprKind::Func { kind, args, .. } = e {
+                        match (kind, &mut args[..]) {
+                            // rule 6: (e1+c2)-c1 => e1 + (c2-c1)
+                            (FuncKind::Add, [e1, ExprKind::Const(c2)]) => fold_sub_const(c2, c1)?
+                                .map(|c3| {
+                                    let e1 = mem::take(e1);
+                                    expr_add_const(e1, c3)
+                                }),
+                            // rule 6: (e1-c2)-c1 => e1 - (c2+c1)
+                            (FuncKind::Sub, [e1, ExprKind::Const(c2)]) => fold_add_const(c2, c1)?
+                                .map(|c3| {
+                                    let e1 = mem::take(e1);
+                                    expr_sub_const(e1, c3)
+                                }),
+                            // rule 6: (c2-e1)-c1 => (c2-c1) - e1
+                            (FuncKind::Sub, [ExprKind::Const(c2), e1]) => fold_sub_const(c2, c1)?
+                                .map(|c3| {
+                                    let e1 = mem::take(e1);
+                                    const_sub_expr(c3, e1)
+                                }),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
+                [ExprKind::Const(c1), e] => {
+                    match e {
+                        ExprKind::Func { kind, args, .. } => match (kind, &mut args[..]) {
+                            // rule 7: c1 - (e1+c2) => (c1-c2) - e1
+                            (FuncKind::Add, [e1, ExprKind::Const(c2)]) => fold_sub_const(c1, c2)?
+                                .map(|c3| {
+                                    let e1 = mem::take(e1);
+                                    const_sub_expr(c3, e1)
+                                }),
+                            // rule 7: c1 - (e1-c2) => (c1+c2) - e1
+                            (FuncKind::Sub, [e1, ExprKind::Const(c2)]) => fold_add_const(c1, c2)?
+                                .map(|c3| {
+                                    let e1 = mem::take(e1);
+                                    const_sub_expr(c3, e1)
+                                }),
+                            // rule 7: c1 - (c2-e1) => e1 + (c1-c2)
+                            (FuncKind::Sub, [ExprKind::Const(c2), e1]) => fold_sub_const(c1, c2)?
+                                .map(|c3| {
+                                    let e1 = mem::take(e1);
+                                    expr_add_const(e1, c3)
+                                }),
+                            _ => {
+                                if c1.is_zero().unwrap_or_default() {
+                                    // rule 4: 0-e => -e
+                                    let e = mem::take(e);
+                                    Some(negate(e))
+                                } else {
+                                    None
+                                }
+                            }
+                        },
                         _ => {
                             if c1.is_zero().unwrap_or_default() {
-                                // rule 4: 0-e => -e
+                                // rule 4
                                 let e = mem::take(e);
                                 Some(negate(e))
                             } else {
                                 None
                             }
                         }
-                    },
-                    _ => {
-                        if c1.is_zero().unwrap_or_default() {
-                            // rule 4
-                            let e = mem::take(e);
-                            Some(negate(e))
-                        } else {
-                            None
-                        }
                     }
                 }
-            }
-            [Expr {
-                kind: ExprKind::Func {
+                [ExprKind::Func {
                     kind: k1, args: a1, ..
-                },
-                ..
-            }, Expr {
-                kind: ExprKind::Func {
+                }, ExprKind::Func {
                     kind: k2, args: a2, ..
-                },
-                ..
-            }] => {
-                match (k1, k2, &mut a1[..], &mut a2[..]) {
-                    // rule 8.1: (e1+c1)-(e2+c2) => (e1-e2) + (c1-c2)
-                    (
-                        FuncKind::Add,
-                        FuncKind::Add,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
-                        expr_add_const(e, c3)
-                    }),
-                    // rule 8.2: (e1-c1)-(e2+c2) => (e1-e2) - (c1+c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Add,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
-                        expr_sub_const(e, c3)
-                    }),
-                    // rule 8.3: (e1+c1)-(e2-c2) => (e1-e2) + (c1+c2)
-                    (
-                        FuncKind::Add,
-                        FuncKind::Sub,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
-                        expr_add_const(e, c3)
-                    }),
-                    // rule 8.4: (e1-c1)-(e2-c2) => (e1-e2) - (c1-c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Sub,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e1, e2]);
-                        expr_sub_const(e, c3)
-                    }),
-                    // rule 8.5: (c1-e1)-(e2-c2) => (c1+c2) - (e1+e2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Sub,
-                        [Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }, e1],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        const_sub_expr(c3, e)
-                    }),
-                    // rule 8.6: (c1-e1)-(e2+c2) => (c1-c2) - (e1+e2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Add,
-                        [Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }, e1],
-                        [e2, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        const_sub_expr(c3, e)
-                    }),
-                    // rule 8.7: (c1-e1)-(c2-e2) => (e2-e1) + (c1-c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Sub,
-                        [Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }, e1],
-                        [Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }, e2],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Sub, vec![e2, e1]);
-                        expr_add_const(e, c3)
-                    }),
-                    // rule 8.8: (e1-c1)-(c2-e2) => (e1+e2) - (c1+c2)
-                    (
-                        FuncKind::Sub,
-                        FuncKind::Sub,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }, e2],
-                    ) => fold_add_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        expr_sub_const(e, c3)
-                    }),
-                    // rule 8.9: (e1+c1)-(c2-e2) => (e1+e2) + (c1-c2)
-                    (
-                        FuncKind::Add,
-                        FuncKind::Sub,
-                        [e1, Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }],
-                        [Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }, e2],
-                    ) => fold_sub_const(c1, c2)?.map(|c3| {
-                        let e1 = mem::take(e1);
-                        let e2 = mem::take(e2);
-                        let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                        expr_add_const(e, c3)
-                    }),
-                    _ => None,
+                }] => {
+                    match (k1, k2, &mut a1[..], &mut a2[..]) {
+                        // rule 8.1: (e1+c1)-(e2+c2) => (e1-e2) + (c1-c2)
+                        (
+                            FuncKind::Add,
+                            FuncKind::Add,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e1, e2]);
+                            expr_add_const(e, c3)
+                        }),
+                        // rule 8.2: (e1-c1)-(e2+c2) => (e1-e2) - (c1+c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Add,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e1, e2]);
+                            expr_sub_const(e, c3)
+                        }),
+                        // rule 8.3: (e1+c1)-(e2-c2) => (e1-e2) + (c1+c2)
+                        (
+                            FuncKind::Add,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e1, e2]);
+                            expr_add_const(e, c3)
+                        }),
+                        // rule 8.4: (e1-c1)-(e2-c2) => (e1-e2) - (c1-c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e1, e2]);
+                            expr_sub_const(e, c3)
+                        }),
+                        // rule 8.5: (c1-e1)-(e2-c2) => (c1+c2) - (e1+e2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [ExprKind::Const(c1), e1],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            const_sub_expr(c3, e)
+                        }),
+                        // rule 8.6: (c1-e1)-(e2+c2) => (c1-c2) - (e1+e2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Add,
+                            [ExprKind::Const(c1), e1],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            const_sub_expr(c3, e)
+                        }),
+                        // rule 8.7: (c1-e1)-(c2-e2) => (e2-e1) + (c1-c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [ExprKind::Const(c1), e1],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Sub, vec![e2, e1]);
+                            expr_add_const(e, c3)
+                        }),
+                        // rule 8.8: (e1-c1)-(c2-e2) => (e1+e2) - (c1+c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            expr_sub_const(e, c3)
+                        }),
+                        // rule 8.9: (e1+c1)-(c2-e2) => (e1+e2) + (c1-c2)
+                        (
+                            FuncKind::Add,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            expr_add_const(e, c3)
+                        }),
+                        _ => None,
+                    }
                 }
-            }
+                _ => None,
+            },
             _ => None,
-        },
-        _ => None,
-    };
+        };
     Ok(res)
 }
 
 #[inline]
-fn expr_add_const(e: Expr, c: Const) -> Expr {
+fn expr_add_const(e: ExprKind, c: Const) -> ExprKind {
     if c.is_zero().unwrap_or_default() {
         coerce_numeric(e)
     } else {
-        Expr::func(FuncKind::Add, vec![e, Expr::new_const(c)])
+        ExprKind::func(FuncKind::Add, vec![e, ExprKind::Const(c)])
     }
 }
 
 #[inline]
-fn coerce_numeric(e: Expr) -> Expr {
+fn coerce_numeric(e: ExprKind) -> ExprKind {
     // todo: add casting
     e
 }
 
 #[inline]
-fn expr_sub_const(e: Expr, c: Const) -> Expr {
+fn expr_sub_const(e: ExprKind, c: Const) -> ExprKind {
     if c.is_zero().unwrap_or_default() {
         coerce_numeric(e)
     } else {
-        Expr::func(FuncKind::Sub, vec![e, Expr::new_const(c)])
+        ExprKind::func(FuncKind::Sub, vec![e, ExprKind::Const(c)])
     }
 }
 
 #[inline]
-fn negate(e: Expr) -> Expr {
-    Expr::func(FuncKind::Neg, vec![e])
+fn negate(e: ExprKind) -> ExprKind {
+    ExprKind::func(FuncKind::Neg, vec![e])
 }
 
 #[inline]
-fn const_sub_expr(c: Const, e: Expr) -> Expr {
+fn const_sub_expr(c: Const, e: ExprKind) -> ExprKind {
     if c.is_zero().unwrap_or_default() {
         negate(e)
     } else {
-        Expr::func(FuncKind::Sub, vec![Expr::new_const(c), e])
+        ExprKind::func(FuncKind::Sub, vec![ExprKind::Const(c), e])
     }
 }
 
@@ -1422,383 +1216,271 @@ fn const_sub_expr(c: Const, e: Expr) -> Expr {
 /// 5. EXISTS/NOT EXISTS
 ///
 /// 6. IN/NOT IN
-fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Expr>> {
-    let res =
-        match p {
-            Pred::Not(e) => match &mut e.kind {
-                // 1.1
-                ExprKind::Pred(Pred::Exists(subq)) => {
-                    Some(Expr::pred(Pred::NotExists(mem::take(subq))))
-                }
-                // 1.2
-                ExprKind::Pred(Pred::NotExists(subq)) => {
-                    Some(Expr::pred(Pred::Exists(mem::take(subq))))
-                }
-                // 1.3
-                ExprKind::Pred(Pred::InSubquery(lhs, subq)) => Some(Expr::pred(
-                    Pred::NotInSubquery(mem::take(lhs), mem::take(subq)),
-                )),
-                // 1.4
-                ExprKind::Pred(Pred::NotInSubquery(lhs, subq)) => Some(Expr::pred(
-                    Pred::InSubquery(mem::take(lhs), mem::take(subq)),
-                )),
-                // 1.5
-                ExprKind::Pred(Pred::Func { kind, args }) => kind.logic_flip().map(|kind| {
-                    let args = mem::take(args);
-                    Expr::pred(Pred::Func { kind, args })
-                }),
-                // 1.6
-                ExprKind::Const(c) => fold_not_const(c)?.map(Expr::new_const),
-                // 1.7 todo
-                ExprKind::Pred(Pred::Not(_e)) => None,
-                _ => None,
-            },
-            Pred::Func { kind, args } => {
-                // 2.1 and 2.2
-                let res = match kind {
-                    PredFuncKind::Equal => fold_eq(&args[0].kind, &args[1].kind)?,
-                    PredFuncKind::Greater => fold_gt(&args[0].kind, &args[1].kind)?,
-                    PredFuncKind::GreaterEqual => fold_ge(&args[0].kind, &args[1].kind)?,
-                    PredFuncKind::Less => fold_lt(&args[0].kind, &args[1].kind)?,
-                    PredFuncKind::LessEqual => fold_le(&args[0].kind, &args[1].kind)?,
-                    PredFuncKind::NotEqual => fold_ne(&args[0].kind, &args[1].kind)?,
-                    PredFuncKind::SafeEqual => fold_safeeq(&args[0].kind, &args[1].kind)?,
-                    PredFuncKind::IsNull => fold_isnull(&args[0].kind)?,
-                    PredFuncKind::IsNotNull => fold_isnotnull(&args[0].kind)?,
-                    PredFuncKind::IsTrue => fold_istrue(&args[0].kind)?,
-                    PredFuncKind::IsNotTrue => fold_isnottrue(&args[0].kind)?,
-                    PredFuncKind::IsFalse => fold_isfalse(&args[0].kind)?,
-                    PredFuncKind::IsNotFalse => fold_isnotfalse(&args[0].kind)?,
-                    _ => None, // todo
-                }
-                .map(Expr::new_const);
-                if res.is_some() {
-                    // already folded as constant
-                    res
-                } else if let Some(flipped_kind) = kind.pos_flip() {
-                    match &mut args[..] {
-                        // 2.3: e1 + c1 cmp c2 => e1 cmp c3
-                        [Expr {
-                            kind:
-                                ExprKind::Func {
-                                    kind: FuncKind::Add,
-                                    args: fargs,
-                                    ..
-                                },
-                            ..
-                        }, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }] => match &mut fargs[..] {
-                            [e1, Expr {
-                                kind: ExprKind::Const(c1),
-                                ..
-                            }] => fold_sub_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                coerce_cmp_func(*kind, e1, Expr::new_const(c3))
-                            }),
-                            _ => None,
-                        },
-                        [Expr {
-                            kind:
-                                ExprKind::Func {
-                                    kind: FuncKind::Sub,
-                                    args: fargs,
-                                    ..
-                                },
-                            ..
-                        }, Expr {
-                            kind: ExprKind::Const(c2),
-                            ..
-                        }] => match &mut fargs[..] {
-                            // 2.3: e1 - c1 cmp c2
-                            [e1, Expr {
-                                kind: ExprKind::Const(c1),
-                                ..
-                            }] => fold_add_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                coerce_cmp_func(*kind, e1, Expr::new_const(c3))
-                            }),
-                            // 2.3: c1 - e1 cmp c2
-                            [Expr {
-                                kind: ExprKind::Const(c1),
-                                ..
-                            }, e1] => {
-                                // e1 flip_cmp (c1-c2)
-                                fold_sub_const(c1, c2)?.map(|c3| {
-                                    let e1 = mem::take(e1);
-                                    coerce_cmp_func(flipped_kind, e1, Expr::new_const(c3))
-                                })
-                            }
-                            _ => None,
-                        },
-                        // 2.4: c1 cmp e1 + c2 => e1 flip_cmp c3
-                        [Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }, Expr {
-                            kind:
-                                ExprKind::Func {
-                                    kind: FuncKind::Add,
-                                    args: fargs,
-                                    ..
-                                },
-                            ..
-                        }] => match &mut fargs[..] {
-                            [e1, Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }] => fold_sub_const(c1, c2)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                coerce_cmp_func(flipped_kind, e1, Expr::new_const(c3))
-                            }),
-                            _ => None,
-                        },
-                        [Expr {
-                            kind: ExprKind::Const(c1),
-                            ..
-                        }, Expr {
-                            kind:
-                                ExprKind::Func {
-                                    kind: FuncKind::Sub,
-                                    args: fargs,
-                                    ..
-                                },
-                            ..
-                        }] => match &mut fargs[..] {
-                            // 2.4: c1 cmp e1 - c2 => e1 flip_cmp (c1+c2)
-                            [e1, Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }] => fold_add_const(c1, c2)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                coerce_cmp_func(flipped_kind, e1, Expr::new_const(c3))
-                            }),
-                            // 2.4: c1 cmp c2 - e1 => e1 cmp (c2-c1)
-                            [Expr {
-                                kind: ExprKind::Const(c2),
-                                ..
-                            }, e1] => fold_sub_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                coerce_cmp_func(*kind, e1, Expr::new_const(c3))
-                            }),
-                            _ => None,
-                        },
-                        // 2.5: c1 cmp e1 => e1 flip_cmp c1
-                        [c1 @ Expr {
-                            kind: ExprKind::Const(_),
-                            ..
-                        }, e1] => {
-                            let c1 = mem::take(c1);
+fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<ExprKind>> {
+    let res = match p {
+        Pred::Not(e) => match &mut **e {
+            // 1.1
+            ExprKind::Pred(Pred::Exists(subq)) => {
+                Some(ExprKind::Pred(Pred::NotExists(mem::take(subq))))
+            }
+            // 1.2
+            ExprKind::Pred(Pred::NotExists(subq)) => {
+                Some(ExprKind::Pred(Pred::Exists(mem::take(subq))))
+            }
+            // 1.3
+            ExprKind::Pred(Pred::InSubquery(lhs, subq)) => Some(ExprKind::Pred(
+                Pred::NotInSubquery(mem::take(lhs), mem::take(subq)),
+            )),
+            // 1.4
+            ExprKind::Pred(Pred::NotInSubquery(lhs, subq)) => Some(ExprKind::Pred(
+                Pred::InSubquery(mem::take(lhs), mem::take(subq)),
+            )),
+            // 1.5
+            ExprKind::Pred(Pred::Func { kind, args }) => kind.logic_flip().map(|kind| {
+                let args = mem::take(args);
+                ExprKind::Pred(Pred::Func { kind, args })
+            }),
+            // 1.6
+            ExprKind::Const(c) => fold_not_const(c)?.map(ExprKind::Const),
+            // 1.7 todo
+            ExprKind::Pred(Pred::Not(_e)) => None,
+            _ => None,
+        },
+        Pred::Func { kind, args } => {
+            // 2.1 and 2.2
+            let res = match kind {
+                PredFuncKind::Equal => fold_eq(&args[0], &args[1])?,
+                PredFuncKind::Greater => fold_gt(&args[0], &args[1])?,
+                PredFuncKind::GreaterEqual => fold_ge(&args[0], &args[1])?,
+                PredFuncKind::Less => fold_lt(&args[0], &args[1])?,
+                PredFuncKind::LessEqual => fold_le(&args[0], &args[1])?,
+                PredFuncKind::NotEqual => fold_ne(&args[0], &args[1])?,
+                PredFuncKind::SafeEqual => fold_safeeq(&args[0], &args[1])?,
+                PredFuncKind::IsNull => fold_isnull(&args[0])?,
+                PredFuncKind::IsNotNull => fold_isnotnull(&args[0])?,
+                PredFuncKind::IsTrue => fold_istrue(&args[0])?,
+                PredFuncKind::IsNotTrue => fold_isnottrue(&args[0])?,
+                PredFuncKind::IsFalse => fold_isfalse(&args[0])?,
+                PredFuncKind::IsNotFalse => fold_isnotfalse(&args[0])?,
+                _ => None, // todo
+            }
+            .map(ExprKind::Const);
+            if res.is_some() {
+                // already folded as constant
+                res
+            } else if let Some(flipped_kind) = kind.pos_flip() {
+                match &mut args[..] {
+                    // 2.3: e1 + c1 cmp c2 => e1 cmp c3
+                    [ExprKind::Func {
+                        kind: FuncKind::Add,
+                        args: fargs,
+                        ..
+                    }, ExprKind::Const(c2)] => match &mut fargs[..] {
+                        [e1, ExprKind::Const(c1)] => fold_sub_const(c2, c1)?.map(|c3| {
                             let e1 = mem::take(e1);
-                            Some(coerce_cmp_func(flipped_kind, e1, c1))
-                        }
-                        [Expr {
-                            kind:
-                                ExprKind::Func {
-                                    kind: kind1,
-                                    args: args1,
-                                    ..
-                                },
-                            ..
-                        }, Expr {
-                            kind:
-                                ExprKind::Func {
-                                    kind: kind2,
-                                    args: args2,
-                                    ..
-                                },
-                            ..
-                        }] => match (kind1, kind2, &mut args1[..], &mut args2[..]) {
-                            // 2.6: e1 + c1 cmp e2 + c2 => e1 cmp e2 + (c2-c1)
-                            (
-                                FuncKind::Add,
-                                FuncKind::Add,
-                                [e1, Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }],
-                                [e2, Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }],
-                            ) => fold_sub_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let right = expr_add_const(e2, c3);
-                                coerce_cmp_func(*kind, e1, right)
-                            }),
-                            // 2.6: e1 + c1 cmp e2 - c2 => e1 cmp e2 - (c2+c1)
-                            (
-                                FuncKind::Add,
-                                FuncKind::Sub,
-                                [e1, Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }],
-                                [e2, Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }],
-                            ) => fold_add_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let right = expr_sub_const(e2, c3);
-                                coerce_cmp_func(*kind, e1, right)
-                            }),
-                            // 2.6: e1 + c1 cmp c2 - e2 => e1 + e2 cmp (c2-c1)
-                            (
-                                FuncKind::Add,
-                                FuncKind::Sub,
-                                [e1, Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }],
-                                [Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }, e2],
-                            ) => fold_sub_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                                coerce_cmp_func(*kind, e, Expr::new_const(c3))
-                            }),
-                            // 2.6: e1 - c1 cmp e2 + c2 => e1 cmp e2 + (c2+c1)
-                            (
-                                FuncKind::Sub,
-                                FuncKind::Add,
-                                [e1, Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }],
-                                [e2, Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }],
-                            ) => fold_add_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let right = expr_add_const(e2, c3);
-                                coerce_cmp_func(*kind, e1, right)
-                            }),
-                            // 2.6: e1 - c1 cmp e2 - c2 => e1 cmp e2 - (c2-c1)
-                            (
-                                FuncKind::Sub,
-                                FuncKind::Sub,
-                                [e1, Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }],
-                                [e2, Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }],
-                            ) => fold_sub_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let right = expr_sub_const(e2, c3);
-                                coerce_cmp_func(*kind, e1, right)
-                            }),
-                            // 2.6: e1 - c1 cmp c2 - e2 => e1 + e2 cmp (c2+c1)
-                            (
-                                FuncKind::Sub,
-                                FuncKind::Sub,
-                                [e1, Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }],
-                                [Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }, e2],
-                            ) => fold_add_const(c2, c1)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let e = Expr::func(FuncKind::Add, vec![e1, e2]);
-                                coerce_cmp_func(*kind, e, Expr::new_const(c3))
-                            }),
-                            // 2.6: c1 - e1 cmp e2 + c2 => e2 + e1 flip_cmp (c1-c2)
-                            (
-                                FuncKind::Sub,
-                                FuncKind::Add,
-                                [Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }, e1],
-                                [e2, Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }],
-                            ) => fold_sub_const(c1, c2)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let e = Expr::func(FuncKind::Add, vec![e2, e1]);
-                                coerce_cmp_func(flipped_kind, e, Expr::new_const(c3))
-                            }),
-                            // 2.6: c1 - e1 cmp e2 - c2 => e2 + e1 flip_cmp (c1+c2)
-                            (
-                                FuncKind::Sub,
-                                FuncKind::Sub,
-                                [Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }, e1],
-                                [e2, Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }],
-                            ) => fold_add_const(c1, c2)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let e = Expr::func(FuncKind::Add, vec![e2, e1]);
-                                coerce_cmp_func(flipped_kind, e, Expr::new_const(c3))
-                            }),
-                            // 2.6: c1 - e1 cmp c2 - e2 => e1 flip_cmp e2 + (c1-c2)
-                            (
-                                FuncKind::Sub,
-                                FuncKind::Sub,
-                                [Expr {
-                                    kind: ExprKind::Const(c1),
-                                    ..
-                                }, e1],
-                                [Expr {
-                                    kind: ExprKind::Const(c2),
-                                    ..
-                                }, e2],
-                            ) => fold_sub_const(c1, c2)?.map(|c3| {
-                                let e1 = mem::take(e1);
-                                let e2 = mem::take(e2);
-                                let right = expr_add_const(e2, c3);
-                                coerce_cmp_func(flipped_kind, e1, right)
-                            }),
-                            _ => None,
-                        },
+                            coerce_cmp_func(*kind, e1, ExprKind::Const(c3))
+                        }),
                         _ => None,
+                    },
+                    [ExprKind::Func {
+                        kind: FuncKind::Sub,
+                        args: fargs,
+                        ..
+                    }, ExprKind::Const(c2)] => match &mut fargs[..] {
+                        // 2.3: e1 - c1 cmp c2
+                        [e1, ExprKind::Const(c1)] => fold_add_const(c2, c1)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            coerce_cmp_func(*kind, e1, ExprKind::Const(c3))
+                        }),
+                        // 2.3: c1 - e1 cmp c2
+                        [ExprKind::Const(c1), e1] => {
+                            // e1 flip_cmp (c1-c2)
+                            fold_sub_const(c1, c2)?.map(|c3| {
+                                let e1 = mem::take(e1);
+                                coerce_cmp_func(flipped_kind, e1, ExprKind::Const(c3))
+                            })
+                        }
+                        _ => None,
+                    },
+                    // 2.4: c1 cmp e1 + c2 => e1 flip_cmp c3
+                    [ExprKind::Const(c1), ExprKind::Func {
+                        kind: FuncKind::Add,
+                        args: fargs,
+                        ..
+                    }] => match &mut fargs[..] {
+                        [e1, ExprKind::Const(c2)] => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            coerce_cmp_func(flipped_kind, e1, ExprKind::Const(c3))
+                        }),
+                        _ => None,
+                    },
+                    [ExprKind::Const(c1), ExprKind::Func {
+                        kind: FuncKind::Sub,
+                        args: fargs,
+                        ..
+                    }] => match &mut fargs[..] {
+                        // 2.4: c1 cmp e1 - c2 => e1 flip_cmp (c1+c2)
+                        [e1, ExprKind::Const(c2)] => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            coerce_cmp_func(flipped_kind, e1, ExprKind::Const(c3))
+                        }),
+                        // 2.4: c1 cmp c2 - e1 => e1 cmp (c2-c1)
+                        [ExprKind::Const(c2), e1] => fold_sub_const(c2, c1)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            coerce_cmp_func(*kind, e1, ExprKind::Const(c3))
+                        }),
+                        _ => None,
+                    },
+                    // 2.5: c1 cmp e1 => e1 flip_cmp c1
+                    [c1 @ ExprKind::Const(_), e1] => {
+                        let c1 = mem::take(c1);
+                        let e1 = mem::take(e1);
+                        Some(coerce_cmp_func(flipped_kind, e1, c1))
                     }
-                } else {
-                    None
+                    [ExprKind::Func {
+                        kind: kind1,
+                        args: args1,
+                        ..
+                    }, ExprKind::Func {
+                        kind: kind2,
+                        args: args2,
+                        ..
+                    }] => match (kind1, kind2, &mut args1[..], &mut args2[..]) {
+                        // 2.6: e1 + c1 cmp e2 + c2 => e1 cmp e2 + (c2-c1)
+                        (
+                            FuncKind::Add,
+                            FuncKind::Add,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c2, c1)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let right = expr_add_const(e2, c3);
+                            coerce_cmp_func(*kind, e1, right)
+                        }),
+                        // 2.6: e1 + c1 cmp e2 - c2 => e1 cmp e2 - (c2+c1)
+                        (
+                            FuncKind::Add,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c2, c1)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let right = expr_sub_const(e2, c3);
+                            coerce_cmp_func(*kind, e1, right)
+                        }),
+                        // 2.6: e1 + c1 cmp c2 - e2 => e1 + e2 cmp (c2-c1)
+                        (
+                            FuncKind::Add,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_sub_const(c2, c1)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            coerce_cmp_func(*kind, e, ExprKind::Const(c3))
+                        }),
+                        // 2.6: e1 - c1 cmp e2 + c2 => e1 cmp e2 + (c2+c1)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Add,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c2, c1)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let right = expr_add_const(e2, c3);
+                            coerce_cmp_func(*kind, e1, right)
+                        }),
+                        // 2.6: e1 - c1 cmp e2 - c2 => e1 cmp e2 - (c2-c1)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c2, c1)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let right = expr_sub_const(e2, c3);
+                            coerce_cmp_func(*kind, e1, right)
+                        }),
+                        // 2.6: e1 - c1 cmp c2 - e2 => e1 + e2 cmp (c2+c1)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [e1, ExprKind::Const(c1)],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_add_const(c2, c1)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e1, e2]);
+                            coerce_cmp_func(*kind, e, ExprKind::Const(c3))
+                        }),
+                        // 2.6: c1 - e1 cmp e2 + c2 => e2 + e1 flip_cmp (c1-c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Add,
+                            [ExprKind::Const(c1), e1],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e2, e1]);
+                            coerce_cmp_func(flipped_kind, e, ExprKind::Const(c3))
+                        }),
+                        // 2.6: c1 - e1 cmp e2 - c2 => e2 + e1 flip_cmp (c1+c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [ExprKind::Const(c1), e1],
+                            [e2, ExprKind::Const(c2)],
+                        ) => fold_add_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let e = ExprKind::func(FuncKind::Add, vec![e2, e1]);
+                            coerce_cmp_func(flipped_kind, e, ExprKind::Const(c3))
+                        }),
+                        // 2.6: c1 - e1 cmp c2 - e2 => e1 flip_cmp e2 + (c1-c2)
+                        (
+                            FuncKind::Sub,
+                            FuncKind::Sub,
+                            [ExprKind::Const(c1), e1],
+                            [ExprKind::Const(c2), e2],
+                        ) => fold_sub_const(c1, c2)?.map(|c3| {
+                            let e1 = mem::take(e1);
+                            let e2 = mem::take(e2);
+                            let right = expr_add_const(e2, c3);
+                            coerce_cmp_func(flipped_kind, e1, right)
+                        }),
+                        _ => None,
+                    },
+                    _ => None,
                 }
+            } else {
+                None
             }
-            Pred::Conj(es) => {
-                let eff = simplify_conj(es, null_coalesce)?;
-                if eff == RuleEffect::NONE {
-                    None
-                } else if es.len() == 1 {
-                    Some(es.pop().unwrap())
-                } else {
-                    Some(Expr::pred_conj(mem::take(es)))
-                }
+        }
+        Pred::Conj(es) => {
+            let eff = simplify_conj(es, null_coalesce)?;
+            if eff == RuleEffect::NONE {
+                None
+            } else if es.len() == 1 {
+                Some(es.pop().unwrap())
+            } else {
+                Some(ExprKind::pred_conj(mem::take(es)))
             }
-            _ => None, // todo: handle other predicates
-        };
+        }
+        _ => None, // todo: handle other predicates
+    };
     Ok(res)
 }
 
 #[inline]
-fn coerce_cmp_func(kind: PredFuncKind, e1: Expr, e2: Expr) -> Expr {
+fn coerce_cmp_func(kind: PredFuncKind, e1: ExprKind, e2: ExprKind) -> ExprKind {
     // todo: coerce casting
-    Expr::pred_func(kind, vec![e1, e2])
+    ExprKind::pred_func(kind, vec![e1, e2])
 }
 
 #[cfg(test)]
@@ -1993,10 +1675,7 @@ mod tests {
                 expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 match get_filt_expr(&q1).as_slice() {
-                    [Expr {
-                        kind: ExprKind::Pred(Pred::NotExists(_)),
-                        ..
-                    }] => (),
+                    [ExprKind::Pred(Pred::NotExists(_))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
@@ -2008,10 +1687,7 @@ mod tests {
                 expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 match get_filt_expr(&q1).as_slice() {
-                    [Expr {
-                        kind: ExprKind::Pred(Pred::Exists(_)),
-                        ..
-                    }] => (),
+                    [ExprKind::Pred(Pred::Exists(_))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
@@ -2028,10 +1704,7 @@ mod tests {
                 expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 match get_filt_expr(&q1).as_slice() {
-                    [Expr {
-                        kind: ExprKind::Pred(Pred::NotInSubquery(..)),
-                        ..
-                    }] => (),
+                    [ExprKind::Pred(Pred::NotInSubquery(..))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
@@ -2049,10 +1722,7 @@ mod tests {
                 expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
                 match get_filt_expr(&q1).as_slice() {
-                    [Expr {
-                        kind: ExprKind::Pred(Pred::InSubquery(..)),
-                        ..
-                    }] => (),
+                    [ExprKind::Pred(Pred::InSubquery(..))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
             },
@@ -2613,20 +2283,20 @@ mod tests {
     fn assert_col_rejects_null(s1: &str, q1: LgcPlan) {
         print_plan(s1, &q1);
         let filter = get_filt_expr(&q1);
-        assert!(expr_rejects_null(&Expr::pred_conj(filter)))
+        assert!(expr_rejects_null(&ExprKind::pred_conj(filter)))
     }
 
     fn assert_col_not_rejects_null(s1: &str, q1: LgcPlan) {
         print_plan(s1, &q1);
         let filter = get_filt_expr(&q1);
-        assert!(!expr_rejects_null(&Expr::pred_conj(filter)))
+        assert!(!expr_rejects_null(&ExprKind::pred_conj(filter)))
     }
 
     // convert all columns in expressions to null and check if it rejects null
-    fn expr_rejects_null(e: &Expr) -> bool {
+    fn expr_rejects_null(e: &ExprKind) -> bool {
         e.clone()
-            .reject_null(|e| match &e.kind {
-                ExprKind::Col(_) => *e = Expr::const_null(),
+            .reject_null(|e| match e {
+                ExprKind::Col(_) => *e = ExprKind::const_null(),
                 _ => (),
             })
             .unwrap()

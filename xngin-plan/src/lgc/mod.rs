@@ -8,13 +8,13 @@ mod resolv;
 mod scope;
 mod setop;
 
+use crate::error::Result;
 pub use builder::LgcBuilder;
 pub use col::ProjCol;
 pub use op::*;
 pub use query::{Location, QryIDs, QuerySet, Subquery};
 pub use reflect::reflect;
 pub use setop::{Setop, SetopKind, SubqOp};
-use crate::error::Result;
 use xngin_catalog::Catalog;
 use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::QueryID;
@@ -33,9 +33,12 @@ pub struct LgcPlan {
 }
 
 impl LgcPlan {
-
     #[inline]
-    pub fn new<C: Catalog>(catalog: &C, default_schema: &str, query: &QueryExpr<'_>) -> Result<Self> {
+    pub fn new<C: Catalog>(
+        catalog: &C,
+        default_schema: &str,
+        query: &QueryExpr<'_>,
+    ) -> Result<Self> {
         let builder = LgcBuilder::new(catalog, default_schema)?;
         builder.build(query)
     }
@@ -46,7 +49,7 @@ impl LgcPlan {
     /// For example, The plan of "SELECT c0 FROM t1 JOIN t2"
     /// is represented as "[Proj, Join, Proj, Scan, Proj, Scan]"
     #[inline]
-    pub fn shape(&self) -> Vec<OpKind> {
+    pub fn shape(&self) -> Vec<OpTy> {
         let mut shape = vec![];
         generate_shape(&self.qry_set, &self.root, &mut shape);
         shape
@@ -59,7 +62,7 @@ impl LgcPlan {
 }
 
 #[inline]
-fn generate_shape(qs: &QuerySet, root: &QueryID, shape: &mut Vec<OpKind>) {
+fn generate_shape(qs: &QuerySet, root: &QueryID, shape: &mut Vec<OpTy>) {
     if let Some(subq) = qs.get(root) {
         let mut sg = ShapeGen { qs, shape };
         subq.root.walk(&mut sg);
@@ -68,7 +71,7 @@ fn generate_shape(qs: &QuerySet, root: &QueryID, shape: &mut Vec<OpKind>) {
 
 struct ShapeGen<'a> {
     qs: &'a QuerySet,
-    shape: &'a mut Vec<OpKind>,
+    shape: &'a mut Vec<OpTy>,
 }
 
 impl OpVisitor for ShapeGen<'_> {
@@ -76,10 +79,10 @@ impl OpVisitor for ShapeGen<'_> {
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-        if let Op::Query(query_id) = op {
+        if let OpKind::Query(query_id) = &op.kind {
             generate_shape(self.qs, query_id, self.shape);
         } else {
-            self.shape.push(op.kind());
+            self.shape.push(op.ty());
         }
         ControlFlow::Continue(())
     }
@@ -100,7 +103,7 @@ pub(crate) mod tests {
     ( $($ok:ident),* ) => {
         vec![
             $(
-                OpKind::$ok
+                OpTy::$ok
             ),*
         ]
     }
@@ -175,80 +178,101 @@ pub(crate) mod tests {
     fn test_plan_build_select_table() {
         let cat = tpch_catalog();
         for (sql, n_cols, shape) in vec![
-        ("select 1 from lineitem", 1, plan_shape![Proj, Proj, Table]),
-        ("select l_orderkey from lineitem", 1, plan_shape![Proj, Proj, Table]),
-        ("select l_orderkey from tpch.lineitem", 1, plan_shape![Proj, Proj, Table]),
-        ("select lineitem.l_orderkey from lineitem", 1, plan_shape![Proj, Proj, Table]),
-        ("select lineitem.l_orderkey from tpch.lineitem", 1, plan_shape![Proj, Proj, Table]),
-        ("select tpch.lineitem.l_orderkey from lineitem", 1, plan_shape![Proj, Proj, Table]),
-        ("select tpch.lineitem.l_orderkey, tpch.lineitem.l_quantity from lineitem", 2, plan_shape![Proj, Proj, Table]),
-        ("select tpch.lineitem.l_orderkey from lineitem, (select 1) b", 1, plan_shape![Proj, Join, Proj, Table, Row]),
-        ("select n, l_orderkey from lineitem, (select 1 as n) b", 2, plan_shape![Proj, Join, Proj, Table, Row]),
-        ("select l_orderkey, l_partkey from lineitem", 2, plan_shape![Proj, Proj, Table]),
-        ("select l_orderkey, l_partkey from lineitem as li", 2, plan_shape![Proj, Proj, Table]),
-        ("select * from lineitem", 16, plan_shape![Proj, Proj, Table]),
-        ("select lineitem.* from lineitem", 16, plan_shape![Proj, Proj, Table]),
-        ("select tpch.lineitem.* from lineitem", 16, plan_shape![Proj, Proj, Table]),
-        ("select l_quantity, tpch.lineitem.* from lineitem where l_quantity > 10", 17, plan_shape![Proj, Filt, Proj, Table]),
-        ("select l_quantity, tpch.lineitem.* from lineitem, (select 1) b where l_quantity > 10", 17, plan_shape![Proj, Filt, Join, Proj, Table, Row]),
-        ("select l_orderkey from lineitem where true", 1, plan_shape![Proj, Filt, Proj, Table]),
-        ("select l_orderkey from lineitem where 1", 1, plan_shape![Proj, Filt, Proj, Table]),
-        ("select l_orderkey from lineitem where l_comment is null", 1, plan_shape![Proj, Filt, Proj, Table]),
-        ("select tpch.lineitem.l_orderkey from lineitem, lineitem as l2 where lineitem.l_orderkey = l2.l_orderkey", 1, plan_shape![Proj, Filt, Join, Proj, Table, Proj, Table]),
-        ("select lineitem.l_orderkey from lineitem, lineitem as l2 where lineitem.l_orderkey = l2.l_orderkey", 1, plan_shape![Proj, Filt, Join, Proj, Table, Proj, Table]),
-        ("select l_orderkey from lineitem group by l_orderkey", 1, plan_shape![Aggr, Proj, Table]),
-        ("select l_orderkey+1 from lineitem group by l_orderkey+1", 1, plan_shape![Aggr, Proj, Table]),
-        ("select l_orderkey+1 as k from lineitem group by k", 1, plan_shape![Aggr, Proj, Table]),
-        // below case also fails in MySQL, but Oracle supports it, should we support it?
-        // ("select l_orderkey+1, l_orderkey+1+count(*) from lineitem group by l_orderkey+1", 1, plan_shape![Aggr, Proj, Table]),
-        ("select 1 from lineitem group by l_orderkey having l_orderkey > 0", 1, plan_shape![Filt, Aggr, Proj, Table]),
-        ("select l_orderkey, count(*) from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
-        ("select count(*), l_orderkey from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
-        ("select l_orderkey, count(*) from lineitem where l_tax > 0.1 group by l_orderkey", 2, plan_shape![Aggr, Filt, Proj, Table]),
-        ("select l_orderkey from lineitem group by l_orderkey having count(*) > 1", 1, plan_shape![Filt, Aggr, Proj, Table]),
-        ("select l_orderkey from lineitem group by l_orderkey having sum(l_extendedprice * l_tax) > 1", 1, plan_shape![Filt, Aggr, Proj, Table]),
-        ("select l_orderkey from lineitem where l_shipdate is null group by l_orderkey having count(*) > 1", 1, plan_shape![Filt, Aggr, Filt, Proj, Table]),
-        ("select l_orderkey from lineitem having l_orderkey is not null", 1, plan_shape![Filt, Proj, Proj, Table]),
-        ("select count(*) from lineitem having sum(1) > 0", 1, plan_shape![Filt, Aggr, Proj, Table]),
-        ("select l_orderkey, count(*) from lineitem group by l_orderkey having l_orderkey > 0", 2, plan_shape![Filt, Aggr, Proj, Table]),
-        ("select l_orderkey from lineitem where l_tax > 0 having l_orderkey < 10", 1, plan_shape![Filt, Proj, Filt, Proj, Table]),
-        ("select l_orderkey k, count(*) from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
-        ("select l_orderkey from lineitem order by l_orderkey", 1, plan_shape![Sort, Proj, Proj, Table]),
-        ("select l_orderkey from lineitem order by lineitem.l_orderkey", 1, plan_shape![Sort, Proj, Proj, Table]),
-        ("select l_orderkey from lineitem order by tpch.lineitem.l_orderkey", 1, plan_shape![Sort, Proj, Proj, Table]),
-        ("select l_orderkey from lineitem order by l_linenumber", 1, plan_shape![Sort, Proj, Proj, Table]),
-        ("select l_orderkey from lineitem order by l_linenumber desc", 1, plan_shape![Sort, Proj, Proj, Table]),
-        ("select l_orderkey k from lineitem order by k", 1, plan_shape![Sort, Proj, Proj, Table]),
-        ("select l_orderkey k, sum(1) from lineitem group by l_orderkey order by k", 2, plan_shape![Sort, Aggr, Proj, Table]),
-        ("select l_orderkey k, sum(1) from lineitem group by k order by k", 2, plan_shape![Sort, Aggr, Proj, Table]),
-        ("select l_orderkey k, sum(1) from lineitem group by l_orderkey order by l_orderkey", 2, plan_shape![Sort, Aggr, Proj, Table]),
-        ("select l_orderkey, count(*) from lineitem group by l_orderkey order by l_orderkey", 2, plan_shape![Sort, Aggr, Proj, Table]),
-        ("select l_orderkey, sum(l_tax) from lineitem group by l_orderkey order by sum(l_tax) desc, l_orderkey", 2, plan_shape![Sort, Aggr, Proj, Table]),
-        ("select count(*) from lineitem order by count(*)", 1, plan_shape![Sort, Aggr, Proj, Table]),
-        ("select l_orderkey from lineitem limit 10", 1, plan_shape![Limit, Proj, Proj, Table]),
-        ("select l_orderkey from lineitem limit 10 offset 10", 1, plan_shape![Limit, Proj, Proj, Table]),
-        ("select l_orderkey from lineitem order by l_quantity desc limit 10", 1, plan_shape![Limit, Sort, Proj, Proj, Table]),
-        ("select distinct l_orderkey from lineitem", 1, plan_shape![Aggr, Proj, Table]),
-        ("select distinct l_orderkey from lineitem limit 1", 1, plan_shape![Limit, Aggr, Proj, Table]),
-        ("select distinct count(*) from lineitem", 1, plan_shape![Aggr, Proj, Table]),
-        ("select distinct l_orderkey from lineitem group by l_orderkey", 1, plan_shape![Aggr, Proj, Table]),
-        ("select * from (select l_orderkey from lineitem order by l_orderkey limit 1) a, (select l_orderkey from lineitem order by l_orderkey desc limit 1) b", 2, plan_shape![Proj, Join, Limit, Sort, Proj, Proj, Table, Limit, Sort, Proj, Proj, Table]),
-        ("select a.* from (select l_orderkey, l_linenumber from lineitem) a, (select l_orderkey from lineitem limit 1) b", 2, plan_shape![Proj, Join, Proj, Proj, Table, Limit, Proj, Proj, Table]),
-    ] {
-        let builder = LgcBuilder::new(&cat, "tpch").unwrap();
-        let qr = parse_query(MySQL(sql)).unwrap();
-        let plan = match builder.build(&qr) {
-            Ok(plan) => plan,
-            Err(e) => {
-                eprintln!("error sql={}", sql);
-                panic!("{:?}", e)
-            }
-        };
-        print_plan(sql, &plan);
-        assert_eq!(shape, plan.shape());
-        let p = plan.qry_set.get(&plan.root).unwrap();
-        assert_eq!(n_cols, p.out_cols().len());
+            ("select 1 from lineitem", 1, plan_shape![Proj, Proj, Table]),
+            ("select l_orderkey from lineitem", 1, plan_shape![Proj, Proj, Table]),
+            ("select l_orderkey from tpch.lineitem", 1, plan_shape![Proj, Proj, Table]),
+            ("select lineitem.l_orderkey from lineitem", 1, plan_shape![Proj, Proj, Table]),
+            ("select lineitem.l_orderkey from tpch.lineitem", 1, plan_shape![Proj, Proj, Table]),
+            ("select tpch.lineitem.l_orderkey from lineitem", 1, plan_shape![Proj, Proj, Table]),
+            ("select tpch.lineitem.l_orderkey, tpch.lineitem.l_quantity from lineitem", 2, plan_shape![Proj, Proj, Table]),
+            ("select tpch.lineitem.l_orderkey from lineitem, (select 1) b", 1, plan_shape![Proj, Join, Proj, Table, Row]),
+            ("select n, l_orderkey from lineitem, (select 1 as n) b", 2, plan_shape![Proj, Join, Proj, Table, Row]),
+            ("select l_orderkey, l_partkey from lineitem", 2, plan_shape![Proj, Proj, Table]),
+            ("select l_orderkey, l_partkey from lineitem as li", 2, plan_shape![Proj, Proj, Table]),
+            ("select * from lineitem", 16, plan_shape![Proj, Proj, Table]),
+            ("select lineitem.* from lineitem", 16, plan_shape![Proj, Proj, Table]),
+            ("select tpch.lineitem.* from lineitem", 16, plan_shape![Proj, Proj, Table]),
+            ("select l_quantity, tpch.lineitem.* from lineitem where l_quantity > 10", 17, plan_shape![Proj, Filt, Proj, Table]),
+            ("select l_quantity, tpch.lineitem.* from lineitem, (select 1) b where l_quantity > 10", 17, plan_shape![Proj, Filt, Join, Proj, Table, Row]),
+            ("select l_orderkey from lineitem where true", 1, plan_shape![Proj, Filt, Proj, Table]),
+            ("select l_orderkey from lineitem where 1", 1, plan_shape![Proj, Filt, Proj, Table]),
+            ("select l_orderkey from lineitem where l_comment is null", 1, plan_shape![Proj, Filt, Proj, Table]),
+            ("select tpch.lineitem.l_orderkey from lineitem, lineitem as l2 where lineitem.l_orderkey = l2.l_orderkey", 1, plan_shape![Proj, Filt, Join, Proj, Table, Proj, Table]),
+            ("select lineitem.l_orderkey from lineitem, lineitem as l2 where lineitem.l_orderkey = l2.l_orderkey", 1, plan_shape![Proj, Filt, Join, Proj, Table, Proj, Table]),
+            ("select l_orderkey from lineitem group by l_orderkey", 1, plan_shape![Aggr, Proj, Table]),
+            ("select l_orderkey+1 from lineitem group by l_orderkey+1", 1, plan_shape![Aggr, Proj, Table]),
+            ("select l_orderkey+1 as k from lineitem group by k", 1, plan_shape![Aggr, Proj, Table]),
+            // below case also fails in MySQL, but Oracle supports it, should we support it?
+            // ("select l_orderkey+1, l_orderkey+1+count(*) from lineitem group by l_orderkey+1", 1, plan_shape![Aggr, Proj, Table]),
+            ("select 1 from lineitem group by l_orderkey having l_orderkey > 0", 1, plan_shape![Filt, Aggr, Proj, Table]),
+            ("select l_orderkey, count(*) from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
+            ("select count(*), l_orderkey from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
+            ("select l_orderkey, count(*) from lineitem where l_tax > 0.1 group by l_orderkey", 2, plan_shape![Aggr, Filt, Proj, Table]),
+            ("select l_orderkey from lineitem group by l_orderkey having count(*) > 1", 1, plan_shape![Filt, Aggr, Proj, Table]),
+            ("select l_orderkey from lineitem group by l_orderkey having sum(l_extendedprice * l_tax) > 1", 1, plan_shape![Filt, Aggr, Proj, Table]),
+            ("select l_orderkey from lineitem where l_shipdate is null group by l_orderkey having count(*) > 1", 1, plan_shape![Filt, Aggr, Filt, Proj, Table]),
+            ("select l_orderkey from lineitem having l_orderkey is not null", 1, plan_shape![Filt, Proj, Proj, Table]),
+            ("select count(*) from lineitem having sum(1) > 0", 1, plan_shape![Filt, Aggr, Proj, Table]),
+            ("select l_orderkey, count(*) from lineitem group by l_orderkey having l_orderkey > 0", 2, plan_shape![Filt, Aggr, Proj, Table]),
+            ("select l_orderkey from lineitem where l_tax > 0 having l_orderkey < 10", 1, plan_shape![Filt, Proj, Filt, Proj, Table]),
+            ("select l_orderkey k, count(*) from lineitem group by l_orderkey", 2, plan_shape![Aggr, Proj, Table]),
+            ("select l_orderkey from lineitem order by l_orderkey", 1, plan_shape![Sort, Proj, Proj, Table]),
+            ("select l_orderkey from lineitem order by lineitem.l_orderkey", 1, plan_shape![Sort, Proj, Proj, Table]),
+            ("select l_orderkey from lineitem order by tpch.lineitem.l_orderkey", 1, plan_shape![Sort, Proj, Proj, Table]),
+            ("select l_orderkey from lineitem order by l_linenumber", 1, plan_shape![Sort, Proj, Proj, Table]),
+            ("select l_orderkey from lineitem order by l_linenumber desc", 1, plan_shape![Sort, Proj, Proj, Table]),
+            ("select l_orderkey k from lineitem order by k", 1, plan_shape![Sort, Proj, Proj, Table]),
+            ("select l_orderkey k, sum(1) from lineitem group by l_orderkey order by k", 2, plan_shape![Sort, Aggr, Proj, Table]),
+            ("select l_orderkey k, sum(1) from lineitem group by k order by k", 2, plan_shape![Sort, Aggr, Proj, Table]),
+            ("select l_orderkey k, sum(1) from lineitem group by l_orderkey order by l_orderkey", 2, plan_shape![Sort, Aggr, Proj, Table]),
+            ("select l_orderkey, count(*) from lineitem group by l_orderkey order by l_orderkey", 2, plan_shape![Sort, Aggr, Proj, Table]),
+            ("select l_orderkey, sum(l_tax) from lineitem group by l_orderkey order by sum(l_tax) desc, l_orderkey", 2, plan_shape![Sort, Aggr, Proj, Table]),
+            ("select count(*) from lineitem order by count(*)", 1, plan_shape![Sort, Aggr, Proj, Table]),
+            ("select l_orderkey from lineitem limit 10", 1, plan_shape![Limit, Proj, Proj, Table]),
+            ("select l_orderkey from lineitem limit 10 offset 10", 1, plan_shape![Limit, Proj, Proj, Table]),
+            ("select l_orderkey from lineitem order by l_quantity desc limit 10", 1, plan_shape![Limit, Sort, Proj, Proj, Table]),
+            ("select distinct l_orderkey from lineitem", 1, plan_shape![Aggr, Proj, Table]),
+            ("select distinct l_orderkey from lineitem limit 1", 1, plan_shape![Limit, Aggr, Proj, Table]),
+            ("select distinct count(*) from lineitem", 1, plan_shape![Aggr, Proj, Table]),
+            ("select distinct l_orderkey from lineitem group by l_orderkey", 1, plan_shape![Aggr, Proj, Table]),
+            ("select * from (select l_orderkey from lineitem order by l_orderkey limit 1) a, (select l_orderkey from lineitem order by l_orderkey desc limit 1) b", 2, plan_shape![Proj, Join, Limit, Sort, Proj, Proj, Table, Limit, Sort, Proj, Proj, Table]),
+            ("select a.* from (select l_orderkey, l_linenumber from lineitem) a, (select l_orderkey from lineitem limit 1) b", 2, plan_shape![Proj, Join, Proj, Proj, Table, Limit, Proj, Proj, Table]),
+        ] {
+            let builder = LgcBuilder::new(&cat, "tpch").unwrap();
+            let qr = parse_query(MySQL(sql)).unwrap();
+            let plan = match builder.build(&qr) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    eprintln!("error sql={}", sql);
+                    panic!("{:?}", e)
+                }
+            };
+            print_plan(sql, &plan);
+            assert_eq!(shape, plan.shape());
+            let p = plan.qry_set.get(&plan.root).unwrap();
+            assert_eq!(n_cols, p.out_cols().len());
+        }
     }
+
+    #[test]
+    fn test_plan_build_aggr() {
+        let cat = j_catalog();
+        for (sql, shape) in vec![(
+            "select c0, c0 + count(*) from t1 group by c0",
+            plan_shape![Aggr, Proj, Table],
+        )] {
+            let builder = LgcBuilder::new(&cat, "j").unwrap();
+            let qr = parse_query(MySQL(sql)).unwrap();
+            let plan = match builder.build(&qr) {
+                Err(e) => {
+                    eprintln!("sql={}", sql);
+                    panic!("{:?}", e)
+                }
+                Ok(plan) => plan,
+            };
+            print_plan(sql, &plan);
+            assert_eq!(shape, plan.shape());
+        }
     }
 
     #[test]
@@ -660,8 +684,8 @@ pub(crate) mod tests {
             type Break = ();
             #[inline]
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-                match op {
-                    Op::Join(j) => match j.as_ref() {
+                match &op.kind {
+                    OpKind::Join(j) => match j.as_ref() {
                         Join::Cross(_) => self.0.push("cross"),
                         Join::Qualified(QualifiedJoin { kind, .. }) => self.0.push(kind.to_lower()),
                     },
@@ -682,8 +706,8 @@ pub(crate) mod tests {
             type Cont = ();
             type Break = ();
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-                match op {
-                    Op::JoinGraph(g) => {
+                match &op.kind {
+                    OpKind::JoinGraph(g) => {
                         self.0 = Some(g.as_ref().clone());
                         ControlFlow::Break(())
                     }
@@ -709,14 +733,14 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn get_filt_expr(plan: &LgcPlan) -> Vec<xngin_expr::Expr> {
+    pub(crate) fn get_filt_expr(plan: &LgcPlan) -> Vec<xngin_expr::ExprKind> {
         match plan.root_query() {
             Some(subq) => get_subq_filt_expr(subq),
             None => vec![],
         }
     }
 
-    pub(crate) fn get_subq_filt_expr(subq: &Subquery) -> Vec<xngin_expr::Expr> {
+    pub(crate) fn get_subq_filt_expr(subq: &Subquery) -> Vec<xngin_expr::ExprKind> {
         let mut cfe = CollectFiltExpr(vec![]);
         let _ = subq.root.walk(&mut cfe);
         cfe.0
@@ -744,8 +768,8 @@ pub(crate) mod tests {
             type Cont = ();
             type Break = ();
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-                match op {
-                    Op::JoinGraph(g) => {
+                match &op.kind {
+                    OpKind::JoinGraph(g) => {
                         self.0 = Some(g.as_ref().clone());
                         ControlFlow::Break(())
                     }
@@ -765,8 +789,8 @@ pub(crate) mod tests {
             type Break = TableID;
             #[inline]
             fn enter(&mut self, op: &Op) -> ControlFlow<TableID> {
-                match op {
-                    Op::Table(_, tbl_id) => ControlFlow::Break(*tbl_id),
+                match &op.kind {
+                    OpKind::Table(_, tbl_id) => ControlFlow::Break(*tbl_id),
                     _ => ControlFlow::Continue(()),
                 }
             }
@@ -779,15 +803,15 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    struct CollectFiltExpr(Vec<xngin_expr::Expr>);
+    struct CollectFiltExpr(Vec<xngin_expr::ExprKind>);
 
     impl OpVisitor for CollectFiltExpr {
         type Cont = ();
         type Break = ();
         #[inline]
         fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-            match op {
-                Op::Filt { pred, .. } => {
+            match &op.kind {
+                OpKind::Filt { pred, .. } => {
                     self.0 = pred.clone();
                     ControlFlow::Break(())
                 }
@@ -807,8 +831,8 @@ pub(crate) mod tests {
         type Break = ();
         #[inline]
         fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-            match op {
-                Op::Query(qry_id) => {
+            match &op.kind {
+                OpKind::Query(qry_id) => {
                     if let Some(subq) = self.qry_set.get(qry_id) {
                         if subq.location == self.location {
                             self.subqs.push(subq);

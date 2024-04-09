@@ -2,7 +2,7 @@ use crate::error::{Error, Result, ToResult};
 use crate::join::{JoinKind, JoinOp};
 use crate::lgc::alias::QueryAliases;
 use crate::lgc::col::{AliasKind, ColGen, ProjCol};
-use crate::lgc::op::{Op, OpMutVisitor, SortItem};
+use crate::lgc::op::{Op, OpKind, OpMutVisitor, SortItem};
 use crate::lgc::query::{Location, QuerySet, Subquery};
 use crate::lgc::resolv::{ExprResolve, PlaceholderCollector, PlaceholderQuery, Resolution};
 use crate::lgc::scope::{Scope, Scopes};
@@ -13,7 +13,7 @@ use semistr::SemiStr;
 use xngin_catalog::{Catalog, SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::{
-    self as expr, ColIndex, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind,
+    self as expr, ColIndex, ExprKind, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind,
 };
 use xngin_sql::ast::*;
 
@@ -110,7 +110,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         root: &mut Op,
         idents: Vec<(u32, Vec<SemiStr>, &'static str)>,
         colgen: &mut ColGen,
-    ) -> Result<Vec<expr::Expr>> {
+    ) -> Result<Vec<ExprKind>> {
         if idents.is_empty() {
             return Ok(vec![]);
         }
@@ -145,7 +145,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         col_alias: &str,
         location: &'static str,
         colgen: &mut ColGen,
-    ) -> Result<expr::Expr> {
+    ) -> Result<ExprKind> {
         let schema = self.catalog.find_schema_by_name(schema_name).must_ok()?;
         for s in self.scopes.iter_mut().rev() {
             for (from_alias, query_id) in s.query_aliases.iter() {
@@ -193,7 +193,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         col_alias: &str,
         location: &'static str,
         colgen: &mut ColGen,
-    ) -> Result<expr::Expr> {
+    ) -> Result<ExprKind> {
         for s in self.scopes.iter_mut().rev() {
             for (from_alias, query_id) in s.query_aliases.iter() {
                 if from_alias == tbl_alias {
@@ -225,7 +225,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         col_alias: &str,
         location: &'static str,
         colgen: &mut ColGen,
-    ) -> Result<expr::Expr> {
+    ) -> Result<ExprKind> {
         for s in self.scopes.iter_mut().rev() {
             let mut matched = None;
             for (_, query_id) in s.query_aliases.iter() {
@@ -285,7 +285,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
                 // as output columns aliases are explicit specified,
                 // we need to update the output alias list of generated tree.
                 self.qs.transform_subq(query_id, |subq| {
-                    let out_cols = subq.out_cols_mut();
+                    let out_cols = subq.out_cols_mut().ok_or(Error::MustOK)?;
                     if elem.cols.len() != out_cols.len() {
                         return Err(Error::ColumnCountMismatch);
                     }
@@ -338,7 +338,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
                         }
                     }
                 }
-                Ok((Op::Row(cols), Location::Virtual))
+                Ok((Op::new(OpKind::Row(Some(cols))), Location::Virtual))
             }
             Query::Table(select_table) => self.setup_select_table(select_table, phc, colgen),
             Query::Set(select_set) => self.setup_select_set(select_set, phc, colgen),
@@ -457,35 +457,37 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         let mut root = if from.len() == 1 {
             from.into_iter().next().unwrap().into()
         } else {
-            Op::cross_join(from)
+            Op::new(OpKind::cross_join(from))
         };
         // b) build Filt operator
         if let Some(pred) = filter {
-            root = Op::filt(pred.into_conj(), root);
+            root = Op::new(OpKind::filt(pred.into_conj(), root));
         }
         // c) build Aggr operator
         if !groups.is_empty() || scalar_aggr {
-            root = Op::aggr(groups, root);
+            root = Op::new(OpKind::aggr(groups, root));
         }
         // d) build Proj operator or merge into Aggr
-        match &mut root {
-            Op::Aggr(aggr) => aggr.proj = proj_cols,
+        match &mut root.kind {
+            OpKind::Aggr(aggr) => {
+                aggr.proj = proj_cols;
+            }
             _ => {
-                root = Op::proj(proj_cols, root);
+                root = Op::new(OpKind::proj(proj_cols, root));
             }
         }
         // e) build Filter operator from HAVING clause
         if let Some(pred) = having {
-            root = Op::filt(pred.into_conj(), root);
+            root = Op::new(OpKind::filt(pred.into_conj(), root));
         }
         // f) build Sort operator
         if !order.is_empty() {
             // scalar aggr query only returns 1 row, ingore SORT operation
-            root = Op::sort(order, root);
+            root = Op::new(OpKind::sort(order, root));
         }
         // g) build Limit operator
         if let Some((start, end)) = limit {
-            root = Op::limit(start, end, root);
+            root = Op::new(OpKind::limit(start, end, root));
         }
         Ok((root, Location::Intermediate))
     }
@@ -508,13 +510,16 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
             Setq::All
         };
         // todo: handle correlated subquery
-        let (query_id, _) =
+        let (qry_id, _) =
             self.build_subquery(&None, &select_set.left, phc.allow_unknown_ident, colgen)?;
-        let left = SubqOp::query(query_id);
+        let left = SubqOp::query(qry_id);
         let (query_id, _) =
             self.build_subquery(&None, &select_set.right, phc.allow_unknown_ident, colgen)?;
         let right = SubqOp::query(query_id);
-        Ok((Op::setop(kind, q, left, right), Location::Intermediate))
+        Ok((
+            Op::new(OpKind::setop(kind, q, left, right)),
+            Location::Intermediate,
+        ))
     }
 
     /// process ORDER BY clause and generate sort items.
@@ -743,7 +748,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
                                             "join condition",
                                         ));
                                     }
-                                    preds.push(expr::Expr::pred_func(
+                                    preds.push(ExprKind::pred_func(
                                         PredFuncKind::Equal,
                                         vec![left_col.take().unwrap(), right_col.take().unwrap()],
                                     ));
@@ -882,7 +887,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         group_by: &'a [Expr<'a>],
         phc: &mut PlaceholderCollector<'a>,
         colgen: &mut ColGen,
-    ) -> Result<Vec<expr::Expr>> {
+    ) -> Result<Vec<ExprKind>> {
         let mut items = Vec::with_capacity(group_by.len());
         for g in group_by {
             let (e, _) = resolver.resolve_expr(g, "group by", phc, false, colgen)?;
@@ -902,6 +907,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         table_id: TableID,
         colgen: &mut ColGen,
     ) -> Result<QueryID> {
+        // todo: maybe bind columns on-demand(column pruning phase) is better.
         let all_cols = self.catalog.all_columns_in_table(&table_id);
         // placeholder for table query.
         let (qry_id, subquery) = self.qs.insert_empty();
@@ -911,7 +917,10 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
             let col = colgen.gen_tbl_col(qry_id, table_id, idx, c.pty, c.name.clone());
             proj_cols.push(ProjCol::implicit_alias(col, c.name))
         }
-        let proj = Op::proj(proj_cols, Op::Table(schema_id, table_id));
+        let proj = Op::new(OpKind::proj(
+            proj_cols,
+            Op::new(OpKind::Table(schema_id, table_id)),
+        ));
         subquery.root = proj;
         // todo: currently we assume all tables are located on disk.
         subquery.location = Location::Disk;
@@ -926,22 +935,6 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
             .rev()
             .find_map(|s| s.cte_aliases.get(alias))
     }
-
-    // Increment cid and return it.
-    // #[inline]
-    // fn next_cid(&self) -> GlobalID {
-    //     let cid = self.cid.get().next();
-    //     self.cid.set(cid);
-    //     cid
-    // }
-
-    // Increment tid and return it.
-    // #[inline]
-    // fn next_tid(&mut self) -> GlobalID {
-    //     let tid = self.tid.get().next();
-    //     self.tid.set(tid);
-    //     tid
-    // }
 }
 
 /// Validate proj and aggr.
@@ -951,7 +944,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
 /// 3. proj can have constant values, can also eliminate group items in aggr.
 /// Returns true if the aggregation is scalar aggregation.
 #[inline]
-fn validate_proj_aggr(proj_cols: &[ProjCol], aggr_groups: &[expr::Expr]) -> Result<bool> {
+fn validate_proj_aggr(proj_cols: &[ProjCol], aggr_groups: &[ExprKind]) -> Result<bool> {
     // Rule 1
     if aggr_groups.iter().any(|e| e.contains_aggr_func()) {
         return Err(Error::AggrFuncInGroupBy);
@@ -1016,9 +1009,9 @@ fn validate_proj_aggr(proj_cols: &[ProjCol], aggr_groups: &[expr::Expr]) -> Resu
 #[inline]
 fn validate_having(
     proj_cols: &[ProjCol],
-    aggr_groups: &[expr::Expr],
+    aggr_groups: &[ExprKind],
     scalar_aggr: bool,
-    having: &expr::Expr,
+    having: &ExprKind,
 ) -> Result<()> {
     if scalar_aggr {
         // disallow non-aggr columns in HAVING
@@ -1057,7 +1050,7 @@ fn validate_having(
 /// 2. For other aggregation, all non-aggr columns must exist in aggr groups.
 /// 3. For flat projection, aggr functions are disallowed.
 #[inline]
-fn validate_order(aggr_groups: &[expr::Expr], scalar_aggr: bool, order: &[SortItem]) -> Result<()> {
+fn validate_order(aggr_groups: &[ExprKind], scalar_aggr: bool, order: &[SortItem]) -> Result<()> {
     if scalar_aggr {
         // disallow non-aggr columns in ORDER BY
         if order.iter().any(|si| si.expr.contains_non_aggr_cols()) {
@@ -1202,7 +1195,7 @@ pub struct ResolveHavingOrOrder<'a, C: Catalog> {
     qs: &'a QuerySet,
     query_aliases: &'a QueryAliases,
     proj_cols: &'a [ProjCol],
-    group_cols: Option<&'a [expr::Expr]>,
+    group_cols: Option<&'a [ExprKind]>,
 }
 
 impl<C: Catalog> ExprResolve<C> for ResolveHavingOrOrder<'_, C> {
@@ -1281,14 +1274,14 @@ impl<C: Catalog> ExprResolve<C> for ResolveHavingOrOrder<'_, C> {
     }
 }
 
-struct ReplaceCorrelatedCol(u32, expr::Expr);
+struct ReplaceCorrelatedCol(u32, ExprKind);
 
 impl OpMutVisitor for ReplaceCorrelatedCol {
     type Cont = ();
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
-        for e in op.exprs_mut() {
+        for e in op.kind.exprs_mut() {
             e.walk_mut(self)?
         }
         ControlFlow::Continue(())
@@ -1299,9 +1292,9 @@ impl ExprMutVisitor for ReplaceCorrelatedCol {
     type Cont = ();
     type Break = ();
     #[inline]
-    fn enter(&mut self, e: &mut expr::Expr) -> ControlFlow<()> {
-        match &e.kind {
-            expr::ExprKind::Plhd(Plhd::Ident(uid)) if *uid == self.0 => {
+    fn enter(&mut self, e: &mut ExprKind) -> ControlFlow<()> {
+        match e {
+            ExprKind::Plhd(Plhd::Ident(uid)) if *uid == self.0 => {
                 *e = self.1.clone();
                 return ControlFlow::Break(());
             }
@@ -1324,7 +1317,7 @@ impl OpMutVisitor for ReplaceSubq {
     type Break = ();
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<()> {
-        for e in op.exprs_mut() {
+        for e in op.kind.exprs_mut() {
             e.walk_mut(self)?
         }
         ControlFlow::Continue(())
@@ -1335,13 +1328,13 @@ impl ExprMutVisitor for ReplaceSubq {
     type Cont = ();
     type Break = ();
     #[inline]
-    fn enter(&mut self, e: &mut expr::Expr) -> ControlFlow<()> {
-        match &e.kind {
-            expr::ExprKind::Plhd(Plhd::Subquery(_, uid)) if *uid == self.uid => {
+    fn enter(&mut self, e: &mut ExprKind) -> ControlFlow<()> {
+        match e {
+            ExprKind::Plhd(Plhd::Subquery(_, uid)) if *uid == self.uid => {
                 if !self.correlated && self.kind == SubqKind::Scalar {
-                    *e = expr::Expr::attval(self.qry_id);
+                    *e = ExprKind::attval(self.qry_id);
                 } else {
-                    *e = expr::Expr::subq(self.kind, self.qry_id);
+                    *e = ExprKind::subq(self.kind, self.qry_id);
                 }
                 return ControlFlow::Break(());
             }
@@ -1352,10 +1345,10 @@ impl ExprMutVisitor for ReplaceSubq {
 }
 
 #[inline]
-fn expr_match_qry_col(expr: &expr::Expr, query_id: QueryID, col_idx: ColIndex) -> bool {
-    match &expr.kind {
-        expr::ExprKind::Col(expr::Col {
-            kind: expr::ColKind::QueryCol(qry_id),
+fn expr_match_qry_col(expr: &ExprKind, query_id: QueryID, col_idx: ColIndex) -> bool {
+    match expr {
+        ExprKind::Col(expr::Col {
+            kind: expr::ColKind::Query(qry_id),
             idx,
             ..
         }) => *qry_id == query_id && *idx == col_idx,

@@ -1,13 +1,13 @@
 use event_listener::{Event, EventListener};
 use futures_lite::Stream;
 use pin_project_lite::pin_project;
+use std::cell::UnsafeCell;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use xngin_protocol::mysql::error::{Error, Result};
-use std::cell::UnsafeCell;
 
 /// Cancellation represents a handle that can cancel future and stream
 /// processing.
@@ -45,6 +45,20 @@ impl Cancellation {
         let cancelled = self.inner.cancelled();
         CancellableStream {
             stream,
+            listener,
+            cancelled,
+        }
+    }
+
+    #[inline]
+    pub fn select_future<T, F>(&self, fut: F) -> CancellableFuture<F>
+    where
+        F: Future<Output = T>,
+    {
+        let listener = self.inner.event.listen();
+        let cancelled = self.inner.cancelled();
+        CancellableFuture {
+            fut,
             listener,
             cancelled,
         }
@@ -142,6 +156,35 @@ where
     }
 }
 
+pin_project! {
+    pub struct CancellableFuture<F> {
+        #[pin]
+        fut: F,
+        #[pin]
+        listener: EventListener,
+        cancelled: bool,
+    }
+}
+
+impl<T, F> Future for CancellableFuture<F>
+where
+    F: Future<Output = T>,
+{
+    type Output = Result<T>;
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        if *this.cancelled {
+            return Poll::Ready(Err(Error::Cancelled()));
+        }
+        if this.listener.poll(cx).is_ready() {
+            *this.cancelled = true;
+            return Poll::Ready(Err(Error::Cancelled()));
+        }
+        this.fut.poll(cx).map(|v| Ok(v))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +224,35 @@ mod tests {
                 .next()
                 .await;
             assert!(cancelled.is_some());
+            assert!(matches!(cancel.err(), Some(Error::Cancelled())));
+        })
+    }
+
+    #[test]
+    fn test_cancel_future() {
+        let ex = single_thread_executor();
+        async_io::block_on(async {
+            let (tx, rx) = flume::bounded(0);
+            ex.spawn(async move {
+                Timer::after(Duration::from_millis(50)).await;
+                let _ = tx.send_async(()).await;
+            })
+            .detach();
+            // cancel in another thread
+            let cancel = Cancellation::default();
+            {
+                let cancel = cancel.clone();
+                ex.spawn(async move {
+                    Timer::after(Duration::from_millis(5)).await;
+                    cancel.cancel(Error::Cancelled());
+                })
+                .detach();
+            }
+            // select with cancellation
+            let fut = cancel.select_future(rx.recv_async());
+            // last element is guaranteed to be cancelled
+            let cancelled = fut.await;
+            assert!(cancelled.is_err());
             assert!(matches!(cancel.err(), Some(Error::Cancelled())));
         })
     }

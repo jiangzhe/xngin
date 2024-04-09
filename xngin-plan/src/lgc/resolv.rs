@@ -12,7 +12,7 @@ use xngin_sql::ast::*;
 
 #[derive(Debug)]
 pub enum Resolution {
-    Expr(expr::Expr, Option<SemiStr>),
+    Expr(ExprKind, Option<SemiStr>),
     Unknown(Vec<SemiStr>),
 }
 
@@ -296,7 +296,7 @@ pub trait ExprResolve<C: Catalog> {
         phc: &mut PlaceholderCollector<'a>,
         within_aggr: bool,
         colgen: &mut ColGen,
-    ) -> Result<(expr::Expr, Option<SemiStr>)> {
+    ) -> Result<(ExprKind, Option<SemiStr>)> {
         self.resolve_expr_by_default(e, location, phc, within_aggr, colgen)
     }
 
@@ -308,7 +308,7 @@ pub trait ExprResolve<C: Catalog> {
         phc: &mut PlaceholderCollector<'a>,
         within_aggr: bool,
         colgen: &mut ColGen,
-    ) -> Result<(expr::Expr, Option<SemiStr>)> {
+    ) -> Result<(ExprKind, Option<SemiStr>)> {
         let res = match e {
             Expr::Literal(lit) => self.resolve_lit(lit)?,
             Expr::ColumnRef(cr) => match self.resolve_col_ref(cr, location, colgen)? {
@@ -331,38 +331,34 @@ pub trait ExprResolve<C: Catalog> {
             Expr::Unary(ue) => match ue.op {
                 UnaryOp::Neg => {
                     let (e, _) = self.resolve_expr(&ue.arg, location, phc, within_aggr, colgen)?;
-                    expr::Expr::func(FuncKind::Neg, vec![e])
+                    ExprKind::func(FuncKind::Neg, vec![e])
                 }
                 UnaryOp::BitInv => {
                     let (e, _) = self.resolve_expr(&ue.arg, location, phc, within_aggr, colgen)?;
-                    expr::Expr::func(FuncKind::BitInv, vec![e])
+                    ExprKind::func(FuncKind::BitInv, vec![e])
                 }
                 UnaryOp::LogicalNot => {
                     let (e, _) = self.resolve_expr(&ue.arg, location, phc, within_aggr, colgen)?;
                     // here we check if expression can be inversed.
-                    match e.kind {
-                        ExprKind::Pred(Pred::Exists(subq)) => {
-                            expr::Expr::pred(Pred::NotExists(subq))
-                        }
-                        ExprKind::Pred(Pred::NotExists(subq)) => {
-                            expr::Expr::pred(Pred::Exists(subq))
-                        }
+                    match e {
+                        ExprKind::Pred(Pred::Exists(subq)) => ExprKind::Pred(Pred::NotExists(subq)),
+                        ExprKind::Pred(Pred::NotExists(subq)) => ExprKind::Pred(Pred::Exists(subq)),
                         ExprKind::Pred(Pred::InSubquery(lhs, subq)) => {
-                            expr::Expr::pred(Pred::NotInSubquery(lhs, subq))
+                            ExprKind::Pred(Pred::NotInSubquery(lhs, subq))
                         }
                         ExprKind::Pred(Pred::NotInSubquery(lhs, subq)) => {
-                            expr::Expr::pred(Pred::InSubquery(lhs, subq))
+                            ExprKind::Pred(Pred::InSubquery(lhs, subq))
                         }
                         ExprKind::Pred(Pred::Not(arg)) => *arg,
                         ExprKind::Pred(Pred::Func {
                             kind: PredFuncKind::InValues,
                             args,
-                        }) => expr::Expr::pred(Pred::func(PredFuncKind::NotInValues, args)),
+                        }) => ExprKind::Pred(Pred::func(PredFuncKind::NotInValues, args)),
                         ExprKind::Pred(Pred::Func {
                             kind: PredFuncKind::NotInValues,
                             args,
-                        }) => expr::Expr::pred(Pred::func(PredFuncKind::InValues, args)),
-                        _ => expr::Expr::pred_not(e),
+                        }) => ExprKind::Pred(Pred::func(PredFuncKind::InValues, args)),
+                        _ => ExprKind::pred_not(e),
                     }
                 }
             },
@@ -380,7 +376,7 @@ pub trait ExprResolve<C: Catalog> {
                     BinaryOp::BitShl => FuncKind::BitShl,
                     BinaryOp::BitShr => FuncKind::BitShr,
                 };
-                expr::Expr::func(kind, vec![lhs, rhs])
+                ExprKind::func(kind, vec![lhs, rhs])
             }
             Expr::Predicate(pred) => match pred.as_ref() {
                 Predicate::Cmp(op, lhs, rhs) => {
@@ -394,7 +390,7 @@ pub trait ExprResolve<C: Catalog> {
                         CompareOp::LessEqual => PredFuncKind::LessEqual,
                         CompareOp::NotEqual => PredFuncKind::NotEqual,
                     };
-                    expr::Expr::pred_func(kind, vec![lhs, rhs])
+                    ExprKind::pred_func(kind, vec![lhs, rhs])
                 }
                 Predicate::QuantCmp(..) => todo!(),
                 Predicate::Is(op, arg) => {
@@ -407,7 +403,7 @@ pub trait ExprResolve<C: Catalog> {
                         IsOp::False => PredFuncKind::IsFalse,
                         IsOp::NotFalse => PredFuncKind::IsNotFalse,
                     };
-                    expr::Expr::pred_func(kind, vec![arg])
+                    ExprKind::pred_func(kind, vec![arg])
                 }
                 Predicate::Match(op, lhs, rhs) => {
                     let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
@@ -419,7 +415,7 @@ pub trait ExprResolve<C: Catalog> {
                         MatchOp::Regexp => PredFuncKind::Regexp,
                         MatchOp::NotRegexp => PredFuncKind::NotRegexp,
                     };
-                    expr::Expr::pred_func(kind, vec![lhs, rhs])
+                    ExprKind::pred_func(kind, vec![lhs, rhs])
                 }
                 Predicate::InValues(lhs, vals) => {
                     let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
@@ -428,10 +424,7 @@ pub trait ExprResolve<C: Catalog> {
                         let (e, _) = self.resolve_expr(v, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
-                    expr::Expr::pred_func(
-                        PredFuncKind::InValues,
-                        vec![lhs, expr::Expr::tuple(list)],
-                    )
+                    ExprKind::pred_func(PredFuncKind::InValues, vec![lhs, ExprKind::tuple(list)])
                 }
                 Predicate::NotInValues(lhs, vals) => {
                     let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
@@ -440,36 +433,33 @@ pub trait ExprResolve<C: Catalog> {
                         let (e, _) = self.resolve_expr(v, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
-                    expr::Expr::pred_func(
-                        PredFuncKind::NotInValues,
-                        vec![lhs, expr::Expr::tuple(list)],
-                    )
+                    ExprKind::pred_func(PredFuncKind::NotInValues, vec![lhs, ExprKind::tuple(list)])
                 }
                 Predicate::InSubquery(lhs, subq) => {
                     let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
                     let ph = phc.add_subquery(SubqKind::In, subq.as_ref(), location);
-                    expr::Expr::pred_in_subq(lhs, ph)
+                    ExprKind::pred_in_subq(lhs, ph)
                 }
                 Predicate::NotInSubquery(lhs, subq) => {
                     let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
                     let ph = phc.add_subquery(SubqKind::In, subq.as_ref(), location);
-                    expr::Expr::pred_not_in_subq(lhs, ph)
+                    ExprKind::pred_not_in_subq(lhs, ph)
                 }
                 Predicate::Between(lhs, mhs, rhs) => {
                     let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
                     let (mhs, _) = self.resolve_expr(mhs, location, phc, within_aggr, colgen)?;
                     let (rhs, _) = self.resolve_expr(rhs, location, phc, within_aggr, colgen)?;
-                    expr::Expr::pred_func(PredFuncKind::Between, vec![lhs, mhs, rhs])
+                    ExprKind::pred_func(PredFuncKind::Between, vec![lhs, mhs, rhs])
                 }
                 Predicate::NotBetween(lhs, mhs, rhs) => {
                     let (lhs, _) = self.resolve_expr(lhs, location, phc, within_aggr, colgen)?;
                     let (mhs, _) = self.resolve_expr(mhs, location, phc, within_aggr, colgen)?;
                     let (rhs, _) = self.resolve_expr(rhs, location, phc, within_aggr, colgen)?;
-                    expr::Expr::pred_func(PredFuncKind::NotBetween, vec![lhs, mhs, rhs])
+                    ExprKind::pred_func(PredFuncKind::NotBetween, vec![lhs, mhs, rhs])
                 }
                 Predicate::Exists(subq) => {
                     let ph = phc.add_subquery(SubqKind::Exists, subq.as_ref(), location);
-                    expr::Expr::pred_exists(ph)
+                    ExprKind::pred_exists(ph)
                 }
                 Predicate::Conj(cs) => {
                     let mut list = Vec::with_capacity(cs.len());
@@ -477,7 +467,7 @@ pub trait ExprResolve<C: Catalog> {
                         let (e, _) = self.resolve_expr(c, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
-                    expr::Expr::pred(Pred::Conj(list))
+                    ExprKind::Pred(Pred::Conj(list))
                 }
                 Predicate::Disj(ds) => {
                     let mut list = Vec::with_capacity(ds.len());
@@ -485,7 +475,7 @@ pub trait ExprResolve<C: Catalog> {
                         let (e, _) = self.resolve_expr(d, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
-                    expr::Expr::pred(Pred::Disj(list))
+                    ExprKind::Pred(Pred::Disj(list))
                 }
                 Predicate::LogicalXor(xs) => {
                     let mut list = Vec::with_capacity(xs.len());
@@ -493,7 +483,7 @@ pub trait ExprResolve<C: Catalog> {
                         let (e, _) = self.resolve_expr(x, location, phc, within_aggr, colgen)?;
                         list.push(e);
                     }
-                    expr::Expr::pred(Pred::Xor(list))
+                    ExprKind::Pred(Pred::Xor(list))
                 }
             },
             Expr::ScalarSubquery(subq) => {
@@ -505,9 +495,9 @@ pub trait ExprResolve<C: Catalog> {
                     let unit = time_unit_from_ast(unit);
                     let (e, _) =
                         self.resolve_expr(&f.args[1], location, phc, within_aggr, colgen)?;
-                    expr::Expr::func(
+                    ExprKind::func(
                         expr::FuncKind::Extract,
-                        vec![expr::Expr::farg(Farg::TimeUnit(unit)), e],
+                        vec![ExprKind::farg(Farg::TimeUnit(unit)), e],
                     )
                 }
                 FuncType::Substring => {
@@ -517,14 +507,14 @@ pub trait ExprResolve<C: Catalog> {
                         self.resolve_expr(&f.args[1], location, phc, within_aggr, colgen)?;
                     let (end, _) =
                         self.resolve_expr(&f.args[2], location, phc, within_aggr, colgen)?;
-                    expr::Expr::func(expr::FuncKind::Substring, vec![arg, start, end])
+                    ExprKind::func(expr::FuncKind::Substring, vec![arg, start, end])
                 }
             },
             Expr::FuncArg(arg) => match arg {
-                ConstArg::None => expr::Expr::farg(Farg::None),
+                ConstArg::None => ExprKind::farg(Farg::None),
                 ConstArg::DatetimeUnit(unit) => {
                     let unit = time_unit_from_ast(*unit);
-                    expr::Expr::farg(Farg::TimeUnit(unit))
+                    ExprKind::farg(Farg::TimeUnit(unit))
                 }
             },
             Expr::CaseWhen(CaseWhen {
@@ -549,7 +539,7 @@ pub trait ExprResolve<C: Catalog> {
                     let (then, _) = self.resolve_expr(then, location, phc, within_aggr, colgen)?;
                     acts.push((when, then));
                 }
-                expr::Expr::new_case(op, acts, fallback)
+                ExprKind::new_case(op, acts, fallback)
             }
             Expr::Tuple(es) => {
                 let mut list = Vec::with_capacity(es.len());
@@ -557,7 +547,7 @@ pub trait ExprResolve<C: Catalog> {
                     let (e, _) = self.resolve_expr(e, location, phc, within_aggr, colgen)?;
                     list.push(e);
                 }
-                expr::Expr::tuple(list)
+                ExprKind::tuple(list)
             }
         };
         Ok((res, None))
@@ -567,28 +557,28 @@ pub trait ExprResolve<C: Catalog> {
     /// Validation are also performed here, e.g.
     /// date/time format, hex-str, binary-str, interval, etc.
     #[inline]
-    fn resolve_lit(&self, lit: &Literal<'_>) -> Result<expr::Expr> {
+    fn resolve_lit(&self, lit: &Literal<'_>) -> Result<ExprKind> {
         let res = match lit {
-            Literal::Null => expr::Expr::const_null(),
+            Literal::Null => ExprKind::const_null(),
             Literal::Numeric(n) => {
                 if n.contains(|c| c == 'e' || c == 'E') {
                     // float64
                     let f: f64 = n.parse()?;
-                    expr::Expr::const_f64(f)
+                    ExprKind::const_f64(f)
                 } else if n.contains('.') {
                     // decimal
                     let d: Decimal = n.parse()?;
-                    expr::Expr::const_decimal(d)
+                    ExprKind::const_decimal(d)
                 } else if let Ok(i) = n.parse::<i64>() {
                     // i64
-                    expr::Expr::const_i64(i)
+                    ExprKind::const_i64(i)
                 } else if let Ok(u) = n.parse::<u64>() {
                     // u64
-                    expr::Expr::const_u64(u)
+                    ExprKind::const_u64(u)
                 } else {
                     // decimal
                     let d: Decimal = n.parse()?;
-                    expr::Expr::const_decimal(d)
+                    ExprKind::const_decimal(d)
                 }
             }
             Literal::CharStr(cs) => {
@@ -601,17 +591,17 @@ pub trait ExprResolve<C: Catalog> {
                     }
                     Arc::from(s)
                 };
-                expr::Expr::const_str(s)
+                ExprKind::const_str(s)
             }
-            Literal::Bool(b) => expr::Expr::const_bool(*b),
+            Literal::Bool(b) => ExprKind::const_bool(*b),
             Literal::Date(dt) => {
                 let dt = Date::parse(dt, &DEFAULT_DATE_FORMAT)?;
-                expr::Expr::const_date(dt)
+                ExprKind::const_date(dt)
             }
             Literal::Interval(Interval { unit, value }) => {
                 let unit = time_unit_from_ast(*unit);
                 let value: i32 = value.parse()?;
-                expr::Expr::const_interval(unit, value)
+                ExprKind::const_interval(unit, value)
             }
             _ => todo!("other literal not supported"),
         };
@@ -625,19 +615,19 @@ pub trait ExprResolve<C: Catalog> {
         location: &'static str,
         phc: &mut PlaceholderCollector<'a>,
         colgen: &mut ColGen,
-    ) -> Result<expr::Expr> {
+    ) -> Result<ExprKind> {
         let (e, _) = self.resolve_expr(&af.expr, location, phc, true, colgen)?;
         let q = match af.q {
             SetQuantifier::All => expr::Setq::All,
             SetQuantifier::Distinct => expr::Setq::Distinct,
         };
         let res = match af.kind {
-            AggrFuncKind::CountAsterisk => expr::Expr::count_asterisk(),
-            AggrFuncKind::Count => expr::Expr::count(q, e),
-            AggrFuncKind::Sum => expr::Expr::sum(q, e),
-            AggrFuncKind::Avg => expr::Expr::avg(q, e),
-            AggrFuncKind::Max => expr::Expr::max(q, e),
-            AggrFuncKind::Min => expr::Expr::min(q, e),
+            AggrFuncKind::CountAsterisk => ExprKind::count_asterisk(),
+            AggrFuncKind::Count => ExprKind::count(q, e),
+            AggrFuncKind::Sum => ExprKind::sum(q, e),
+            AggrFuncKind::Avg => ExprKind::avg(q, e),
+            AggrFuncKind::Max => ExprKind::max(q, e),
+            AggrFuncKind::Min => ExprKind::min(q, e),
         };
         Ok(res)
     }
@@ -672,11 +662,11 @@ impl<'a> PlaceholderCollector<'a> {
     }
 
     #[inline]
-    pub fn add_ident(&mut self, ident: Vec<SemiStr>, location: &'static str) -> expr::Expr {
+    pub fn add_ident(&mut self, ident: Vec<SemiStr>, location: &'static str) -> ExprKind {
         let uid = self.ident_id_gen;
         self.idents.push((uid, ident, location));
         self.ident_id_gen += 1;
-        expr::Expr::ph_ident(uid)
+        ExprKind::ph_ident(uid)
     }
 
     #[inline]
@@ -685,7 +675,7 @@ impl<'a> PlaceholderCollector<'a> {
         kind: expr::SubqKind,
         qry: &'a QueryExpr<'a>,
         location: &'static str,
-    ) -> expr::Expr {
+    ) -> ExprKind {
         let uid = self.subquery_id_gen;
         self.subqueries.push(PlaceholderQuery {
             uid,
@@ -694,7 +684,7 @@ impl<'a> PlaceholderCollector<'a> {
             location,
         });
         self.subquery_id_gen += 1;
-        expr::Expr::ph_subquery(kind, uid)
+        ExprKind::ph_subquery(kind, uid)
     }
 }
 

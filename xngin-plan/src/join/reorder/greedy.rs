@@ -3,7 +3,7 @@ use crate::join::estimate::Estimate;
 use crate::join::graph::{Edge, EdgeID, EdgeIDs, Graph, VertexSet};
 use crate::join::reorder::{JoinEdge, Reorder};
 use crate::join::{JoinKind, JoinOp};
-use crate::lgc::Op;
+use crate::lgc::{Op, OpKind};
 use smallvec::smallvec;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -33,7 +33,7 @@ impl<E: Estimate> Reorder for Goo<E> {
             // trigger estimation on single table
             let _ = self.0.estimate_qry_rows(VertexSet::from(vid))?;
             let qid = graph.vid_to_qid(vid)?;
-            let op = Op::Query(qid);
+            let op = Op::new(OpKind::Query(qid));
             joined.insert(VertexSet::from(vid), op);
         }
         // combine join sets until only one join left.
@@ -51,13 +51,13 @@ impl<E: Estimate> Reorder for Goo<E> {
             let l = joined.remove(&e.l_vset).unwrap();
             let r = joined.remove(&e.r_vset).unwrap();
             let edge = e.edge.into_owned();
-            let op = Op::qualified_join(
+            let op = Op::new(OpKind::qualified_join(
                 edge.kind,
                 JoinOp::try_from(l)?,
                 JoinOp::try_from(r)?,
                 graph.preds(edge.cond).cloned().collect(),
                 graph.preds(edge.filt).cloned().collect(),
-            );
+            ));
             joined.insert(vset, op);
         }
         joined

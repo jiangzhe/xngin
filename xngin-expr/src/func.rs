@@ -48,15 +48,19 @@ impl FuncKind {
         }
     }
 
+    /// Returns minimum and maximum argument numbers of this function.
+    /// if maximum number is None, the function can accept arbitrary number
+    /// of arguments.
     #[inline]
-    pub fn n_args(&self) -> usize {
+    pub fn n_args(&self) -> (usize, Option<usize>) {
         use FuncKind::*;
-        match self {
+        let n = match self {
             Uninit => 0,
             Neg | BitInv => 1,
             Add | Sub | Mul | Div | IntDiv | BitAnd | BitOr | BitXor | BitShl | BitShr => 2,
             Extract => 2,
             Substring => 3,
-        }
+        };
+        (n, Some(n))
     }
 }

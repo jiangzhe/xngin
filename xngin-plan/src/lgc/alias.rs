@@ -4,7 +4,7 @@ use semistr::SemiStr;
 use std::ops::{Deref, DerefMut};
 use xngin_expr::QueryID;
 
-/// PlanAliases stores the aliases of tables.
+/// QueryAliases stores the aliases of tables.
 /// MySQL allows subquery and table has same alias.
 /// This has rare use cases, but causes very
 /// confusing name resolution.

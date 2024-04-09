@@ -3,18 +3,18 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use xngin_catalog::TableID;
 use xngin_datatype::PreciseType;
-use xngin_expr::{ColIndex, Expr, GlobalID, QueryCol, QueryID};
+use xngin_expr::{ColIndex, ExprKind, GlobalID, QueryCol, QueryID};
 
 #[derive(Debug, Clone)]
 pub struct ProjCol {
-    pub expr: Expr,
+    pub expr: ExprKind,
     pub alias: SemiStr,
     pub alias_kind: AliasKind,
 }
 
 impl ProjCol {
     #[inline]
-    pub fn new(expr: Expr, alias: SemiStr, alias_kind: AliasKind) -> Self {
+    pub fn new(expr: ExprKind, alias: SemiStr, alias_kind: AliasKind) -> Self {
         ProjCol {
             expr,
             alias,
@@ -24,7 +24,7 @@ impl ProjCol {
 
     /// Create a projection column with no alias.
     #[inline]
-    pub fn no_alias(expr: Expr) -> Self {
+    pub fn no_alias(expr: ExprKind) -> Self {
         ProjCol {
             expr,
             alias: SemiStr::default(),
@@ -34,7 +34,7 @@ impl ProjCol {
 
     /// Create a projection column with explicit alias.
     #[inline]
-    pub fn explicit_alias(expr: Expr, alias: SemiStr) -> Self {
+    pub fn explicit_alias(expr: ExprKind, alias: SemiStr) -> Self {
         ProjCol {
             expr,
             alias,
@@ -44,7 +44,7 @@ impl ProjCol {
 
     /// Create a projection column with implicit alias.
     #[inline]
-    pub fn implicit_alias(expr: Expr, alias: SemiStr) -> Self {
+    pub fn implicit_alias(expr: ExprKind, alias: SemiStr) -> Self {
         ProjCol {
             expr,
             alias,
@@ -70,9 +70,9 @@ impl ColGen {
     /// Generate query column, with global id.
     /// If the same column is found, reuse global id.
     #[inline]
-    pub fn gen_qry_col(&mut self, qry_id: QueryID, idx: ColIndex) -> Expr {
+    pub fn gen_qry_col(&mut self, qry_id: QueryID, idx: ColIndex) -> ExprKind {
         let gid = self.find_or_inc_cid(qry_id, idx);
-        Expr::query_col(gid, qry_id, idx)
+        ExprKind::query_col(gid, qry_id, idx)
     }
 
     /// Generate table column.
@@ -86,9 +86,9 @@ impl ColGen {
         idx: ColIndex,
         ty: PreciseType,
         col_name: SemiStr,
-    ) -> Expr {
+    ) -> ExprKind {
         let gid = self.find_or_inc_cid(qry_id, idx);
-        Expr::table_col(gid, table_id, idx, ty, col_name)
+        ExprKind::table_col(gid, table_id, idx, ty, col_name)
     }
 
     #[inline]

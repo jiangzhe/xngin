@@ -1,98 +1,229 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, QualifiedJoin};
-use crate::lgc::{Aggr, Op, OpMutVisitor, QuerySet};
+use crate::lgc::{Aggr, Op, OpOutput, OpKind, OpMutVisitor, QuerySet, ProjCol};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::mem;
 use xngin_datatype::PreciseType;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::infer::{fix_bools, fix_rec};
-use xngin_expr::{ColIndex, Expr, QueryID};
+use xngin_expr::util::{fix_bools, TypeFix};
+use xngin_expr::{GlobalID, Col, ColKind, ColIndex, Expr, ExprKind, QueryID};
 
-/// Fix types of all expressions.
+/// Fix types of all expressions and generate intra columns for execution.
 /// In initialization of logical plan, all type info, except table columns, are left as empty.
 /// It's convenient to exclude types in other optimization rules.
 /// But at the end, we need to fix types of all expressions to enable efficient evaluation.
+/// And in some opeartors, such as aggregation, sort, there might be non-trivial expressions
+/// involved, we will add projection to replace these expressions with intra columns to reduce
+/// the complexity.
 #[inline]
-pub fn type_fix(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
-    let mut types = HashMap::new();
-    fix_type(qry_set, qry_id, &mut types)
+pub fn fix(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
+    // let mut qry_types = HashMap::new();
+    // let mut intra_types = HashMap::new();
+    // fix_type(qry_set, qry_id, &mut qry_types, &mut intra_types)
+    Fix::new(qry_set).fix_qry(qry_id)
 }
 
-#[inline]
-fn fix_type(
-    qry_set: &mut QuerySet,
-    qry_id: QueryID,
-    types: &mut HashMap<(QueryID, ColIndex), PreciseType>,
-) -> Result<()> {
-    qry_set.transform_op(qry_id, |qry_set, _, op| {
-        let mut ft = FixType { qry_set, types };
-        op.walk_mut(&mut ft).unbranch()
-    })?
-}
+// #[inline]
+// fn fix_type(
+//     qry_set: &mut QuerySet,
+//     qry_id: QueryID,
+//     qry_types: &mut HashMap<(QueryID, ColIndex), PreciseType>,
+//     intra_types: &mut HashMap<GlobalID, PreciseType>,
+// ) -> Result<()> {
+//     qry_set.transform_op(qry_id, |qry_set, _, op| {
+//         let mut ft = FixType { qry_set, qry_types, intra_types };
+//         op.walk_mut(&mut ft).unbranch()
+//     })?
+// }
 
-struct FixType<'a> {
+struct Fix<'a> {
     qry_set: &'a mut QuerySet,
-    types: &'a mut HashMap<(QueryID, ColIndex), PreciseType>,
+    // query column mapping.
+    // convert query column to intra column.
+    qry_col_mapping: HashMap<(QueryID, ColIndex), (GlobalID, PreciseType)>,
+    // intra column mapping.
+    intra_col_mapping: HashMap<GlobalID, (u8, ColIndex, PreciseType)>,
+    // global id for intra columns.
+    gid: GlobalID,
 }
 
-impl FixType<'_> {
+impl TypeFix for Fix<'_> {
     #[inline]
-    fn fix(&self, e: &mut Expr) -> Result<()> {
-        fix_rec(e, |qid, idx| self.types.get(&(qid, idx)).cloned()).map_err(Into::into)
+    fn fix_col(&mut self, col: &mut Col) -> Option<PreciseType> {
+        match &col.kind {
+            ColKind::Intra(_) => self.intra_col_mapping.get(&col.gid).map(|v| &v.2).cloned(),
+            ColKind::Query(qid)  => {
+                let key = (*qid, col.idx);
+                if let Some((gid, ty)) = self.qry_col_mapping.get(&key) {
+                    // replace query column with intra column
+                    let (id, col_idx, ty) = self.intra_col_mapping.get(gid).unwrap();
+                    *col = Col{gid: *gid, idx: *col_idx, kind: ColKind::Intra(*id)};
+                    Some(*ty)
+                } else {
+                    None
+                }
+            },
+            ColKind::Correlated(qid) => {
+                let key = (*qid, col.idx);
+                self.qry_col_mapping.get(&key).map(|v| &v.1).cloned()
+            }
+            ColKind::Table(..) => unreachable!("table column should have type specified"),
+        }
     }
 }
 
-impl OpMutVisitor for FixType<'_> {
+impl Fix<'_> {
+
+    #[inline]
+    fn new(qry_set: &mut QuerySet) -> Self {
+        Fix{
+            qry_set,
+            qry_col_mapping: HashMap::new(),
+            intra_col_mapping: HashMap::new(),
+            gid: GlobalID::from(0),
+        }
+    }
+
+    #[inline]
+    fn next_gid(&mut self) -> GlobalID {
+        self.gid.fetch_inc()
+    }
+
+    #[inline]
+    fn fix_qry(&mut self, qry_id: QueryID) -> Result<()> {
+        self.qry_set.transform_op(qry_id, |qry_set, _, op| {
+            // let mut ft = FixType { qry_set, qry_types, intra_types };
+            op.walk_mut(self).unbranch()
+        })?
+    }
+
+    #[inline]
+    fn fix_expr(&mut self, e: &mut Expr) -> Result<()> {
+        self.fix_rec(e).map_err(Into::into)
+    }
+
+    /// fix type of an aggr expression. 
+    /// if the aggr expression is complex, generate a new intra column
+    /// to replace it.
+    #[inline]
+    fn fix_aggr_expr(&mut self, idx: ColIndex, e: &mut Expr) -> Result<Option<Col>> {
+        todo!()
+    }
+
+    /// fix type of a group expression.
+    /// if the group expression is complex, generate a new intra column
+    /// to replace it.
+    #[inline]
+    fn fix_group_expr(&mut self, idx: ColIndex, e: &mut Expr) -> Result<Option<Col>> {
+        todo!()
+    }
+}
+
+impl OpMutVisitor for Fix<'_> {
     type Cont = ();
     type Break = Error;
     #[inline]
     fn leave(&mut self, op: &mut Op) -> ControlFlow<Error> {
-        match op {
-            Op::Query(qry_id) => {
-                let qry_id = *qry_id;
+        match &mut op.kind {
+            OpKind::Query(qry_id) => {
                 // first, recursively fix types in child query
-                fix_type(self.qry_set, qry_id, self.types).branch()?;
+                // let mut intra_types = HashMap::new();
+                self.fix_qry(*qry_id).branch()?;
+                // fix_type(self.qry_set, qry_id, self.qry_types, &mut intra_types).branch()?;
                 // then populate type map with out columns
-                if let Some(subq) = self.qry_set.get(&qry_id) {
-                    for (i, c) in subq.out_cols().iter().enumerate() {
-                        if c.expr.ty.is_unknown() {
-                            return ControlFlow::Break(Error::TypeInferFailed);
-                        } else {
-                            self.types
-                                .insert((qry_id, ColIndex::from(i as u32)), c.expr.ty);
-                        }
+                let subq = self.qry_set.get(qry_id).unwrap();
+                let out_cols = subq.out_cols();
+                let mut outputs = Vec::with_capacity(out_cols.len());
+                for (i, c) in out_cols.iter().enumerate() {
+                    if c.expr.ty.is_unknown() {
+                        return ControlFlow::Break(Error::TypeInferFailed);
+                    } else {
+                        // initialize intra column.
+                        let gid = self.next_gid();
+                        // initial intra column index is same as output.
+                        // this may be changed by other operator, e.g. join.
+                        let idx = ColIndex::from(i as u32);
+                        let ty = c.expr.ty;
+                        let output = ProjCol::no_alias(Expr::intra_col(gid, 0, idx));
+                        outputs.push(output);
+                        self.qry_col_mapping
+                            .insert((*qry_id, ColIndex::from(i as u32)), (gid, ty));
+                        self.intra_col_mapping
+                            .insert(gid, (0, idx, ty));
                     }
                 }
+                op.output = OpOutput::Ref(Arc::new(outputs));
                 ControlFlow::Continue(())
             }
-            Op::Filt { pred, .. } => {
+            OpKind::Filt { pred, input } => {
                 for e in pred.iter_mut() {
-                    self.fix(e).branch()?
+                    self.fix_expr(e).branch()?
                 }
                 fix_bools(pred.as_mut());
+                op.output = input.output.clone(); // propagate output from child
                 ControlFlow::Continue(())
             }
-            Op::Join(join) => {
+            OpKind::Join(join) => {
                 match join.as_mut() {
                     Join::Cross(_) => (),
-                    Join::Qualified(QualifiedJoin { cond, filt, .. }) => {
+                    Join::Qualified(QualifiedJoin { cond, filt, left, right, ..}) => {
+                        // because join concats two children's output.
+                        // we need to adjust child index of right children
+                        if let OpOutput::Ref(right_arc) = mem::take(&mut right.output) {
+                            if let Some(mut right_out) = Arc::into_inner(right_arc) {
+                                for out in &mut right_out {
+                                    match &mut out.expr.kind {
+                                        ExprKind::Col(Col{gid, kind: ColKind::Intra(id), ..}) => {
+                                            *id = 1;
+                                            // also update mapping
+                                            let (id, _, _) = self.intra_col_mapping.get_mut(gid).unwrap();
+                                            *id = 1;
+                                        }
+                                        _ => (),
+                                    }
+                                }
+                                right.output = OpOutput::Ref(Arc::new(right_out));
+                            }
+                        } else {
+                            unreachable!("right child output unspecified");
+                        }
                         for e in cond.iter_mut() {
-                            self.fix(e).branch()?
+                            self.fix_expr(e).branch()?
                         }
                         fix_bools(cond.as_mut());
                         for e in filt.iter_mut() {
-                            self.fix(e).branch()?
+                            self.fix_expr(e).branch()?
                         }
                         fix_bools(filt.as_mut());
+                        // propagate output and update intra column index
+                        let mut out = left.output.extract().unwrap();
+                        let right = right.output.extract().unwrap();
+                        let mut ridx = out.len() as u32;
+                        for mut rout in right {
+                            match rout.expr.kind
+                        }
                     }
                 }
                 ControlFlow::Continue(())
             }
-            Op::Aggr(aggr) => {
+            OpKind::Aggr(aggr) => {
                 let Aggr {
                     groups, proj, filt, ..
                 } = aggr.as_mut();
-                for e in groups.iter_mut() {
-                    self.fix(e).branch()?
+                // here we examine group, project and filter expressions.
+                // for example "SELECT sum(c1)+1 FROM t1 GROUP BY c2+1 HAVING sum(c1) > 0",
+                // two projection operators will be generated.
+                // one is above the aggr to project sum(c1)+1,
+                // the other is under the aggr to project c2+1.
+                // one filter operator will be generated.
+                for (i, e) in groups.iter_mut().enumerate() {
+                    let idx = ColIndex::from(i as u32);
+                    if let Some(c) = self.fix_group_expr(idx, e).branch()? {
+                        let ty = e.ty;
+                        // let new_expr = Expr{kind: ExprKind::Col(c), ty};
+                        // *e = new_expr;
+                    } // otherwise do nothing
                 }
                 for c in proj.iter_mut() {
                     self.fix(&mut c.expr).branch()?
@@ -104,7 +235,7 @@ impl OpMutVisitor for FixType<'_> {
                 ControlFlow::Continue(())
             }
             _ => {
-                for e in op.exprs_mut() {
+                for e in op.kind.exprs_mut() {
                     self.fix(e).branch()?
                 }
                 ControlFlow::Continue(())
@@ -386,7 +517,7 @@ mod tests {
 
     #[test]
     fn test_type_fix_join() {
-        use crate::lgc::{preorder, Op};
+        use crate::lgc::{preorder, OpKind};
         let cat = ty_catalog();
         assert_ty_plan1(
             &cat,
@@ -394,8 +525,8 @@ mod tests {
             type_fix(&mut p.qry_set, p.root).unwrap();
             print_plan(sql, &p);
             let subq = p.root_query().unwrap();
-            subq.root.walk(&mut preorder(|op| match op {
-                j @ Op::Join(_) => {
+            subq.root.walk(&mut preorder(|op| match &op.kind {
+                j @ OpKind::Join(_) => {
                     for e in j.exprs() {
                         assert!(e.ty.is_bool());
                     }
@@ -407,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_type_fix_aggr() {
-        use crate::lgc::{preorder, Op};
+        use crate::lgc::{preorder, OpKind};
         let cat = ty_catalog();
         assert_ty_plan1(
             &cat,
@@ -416,8 +547,8 @@ mod tests {
                 type_fix(&mut p.qry_set, p.root).unwrap();
                 print_plan(sql, &p);
                 let subq = p.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Aggr(aggr) => {
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Aggr(aggr) => {
                         for e in &aggr.filt {
                             assert!(e.ty.is_bool());
                         }

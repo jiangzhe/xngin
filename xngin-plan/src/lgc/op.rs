@@ -13,12 +13,158 @@ use crate::lgc::col::ProjCol;
 use crate::lgc::setop::{Setop, SetopKind, SubqOp};
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashSet;
+use std::sync::Arc;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
-use xngin_expr::{Effect, Expr, QueryID, Setq};
+use xngin_expr::{Effect, ExprKind, QueryID, Setq};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum OpKind {
+#[derive(Debug, Clone, Default)]
+pub struct Op {
+    pub output: OpOutput,
+    pub kind: OpKind,
+}
+
+impl Op {
+    #[inline]
+    pub fn new(kind: OpKind) -> Self {
+        Op {
+            output: OpOutput::default(),
+            kind,
+        }
+    }
+
+    #[inline]
+    pub fn empty() -> Self {
+        Op {
+            output: OpOutput::default(),
+            kind: OpKind::Empty,
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        matches!(self.kind, OpKind::Empty)
+    }
+
+    #[inline]
+    pub fn ty(&self) -> OpTy {
+        self.kind.ty()
+    }
+
+    /// Returns output columns of current operator.
+    ///
+    /// If output fix is done, just returns output field.
+    /// Otherwise, traverse down the operator tree and find
+    /// the first operator that can output columns, such
+    /// as Proj, Aggr, Row, etc.
+    #[inline]
+    pub fn out_cols(&self) -> Option<&[ProjCol]> {
+        let mut op = self;
+        loop {
+            if let OpOutput::Ref(output) = &op.output {
+                return Some(&output[..]);
+            }
+            match &op.kind {
+                OpKind::Aggr(aggr) => return Some(&aggr.proj),
+                OpKind::Proj { cols, .. } => return cols.as_ref().map(|cs| &cs[..]),
+                OpKind::Row(row) => return row.as_ref().map(|cs| &cs[..]),
+                OpKind::Sort { input, .. } => op = input.as_ref(),
+                OpKind::Limit { input, .. } => op = input.as_ref(),
+                OpKind::Filt { input, .. } => op = input.as_ref(),
+                OpKind::Table(..)
+                | OpKind::Query(_)
+                | OpKind::Setop(_)
+                | OpKind::Join(_)
+                | OpKind::JoinGraph(_)
+                | OpKind::Attach(..)
+                | OpKind::Empty => return None,
+            }
+        }
+    }
+
+    /// Returns mutable output columns of current operator.
+    #[inline]
+    pub fn out_cols_mut(&mut self) -> Option<&mut Vec<ProjCol>> {
+        let mut op = self;
+        loop {
+            if let OpOutput::Ref(_) = &mut op.output {
+                // cannot change
+                return None;
+            }
+            match &mut op.kind {
+                OpKind::Aggr(aggr) => return Some(&mut aggr.proj),
+                OpKind::Proj { cols, .. } => return cols.as_mut(),
+                OpKind::Row(row) => return row.as_mut(),
+                OpKind::Sort { input, .. } => op = input.as_mut(),
+                OpKind::Limit { input, .. } => op = input.as_mut(),
+                OpKind::Filt { input, .. } => op = input.as_mut(),
+                OpKind::Table(..)
+                | OpKind::Query(_)
+                | OpKind::Setop(_)
+                | OpKind::Join(_)
+                | OpKind::JoinGraph(_)
+                | OpKind::Attach(..)
+                | OpKind::Empty => return None,
+            }
+        }
+    }
+
+    #[inline]
+    pub fn collect_qry_ids(&self, qry_ids: &mut HashSet<QueryID>) {
+        struct Collect<'a>(&'a mut HashSet<QueryID>);
+        impl OpVisitor for Collect<'_> {
+            type Cont = ();
+            type Break = ();
+            #[inline]
+            fn enter(&mut self, op: &Op) -> ControlFlow<()> {
+                if let OpKind::Query(qry_id) = op.kind {
+                    self.0.insert(qry_id);
+                }
+                ControlFlow::Continue(())
+            }
+        }
+        let mut c = Collect(qry_ids);
+        let _ = self.walk(&mut c);
+    }
+
+    pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
+        let mut eff = visitor.enter(self)?;
+        for c in self.kind.inputs() {
+            eff.merge(c.walk(visitor)?)
+        }
+        eff.merge(visitor.leave(self)?);
+        ControlFlow::Continue(eff)
+    }
+
+    pub fn walk_mut<V: OpMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
+        let mut eff = visitor.enter(self)?;
+        for c in self.kind.inputs_mut() {
+            eff.merge(c.walk_mut(visitor)?)
+        }
+        eff.merge(visitor.leave(self)?);
+        ControlFlow::Continue(eff)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum OpOutput {
+    #[default]
+    Unspecified,
+    Ref(Arc<Vec<ProjCol>>),
+}
+
+impl OpOutput {
+    #[inline]
+    pub fn extract(&self) -> Option<Vec<ProjCol>> {
+        match self {
+            OpOutput::Unspecified => None,
+            OpOutput::Ref(cols) => Some(cols.as_ref().clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpTy {
     Proj,
     Filt,
     Aggr,
@@ -36,18 +182,32 @@ pub enum OpKind {
 
 /// Op stands for logical operator.
 /// This is the general enum containing all nodes of logical plan.
-#[derive(Debug, Clone)]
-pub enum Op {
-    /// Projection node.
-    Proj { cols: Vec<ProjCol>, input: Box<Op> },
+#[derive(Debug, Clone, Default)]
+pub enum OpKind {
+    /// Project node.
+    ///
+    /// This node is used to build a logical plan.
+    /// It's equivalent to "SELECT ..." clause in SQL statement.
+    /// After plan optimization, this kind of node will be removed
+    /// as we apply projection on each other nodes' output.
+    Proj {
+        cols: Option<Vec<ProjCol>>,
+        input: Box<Op>,
+    },
     /// Filter node.
-    Filt { pred: Vec<Expr>, input: Box<Op> },
+    ///
+    /// It's equivalent to "WHERE ..." clause or "HAVING ..." clause in
+    /// SQL statement.
+    Filt { pred: Vec<ExprKind>, input: Box<Op> },
     /// Aggregation node.
     Aggr(Box<Aggr>),
     /// Join node.
+    ///
+    /// It's equivalent to "... JOIN ..." clause in SQL statement.
     Join(Box<Join>),
-    /// This is a temporary node only existing in query optimizing phase.
-    /// After that, it will be converted back to multiple Join nodes.
+    /// This is a temporary node only existing in query optimization,
+    /// especially for join reordering.
+    /// Once it's done, it will be converted back to multiple Join nodes.
     JoinGraph(Box<JoinGraph>),
     /// Sort node.
     Sort {
@@ -66,7 +226,7 @@ pub enum Op {
     /// This node is converted from a non-correlated scalar subquery.
     Attach(Box<Op>, QueryID),
     /// Row represents a single select without source table. e.g. "SELECT 1"
-    Row(Vec<ProjCol>),
+    Row(Option<Vec<ProjCol>>),
     /// Query node represents a single row, a concrete table or
     /// a sub-tree containing one or more operators.
     Query(QueryID),
@@ -77,46 +237,41 @@ pub enum Op {
     /// Empty represent a empty data set.
     /// It is used in place for special cases such as impossible predicate,
     /// limit 0 rows, etc.
+    #[default]
     Empty,
 }
 
-impl Default for Op {
-    fn default() -> Self {
-        Op::Empty
-    }
-}
-
-impl Op {
+impl OpKind {
     #[inline]
-    pub fn kind(&self) -> OpKind {
+    pub fn ty(&self) -> OpTy {
         match self {
-            Op::Proj { .. } => OpKind::Proj,
-            Op::Filt { .. } => OpKind::Filt,
-            Op::Aggr(_) => OpKind::Aggr,
-            Op::Join(_) => OpKind::Join,
-            Op::JoinGraph(_) => OpKind::JoinGraph,
-            Op::Sort { .. } => OpKind::Sort,
-            Op::Limit { .. } => OpKind::Limit,
-            Op::Attach(..) => OpKind::Attach,
-            Op::Row(_) => OpKind::Row,
-            Op::Query(_) => OpKind::Query,
-            Op::Table(..) => OpKind::Table,
-            Op::Setop(_) => OpKind::Setop,
-            Op::Empty => OpKind::Empty,
+            OpKind::Proj { .. } => OpTy::Proj,
+            OpKind::Filt { .. } => OpTy::Filt,
+            OpKind::Aggr { .. } => OpTy::Aggr,
+            OpKind::Join { .. } => OpTy::Join,
+            OpKind::JoinGraph { .. } => OpTy::JoinGraph,
+            OpKind::Sort { .. } => OpTy::Sort,
+            OpKind::Limit { .. } => OpTy::Limit,
+            OpKind::Attach { .. } => OpTy::Attach,
+            OpKind::Row { .. } => OpTy::Row,
+            OpKind::Query { .. } => OpTy::Query,
+            OpKind::Table { .. } => OpTy::Table,
+            OpKind::Setop { .. } => OpTy::Setop,
+            OpKind::Empty => OpTy::Empty,
         }
     }
 
     #[inline]
     pub fn proj(cols: Vec<ProjCol>, input: Op) -> Self {
-        Op::Proj {
-            cols,
+        OpKind::Proj {
+            cols: Some(cols),
             input: Box::new(input),
         }
     }
 
     #[inline]
-    pub fn filt(pred: Vec<Expr>, input: Op) -> Self {
-        Op::Filt {
+    pub fn filt(pred: Vec<ExprKind>, input: Op) -> Self {
+        OpKind::Filt {
             pred,
             input: Box::new(input),
         }
@@ -124,7 +279,7 @@ impl Op {
 
     #[inline]
     pub fn sort(items: Vec<SortItem>, input: Op) -> Self {
-        Op::Sort {
+        OpKind::Sort {
             items,
             limit: None,
             input: Box::new(input),
@@ -133,12 +288,12 @@ impl Op {
 
     #[inline]
     pub fn join_graph(graph: JoinGraph) -> Self {
-        Op::JoinGraph(Box::new(graph))
+        OpKind::JoinGraph(Box::new(graph))
     }
 
     #[inline]
-    pub fn aggr(groups: Vec<Expr>, input: Op) -> Self {
-        Op::Aggr(Box::new(Aggr {
+    pub fn aggr(groups: Vec<ExprKind>, input: Op) -> Self {
+        OpKind::Aggr(Box::new(Aggr {
             groups,
             proj: vec![],
             input,
@@ -148,7 +303,7 @@ impl Op {
 
     #[inline]
     pub fn limit(start: u64, end: u64, input: Op) -> Self {
-        Op::Limit {
+        OpKind::Limit {
             start,
             end,
             input: Box::new(input),
@@ -157,7 +312,7 @@ impl Op {
 
     #[inline]
     pub fn setop(kind: SetopKind, q: Setq, left: SubqOp, right: SubqOp) -> Self {
-        Op::Setop(Box::new(Setop {
+        OpKind::Setop(Box::new(Setop {
             kind,
             q,
             left,
@@ -167,7 +322,7 @@ impl Op {
 
     #[inline]
     pub fn cross_join(tables: Vec<JoinOp>) -> Self {
-        Op::Join(Box::new(Join::Cross(tables)))
+        OpKind::Join(Box::new(Join::Cross(tables)))
     }
 
     #[inline]
@@ -175,10 +330,10 @@ impl Op {
         kind: JoinKind,
         left: JoinOp,
         right: JoinOp,
-        cond: Vec<Expr>,
-        filt: Vec<Expr>,
+        cond: Vec<ExprKind>,
+        filt: Vec<ExprKind>,
     ) -> Self {
-        Op::Join(Box::new(Join::Qualified(QualifiedJoin {
+        OpKind::Join(Box::new(Join::Qualified(QualifiedJoin {
             kind,
             left,
             right,
@@ -187,72 +342,23 @@ impl Op {
         })))
     }
 
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Op::Empty)
-    }
-
-    #[inline]
-    pub fn out_cols(&self) -> Option<&[ProjCol]> {
-        let mut op = self;
-        loop {
-            match op {
-                Op::Aggr(aggr) => return Some(&aggr.proj),
-                Op::Proj { cols, .. } => return Some(cols),
-                Op::Row(row) => return Some(row),
-                Op::Sort { input, .. } => op = input.as_ref(),
-                Op::Limit { input, .. } => op = input.as_ref(),
-                Op::Filt { input, .. } => op = input.as_ref(),
-                Op::Table(..)
-                | Op::Query(_)
-                | Op::Setop(_)
-                | Op::Join(_)
-                | Op::JoinGraph(_)
-                | Op::Attach(..)
-                | Op::Empty => return None,
-            }
-        }
-    }
-
-    #[inline]
-    pub fn out_cols_mut(&mut self) -> Option<&mut [ProjCol]> {
-        let mut op = self;
-        loop {
-            match op {
-                Op::Aggr(aggr) => return Some(&mut aggr.proj),
-                Op::Proj { cols, .. } => return Some(cols),
-                Op::Row(row) => return Some(row.as_mut()),
-                Op::Sort { input, .. } => op = input.as_mut(),
-                Op::Limit { input, .. } => op = input.as_mut(),
-                Op::Filt { input, .. } => op = input.as_mut(),
-                Op::Table(..)
-                | Op::Query(_)
-                | Op::Setop(_)
-                | Op::Join(_)
-                | Op::JoinGraph(_)
-                | Op::Attach(..)
-                | Op::Empty => return None,
-            }
-        }
-    }
-
     /// Returns single source of the operator
     #[inline]
     pub fn input_mut(&mut self) -> Option<&mut Op> {
         match self {
-            Op::Proj { input, .. } => Some(input),
-            Op::Filt { input, .. } => Some(input),
-            Op::Sort { input, .. } => Some(input),
-            Op::Limit { input, .. } => Some(input),
-            Op::Aggr(aggr) => Some(&mut aggr.input),
-            Op::Join(_)
-            | Op::JoinGraph(_)
-            | Op::Setop(_)
-            | Op::Attach(..)
-            | Op::Row(_)
-            | Op::Table(..)
-            | Op::Query(_)
-            | Op::Empty => None,
+            OpKind::Proj { input, .. } => Some(input),
+            OpKind::Filt { input, .. } => Some(input),
+            OpKind::Sort { input, .. } => Some(input),
+            OpKind::Limit { input, .. } => Some(input),
+            OpKind::Aggr(aggr) => Some(&mut aggr.input),
+            OpKind::Join(_)
+            | OpKind::JoinGraph(_)
+            | OpKind::Setop(_)
+            | OpKind::Attach(..)
+            | OpKind::Row(_)
+            | OpKind::Table(..)
+            | OpKind::Query(_)
+            | OpKind::Empty => None,
         }
     }
 
@@ -260,145 +366,135 @@ impl Op {
     #[inline]
     pub fn inputs(&self) -> SmallVec<[&Op; 2]> {
         match self {
-            Op::Proj { input, .. } => smallvec![input.as_ref()],
-            Op::Filt { input, .. } => smallvec![input.as_ref()],
-            Op::Aggr(aggr) => smallvec![&aggr.input],
-            Op::Sort { input, .. } => smallvec![input.as_ref()],
-            Op::Limit { input, .. } => smallvec![input.as_ref()],
-            Op::Attach(c, _) => smallvec![c.as_ref()],
-            Op::Join(join) => match join.as_ref() {
+            OpKind::Proj { input, .. } => smallvec![input.as_ref()],
+            OpKind::Filt { input, .. } => smallvec![input.as_ref()],
+            OpKind::Aggr(aggr) => smallvec![&aggr.input],
+            OpKind::Sort { input, .. } => smallvec![input.as_ref()],
+            OpKind::Limit { input, .. } => smallvec![input.as_ref()],
+            OpKind::Attach(c, _) => smallvec![c.as_ref()],
+            OpKind::Join(join) => match join.as_ref() {
                 Join::Cross(jos) => jos.iter().map(AsRef::as_ref).collect(),
                 Join::Qualified(QualifiedJoin { left, right, .. }) => {
                     smallvec![left.as_ref(), right.as_ref()]
                 }
             },
-            Op::JoinGraph(graph) => graph.children(),
-            Op::Setop(set) => {
+            OpKind::JoinGraph(graph) => graph.children(),
+            OpKind::Setop(set) => {
                 let Setop { left, right, .. } = set.as_ref();
                 smallvec![left.as_ref(), right.as_ref()]
             }
-            Op::Query(_) | Op::Row(_) | Op::Table(..) | Op::Empty => smallvec![],
+            OpKind::Query(_) | OpKind::Row(_) | OpKind::Table(..) | OpKind::Empty => smallvec![],
         }
     }
 
     #[inline]
     pub fn inputs_mut(&mut self) -> SmallVec<[&mut Op; 2]> {
         match self {
-            Op::Proj { input, .. } => smallvec![input.as_mut()],
-            Op::Filt { input, .. } => smallvec![input.as_mut()],
-            Op::Aggr(aggr) => smallvec![&mut aggr.input],
-            Op::Sort { input, .. } => smallvec![input.as_mut()],
-            Op::Limit { input, .. } => smallvec![input.as_mut()],
-            Op::Attach(c, _) => smallvec![c.as_mut()],
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Proj { input, .. } => smallvec![input.as_mut()],
+            OpKind::Filt { input, .. } => smallvec![input.as_mut()],
+            OpKind::Aggr(aggr) => smallvec![&mut aggr.input],
+            OpKind::Sort { input, .. } => smallvec![input.as_mut()],
+            OpKind::Limit { input, .. } => smallvec![input.as_mut()],
+            OpKind::Attach(c, _) => smallvec![c.as_mut()],
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(jos) => jos.iter_mut().map(AsMut::as_mut).collect(),
                 Join::Qualified(QualifiedJoin { left, right, .. }) => {
                     smallvec![left.as_mut(), right.as_mut()]
                 }
             },
-            Op::JoinGraph(graph) => graph.children_mut(),
-            Op::Setop(set) => {
+            OpKind::JoinGraph(graph) => graph.children_mut(),
+            OpKind::Setop(set) => {
                 let Setop { left, right, .. } = set.as_mut();
                 smallvec![left.as_mut(), right.as_mut()]
             }
-            Op::Query(_) | Op::Row(_) | Op::Table(..) | Op::Empty => smallvec![],
+            OpKind::Query(_) | OpKind::Row(_) | OpKind::Table(..) | OpKind::Empty => smallvec![],
         }
     }
 
     #[inline]
-    pub fn exprs(&self) -> SmallVec<[&Expr; 2]> {
+    pub fn exprs(&self) -> SmallVec<[&ExprKind; 2]> {
         match self {
-            Op::Proj { cols, .. } => cols.iter().map(|c| &c.expr).collect(),
-            Op::Filt { pred, .. } => pred.iter().collect(),
-            Op::Aggr(aggr) => aggr
+            OpKind::Proj { cols, .. } => {
+                if let Some(cols) = cols {
+                    cols.iter().map(|c| &c.expr).collect()
+                } else {
+                    smallvec![]
+                }
+            }
+            OpKind::Filt { pred, .. } => pred.iter().collect(),
+            OpKind::Aggr(aggr) => aggr
                 .groups
                 .iter()
                 .chain(aggr.proj.iter().map(|c| &c.expr))
+                .chain(&aggr.filt)
                 .collect(),
-            Op::Sort { items, .. } => items.iter().map(|si| &si.expr).collect(),
-            Op::Limit { .. }
-            | Op::Query(_)
-            | Op::Table(..)
-            | Op::Setop(_)
-            | Op::Empty
-            | Op::Attach(..) => {
+            OpKind::Sort { items, .. } => items.iter().map(|si| &si.expr).collect(),
+            OpKind::Limit { .. }
+            | OpKind::Query(_)
+            | OpKind::Table(..)
+            | OpKind::Setop(_)
+            | OpKind::Empty
+            | OpKind::Attach(..) => {
                 smallvec![]
             }
-            Op::Join(j) => match j.as_ref() {
+            OpKind::Join(j) => match j.as_ref() {
                 Join::Cross(_) => smallvec![],
                 Join::Qualified(QualifiedJoin { cond, filt, .. }) => {
                     cond.iter().chain(filt.iter()).collect()
                 }
             },
-            Op::JoinGraph(graph) => graph.exprs().into_iter().collect(),
-            Op::Row(row) => row.iter().map(|c| &c.expr).collect(),
+            OpKind::JoinGraph(graph) => graph.exprs().into_iter().collect(),
+            OpKind::Row(row) => {
+                if let Some(row) = row {
+                    row.iter().map(|c| &c.expr).collect()
+                } else {
+                    smallvec![]
+                }
+            }
         }
     }
 
     #[inline]
-    pub fn exprs_mut(&mut self) -> SmallVec<[&mut Expr; 2]> {
+    pub fn exprs_mut(&mut self) -> SmallVec<[&mut ExprKind; 2]> {
         match self {
-            Op::Proj { cols, .. } => cols.iter_mut().map(|c| &mut c.expr).collect(),
-            Op::Filt { pred, .. } => pred.iter_mut().collect(),
-            Op::Aggr(aggr) => aggr
+            OpKind::Proj { cols, .. } => {
+                if let Some(cols) = cols {
+                    cols.iter_mut().map(|c| &mut c.expr).collect()
+                } else {
+                    smallvec![]
+                }
+            }
+            OpKind::Filt { pred, .. } => pred.iter_mut().collect(),
+            OpKind::Aggr(aggr) => aggr
                 .groups
                 .iter_mut()
                 .chain(aggr.proj.iter_mut().map(|c| &mut c.expr))
+                .chain(&mut aggr.filt)
                 .collect(),
-            Op::Sort { items, .. } => items.iter_mut().map(|si| &mut si.expr).collect(),
-            Op::Limit { .. }
-            | Op::Query(_)
-            | Op::Table(..)
-            | Op::Setop(_)
-            | Op::Empty
-            | Op::Attach(..) => {
+            OpKind::Sort { items, .. } => items.iter_mut().map(|si| &mut si.expr).collect(),
+            OpKind::Limit { .. }
+            | OpKind::Query(_)
+            | OpKind::Table(..)
+            | OpKind::Setop(_)
+            | OpKind::Empty
+            | OpKind::Attach(..) => {
                 smallvec![]
             }
-            Op::Join(j) => match j.as_mut() {
+            OpKind::Join(j) => match j.as_mut() {
                 Join::Cross(_) => smallvec![],
                 Join::Qualified(QualifiedJoin { cond, filt, .. }) => {
                     cond.iter_mut().chain(filt.iter_mut()).collect()
                 }
             },
-            Op::JoinGraph(graph) => graph.exprs_mut().into_iter().collect(),
-            Op::Row(row) => row.iter_mut().map(|c| &mut c.expr).collect(),
-        }
-    }
-
-    #[inline]
-    pub fn collect_qry_ids(&self, qry_ids: &mut HashSet<QueryID>) {
-        struct Collect<'a>(&'a mut HashSet<QueryID>);
-        impl OpVisitor for Collect<'_> {
-            type Cont = ();
-            type Break = ();
-            #[inline]
-            fn enter(&mut self, op: &Op) -> ControlFlow<()> {
-                if let Op::Query(qry_id) = op {
-                    self.0.insert(*qry_id);
+            OpKind::JoinGraph(graph) => graph.exprs_mut().into_iter().collect(),
+            OpKind::Row(row) => {
+                if let Some(row) = row {
+                    row.iter_mut().map(|c| &mut c.expr).collect()
+                } else {
+                    smallvec![]
                 }
-                ControlFlow::Continue(())
             }
         }
-        let mut c = Collect(qry_ids);
-        let _ = self.walk(&mut c);
-    }
-
-    pub fn walk<V: OpVisitor>(&self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
-        let mut eff = visitor.enter(self)?;
-        for c in self.inputs() {
-            eff.merge(c.walk(visitor)?)
-        }
-        eff.merge(visitor.leave(self)?);
-        ControlFlow::Continue(eff)
-    }
-
-    pub fn walk_mut<V: OpMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
-        let mut eff = visitor.enter(self)?;
-        for c in self.inputs_mut() {
-            eff.merge(c.walk_mut(visitor)?)
-        }
-        eff.merge(visitor.leave(self)?);
-        ControlFlow::Continue(eff)
     }
 }
 
@@ -413,11 +509,11 @@ pub enum AggrKind {
 
 #[derive(Debug, Clone)]
 pub struct Aggr {
-    pub groups: Vec<Expr>,
+    pub groups: Vec<ExprKind>,
     pub proj: Vec<ProjCol>,
     pub input: Op,
     // The filter applied after aggregation
-    pub filt: Vec<Expr>,
+    pub filt: Vec<ExprKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,7 +528,7 @@ pub struct Apply {
     /// Free variables of subquery.
     /// If empty, subquery is non-correlated.
     /// Otherwise, correlated.
-    pub vars: Vec<Expr>,
+    pub vars: Vec<ExprKind>,
     /// Outer query.
     pub left: Op,
     /// inner subquery.
@@ -449,7 +545,7 @@ pub enum ApplyKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SortItem {
-    pub expr: Expr,
+    pub expr: ExprKind,
     pub desc: bool,
 }
 

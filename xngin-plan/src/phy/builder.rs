@@ -1,8 +1,8 @@
-use xngin_compute::eval::{TableEvalPlan, QueryEvalPlan};
-use crate::lgc::{Op, Location, QuerySet, Subquery};
-use crate::digraph::{DiGraph, NodeIndex};
 use super::*;
+use crate::digraph::{DiGraph, NodeIndex};
 use crate::error::{Error, Result};
+use crate::lgc::{Location, Op, OpKind, QuerySet, Subquery};
+use xngin_compute::eval::{QueryEvalPlan, TableEvalPlan};
 
 pub struct PhyBuilder<'a> {
     graph: DiGraph<Phy, ()>,
@@ -49,32 +49,32 @@ impl<'a> PhyBuilder<'a> {
     #[inline]
     fn build_intermediate(&mut self, root: &Op) -> Result<NodeIndex> {
         match root {
-            Op::Proj { cols, input } => {
-                let input_idx = self.build_intermediate(input)?;
-                let evals = QueryEvalPlan::new(cols.iter().map(|c| &c.expr))?;
-                let proj = Phy {
-                    kind: PhyKind::Proj(PhyProj{evals}),
-                };
-                let curr_idx = self.graph.add_node(proj);
-                self.graph.add_edge(input_idx, curr_idx, ());
-                Ok(curr_idx)
-            }
-            Op::Query(qry_id) => {
-                let subq = self
-                    .qry_set
-                    .get(qry_id)
-                    .ok_or(Error::QueryNotFound(*qry_id))?;
-                self.build_subquery(subq)
-            }
-            Op::Row(cols) => {
-                // row does not have any input, either query or table is fine.
-                let evals = QueryEvalPlan::new(cols.iter().map(|c| &c.expr))?;
-                let row = Phy{
-                    kind: PhyKind::Row(PhyRow{evals}),
-                };
-                let curr_idx = self.graph.add_node(row);
-                Ok(curr_idx)
-            }
+            // Op::Proj { cols, input } => {
+            //     let input_idx = self.build_intermediate(input)?;
+            //     let evals = QueryEvalPlan::new(cols.iter().map(|c| &c.expr))?;
+            //     let proj = Phy {
+            //         kind: PhyKind::Proj(PhyProj{evals}),
+            //     };
+            //     let curr_idx = self.graph.add_node(proj);
+            //     self.graph.add_edge(input_idx, curr_idx, ());
+            //     Ok(curr_idx)
+            // }
+            // Op::Query(qry_id) => {
+            //     let subq = self
+            //         .qry_set
+            //         .get(qry_id)
+            //         .ok_or(Error::QueryNotFound(*qry_id))?;
+            //     self.build_subquery(subq)
+            // }
+            // Op::Row(cols) => {
+            //     // row does not have any input, either query or table is fine.
+            //     let evals = QueryEvalPlan::new(cols.iter().map(|c| &c.expr))?;
+            //     let row = Phy{
+            //         kind: PhyKind::Row(PhyRow{evals}),
+            //     };
+            //     let curr_idx = self.graph.add_node(row);
+            //     Ok(curr_idx)
+            // }
             _ => todo!(),
         }
     }
@@ -86,21 +86,21 @@ impl<'a> PhyBuilder<'a> {
         let table_id;
         loop {
             match root {
-                Op::Proj { cols, input } => {
-                    let eval_plan = TableEvalPlan::new(cols.iter().map(|c| &c.expr))?;
-                    proj = Some(eval_plan);
-                    root = &**input;
-                }
-                Op::Table(_, tid) => {
-                    table_id = Some(*tid);
-                    break;
-                }
+                // Op::Proj { cols, input } => {
+                //     let eval_plan = TableEvalPlan::new(cols.iter().map(|c| &c.expr))?;
+                //     proj = Some(eval_plan);
+                //     root = &**input;
+                // }
+                // Op::Table(_, tid) => {
+                //     table_id = Some(*tid);
+                //     break;
+                // }
                 _ => return Err(Error::UnsupportedPhyTableScan),
             }
         }
         let (evals, table_id) = proj.zip(table_id).ok_or(Error::UnsupportedPhyTableScan)?;
         let node = Phy {
-            kind: PhyKind::TableScan(PhyTableScan{evals, table_id}),
+            kind: PhyKind::TableScan(PhyTableScan { evals, table_id }),
         };
         let idx = self.graph.add_node(node);
         self.start.push(idx);

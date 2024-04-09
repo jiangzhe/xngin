@@ -1,18 +1,19 @@
-use crate::expr::{Col, ColIndex, ColKind, Expr, ExprKind, QueryID};
+use crate::expr::{Col, ColKind, ExprKind};
+use crate::id::{ColIndex, QueryID};
 use std::hash::Hash;
 use xngin_catalog::TableID;
 
 pub trait DataSourceID: Clone + Copy + PartialEq + Eq + Hash + PartialOrd + Ord + Sized {
     /// resolve data source from expression
-    fn from_expr(e: &Expr) -> Option<(Self, ColIndex)>;
+    fn from_expr(e: &ExprKind) -> Option<(Self, ColIndex)>;
 }
 
 impl DataSourceID for QueryID {
     #[inline]
-    fn from_expr(e: &Expr) -> Option<(Self, ColIndex)> {
-        match &e.kind {
+    fn from_expr(e: &ExprKind) -> Option<(Self, ColIndex)> {
+        match e {
             ExprKind::Col(Col {
-                kind: ColKind::QueryCol(qid),
+                kind: ColKind::Query(qid),
                 idx,
                 ..
             }) => Some((*qid, *idx)),
@@ -23,10 +24,10 @@ impl DataSourceID for QueryID {
 
 impl DataSourceID for TableID {
     #[inline]
-    fn from_expr(e: &Expr) -> Option<(Self, ColIndex)> {
-        match &e.kind {
+    fn from_expr(e: &ExprKind) -> Option<(Self, ColIndex)> {
+        match e {
             ExprKind::Col(Col {
-                kind: ColKind::TableCol(tid, _),
+                kind: ColKind::Table(tid, _, _),
                 idx,
                 ..
             }) => Some((*tid, *idx)),

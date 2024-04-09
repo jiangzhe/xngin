@@ -5,7 +5,7 @@ pub(crate) mod greedy;
 use crate::error::{Error, Result};
 use crate::join::graph::{Edge, Graph, VertexSet};
 use crate::join::{JoinKind, JoinOp};
-use crate::lgc::{LgcPlan, Op, OpMutVisitor, QuerySet};
+use crate::lgc::{LgcPlan, Op, OpKind, OpMutVisitor, QuerySet};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem;
@@ -47,11 +47,11 @@ where
         type Break = Error;
         #[inline]
         fn enter(&mut self, op: &mut Op) -> ControlFlow<Error> {
-            match op {
-                Op::Query(qry_id) => reorder_join(self.0, *qry_id, self.1).branch(),
-                Op::JoinGraph(_) => {
+            match &mut op.kind {
+                OpKind::Query(qry_id) => reorder_join(self.0, *qry_id, self.1).branch(),
+                OpKind::JoinGraph(_) => {
                     let graph = mem::take(op);
-                    if let Op::JoinGraph(mut g) = graph {
+                    if let OpKind::JoinGraph(mut g) = graph.kind {
                         let mut r = (self.1)();
                         // hook before reordering
                         r.before(g.as_mut()).branch()?;
@@ -122,7 +122,7 @@ impl Reorder for Sequential {
         // insert all vertexes back
         for vid in graph.vids() {
             let qid = graph.vid_to_qid(vid)?;
-            joined.insert(VertexSet::from(vid), Op::Query(qid));
+            joined.insert(VertexSet::from(vid), Op::new(OpKind::Query(qid)));
         }
 
         for (vset, eids) in graph.vset_eids() {
@@ -134,7 +134,7 @@ impl Reorder for Sequential {
                 let r = joined
                     .remove(&edge.r_vset)
                     .ok_or(Error::InvalidJoinVertexSet)?;
-                let op = Op::qualified_join(
+                let op = Op::new(OpKind::qualified_join(
                     edge.kind,
                     JoinOp::try_from(l)?,
                     JoinOp::try_from(r)?,
@@ -146,7 +146,7 @@ impl Reorder for Sequential {
                         .iter()
                         .map(|fid| graph.pred(*fid).clone())
                         .collect(),
-                );
+                ));
                 joined.insert(*vset, op);
             } else {
                 // only inner join could have multiple join edges, we fold them into one.
@@ -184,13 +184,13 @@ impl Reorder for Sequential {
                     .flat_map(|eid| graph.preds(graph.edge(*eid).cond.clone()))
                     .cloned()
                     .collect();
-                let op = Op::qualified_join(
+                let op = Op::new(OpKind::qualified_join(
                     JoinKind::Inner,
                     JoinOp::try_from(l)?,
                     JoinOp::try_from(r)?,
                     cond,
                     vec![],
-                );
+                ));
                 joined.insert(*vset, op);
             }
         }
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_join_reorder_greedy() {
-        use crate::lgc::OpKind::*;
+        use crate::lgc::OpTy::*;
         let cat = j_catalog();
         let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_join_reorder_dpsize() {
-        use crate::lgc::OpKind::*;
+        use crate::lgc::OpTy::*;
         let cat = j_catalog();
         let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn test_join_reorder_dphyp() {
-        use crate::lgc::OpKind::*;
+        use crate::lgc::OpTy::*;
         let cat = j_catalog();
         let tbl_map = table_map(&cat, "j", vec!["t0", "t1", "t2", "t3"]);
         for (s, qrs, js, jss, shape) in vec![

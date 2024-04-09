@@ -1,12 +1,12 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::lgc::{Op, OpMutVisitor, QuerySet, Setop, SetopKind};
+use crate::lgc::{Op, OpKind, OpMutVisitor, QuerySet, Setop, SetopKind};
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
 use std::collections::HashSet;
 use std::mem;
 use xngin_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use xngin_expr::{Col, ColKind, Const, Expr, ExprKind, QueryID, Setq};
+use xngin_expr::{Col, ColKind, Const, ExprKind, QueryID, Setq};
 
 /// Eliminate redundant operators.
 /// 1. Filter with true predicate can be removed.
@@ -51,18 +51,22 @@ impl<'a> EliminateOp<'a> {
     #[inline]
     fn bottom_up(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
-        match op {
-            Op::Join(j) => match j.as_mut() {
+        match &mut op.kind {
+            OpKind::Join(j) => match j.as_mut() {
                 Join::Cross(tbls) => {
-                    if tbls.iter().any(|t| t.as_ref().is_empty()) {
+                    if tbls.iter().any(|t| t.is_empty()) {
                         // any child in cross join results in empty rows
-                        *op = Op::Empty;
+                        *op = Op::empty();
                         eff |= RuleEffect::OP;
                     }
                 }
                 Join::Qualified(QualifiedJoin {
                     kind,
-                    left: JoinOp(Op::Empty),
+                    left:
+                        JoinOp(Op {
+                            kind: OpKind::Empty,
+                            ..
+                        }),
                     right: JoinOp(right_op),
                     ..
                 }) => match kind {
@@ -71,10 +75,10 @@ impl<'a> EliminateOp<'a> {
                     | JoinKind::Semi
                     | JoinKind::AntiSemi
                     | JoinKind::Mark
-                    | JoinKind::Single => *op = Op::Empty,
+                    | JoinKind::Single => *op = Op::empty(),
                     JoinKind::Full => {
                         if right_op.is_empty() {
-                            *op = Op::Empty;
+                            *op = Op::empty();
                             eff |= RuleEffect::OP;
                         } else {
                             // As left table is empty, we can convert full join to single table,
@@ -89,14 +93,18 @@ impl<'a> EliminateOp<'a> {
                 Join::Qualified(QualifiedJoin {
                     kind,
                     left: JoinOp(left_op),
-                    right: JoinOp(Op::Empty),
+                    right:
+                        JoinOp(Op {
+                            kind: OpKind::Empty,
+                            ..
+                        }),
                     ..
                 }) => match kind {
                     JoinKind::Inner
                     | JoinKind::Semi
                     | JoinKind::AntiSemi
                     | JoinKind::Mark
-                    | JoinKind::Single => *op = Op::Empty,
+                    | JoinKind::Single => *op = Op::empty(),
                     JoinKind::Left | JoinKind::Full => {
                         // similar to left table case, we replace current op with the other child,
                         // and clean up when bottom up.
@@ -108,85 +116,87 @@ impl<'a> EliminateOp<'a> {
                 },
                 _ => (),
             },
-            Op::Setop(so) => {
+            OpKind::Setop(so) => {
                 let Setop {
                     kind,
                     q,
                     left,
                     right,
                 } = so.as_mut();
-                match (left.as_mut(), right.as_mut()) {
-                    (Op::Empty, Op::Empty) => {
-                        *op = Op::Empty;
+                match (&mut left.kind, &mut right.kind) {
+                    (OpKind::Empty, OpKind::Empty) => {
+                        *op = Op::empty();
                         eff |= RuleEffect::OP;
                     }
-                    (Op::Empty, right) => match (kind, q) {
+                    (OpKind::Empty, right) => match (kind, q) {
                         (SetopKind::Union, Setq::All) => {
-                            *op = mem::take(right);
+                            *op = Op::new(mem::take(right));
                             eff |= RuleEffect::OP;
                         }
                         (SetopKind::Except | SetopKind::Intersect, Setq::All) => {
-                            *op = Op::Empty;
+                            *op = Op::empty();
                             eff |= RuleEffect::OP;
                         }
                         _ => (),
                     },
-                    (left, Op::Empty) => {
+                    (left, OpKind::Empty) => {
                         if *q == Setq::All {
-                            *op = mem::take(left);
+                            *op = Op::new(mem::take(left));
                             eff |= RuleEffect::OP;
                         }
                     }
                     _ => (),
                 }
             }
-            Op::Limit { input, .. } => {
+            OpKind::Limit { input, .. } => {
                 if input.is_empty() {
-                    *op = Op::Empty;
+                    *op = Op::empty();
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Sort { input, .. } => {
+            OpKind::Sort { input, .. } => {
                 if input.is_empty() {
-                    *op = Op::Empty;
+                    *op = Op::empty();
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Aggr(_) => (), // todo: leave aggr as is, and optimize later
-            Op::Proj { input, .. } => {
+            OpKind::Aggr(_) => (), // todo: leave aggr as is, and optimize later
+            OpKind::Proj { input, .. } => {
                 if input.is_empty() {
-                    *op = Op::Empty;
+                    *op = Op::empty();
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Filt { input, .. } => {
+            OpKind::Filt { input, .. } => {
                 if input.is_empty() {
-                    *op = Op::Empty;
+                    *op = Op::empty();
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Attach(input, _) => {
+            OpKind::Attach(input, _) => {
                 if input.is_empty() {
-                    *op = Op::Empty;
+                    *op = Op::empty();
                     eff |= RuleEffect::OP;
                 }
             }
-            Op::Query(_) | Op::Table(..) | Op::Row(_) | Op::JoinGraph(_) => unreachable!(),
-            Op::Empty => (),
+            OpKind::Query(_) | OpKind::Table(..) | OpKind::Row(_) | OpKind::JoinGraph(_) => {
+                unreachable!()
+            }
+            OpKind::Empty => (),
         }
         if !op.is_empty() && !self.empty_qs.is_empty() {
             // current operator is not eliminated but we have some child query set to empty,
             // all column references to it must be set to null
             let qs = &self.empty_qs;
-            for e in op.exprs_mut() {
+            for e in op.kind.exprs_mut() {
                 eff |= update_simplify_nested(e, NullCoalesce::Null, |e| {
                     if let ExprKind::Col(Col {
-                        kind: ColKind::QueryCol(qry_id),
+                        kind: ColKind::Query(qry_id),
                         ..
-                    }) = &e.kind
+                    }) = e
                     {
                         if qs.contains(qry_id) {
-                            *e = Expr::const_null();
+                            *e = ExprKind::const_null();
                         }
                     }
                     Ok(())
@@ -204,17 +214,17 @@ impl OpMutVisitor for EliminateOp<'_> {
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
-        match op {
-            Op::Filt { pred, input } => {
+        match &mut op.kind {
+            OpKind::Filt { pred, input } => {
                 if pred.is_empty() {
                     // no predicates, remove current filter
-                    *op = Op::Empty;
+                    *op = Op::empty();
                     eff |= RuleEffect::OP;
                 } else {
                     match pair_const_false(pred) {
                         (false, _) => (),
                         (true, true) => {
-                            *op = Op::Empty;
+                            *op = Op::empty();
                             eff |= RuleEffect::OP;
                         }
                         (true, false) => {
@@ -227,7 +237,7 @@ impl OpMutVisitor for EliminateOp<'_> {
                     }
                 }
             }
-            Op::Join(join) => match join.as_mut() {
+            OpKind::Join(join) => match join.as_mut() {
                 Join::Cross(_) => (),
                 Join::Qualified(QualifiedJoin {
                     kind: JoinKind::Inner,
@@ -236,7 +246,7 @@ impl OpMutVisitor for EliminateOp<'_> {
                 }) => match pair_const_false(cond) {
                     (false, _) => (),
                     (true, true) => {
-                        *op = Op::Empty;
+                        *op = Op::empty();
                         eff |= RuleEffect::OP;
                     }
                     (true, false) => {
@@ -250,7 +260,7 @@ impl OpMutVisitor for EliminateOp<'_> {
                 }) => match pair_const_false(filt) {
                     (false, _) => (),
                     (true, true) => {
-                        *op = Op::Empty;
+                        *op = Op::empty();
                         eff |= RuleEffect::OP;
                     }
                     (true, false) => {
@@ -259,15 +269,15 @@ impl OpMutVisitor for EliminateOp<'_> {
                 },
                 _ => todo!(),
             },
-            Op::Limit { start, end, .. } => {
+            OpKind::Limit { start, end, .. } => {
                 if *start == *end {
-                    *op = Op::Empty;
+                    *op = Op::empty();
                     eff |= RuleEffect::OP;
                 } else {
                     self.has_limit = true;
                 }
             }
-            Op::Sort { input, .. } => {
+            OpKind::Sort { input, .. } => {
                 if self.is_subq && !self.has_limit {
                     // in case subquery that does not have limit upon sort,
                     // sort can be eliminated.
@@ -278,7 +288,7 @@ impl OpMutVisitor for EliminateOp<'_> {
                     return ControlFlow::Continue(eff);
                 }
             }
-            Op::Query(query_id) => {
+            OpKind::Query(query_id) => {
                 eff |= eliminate_op(self.qry_set, *query_id, true).branch()?;
             }
             _ => (),
@@ -291,17 +301,17 @@ impl OpMutVisitor for EliminateOp<'_> {
     #[inline]
     fn leave(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
         let mut eff = RuleEffect::NONE;
-        match op {
-            Op::Query(qry_id) => {
+        match &mut op.kind {
+            OpKind::Query(qry_id) => {
                 if let Some(subq) = self.qry_set.get(qry_id) {
                     if subq.root.is_empty() {
                         self.empty_qs.insert(*qry_id);
-                        *op = Op::Empty;
+                        *op = Op::empty();
                         eff |= RuleEffect::OP;
                     }
                 }
             }
-            Op::Table(..) | Op::Row(_) => (),
+            OpKind::Table(..) | OpKind::Row(_) => (),
             _ => {
                 eff |= self.bottom_up(op)?;
             }
@@ -312,16 +322,10 @@ impl OpMutVisitor for EliminateOp<'_> {
 
 // treat null as false
 #[inline]
-fn pair_const_false(es: &[Expr]) -> (bool, bool) {
+fn pair_const_false(es: &[ExprKind]) -> (bool, bool) {
     match es {
-        [Expr {
-            kind: ExprKind::Const(Const::Null),
-            ..
-        }] => (true, true),
-        [Expr {
-            kind: ExprKind::Const(c),
-            ..
-        }] => (true, c.is_zero().unwrap_or_default()),
+        [ExprKind::Const(Const::Null)] => (true, true),
+        [ExprKind::Const(c)] => (true, c.is_zero().unwrap_or_default()),
         _ => (false, false),
     }
 }
@@ -330,7 +334,7 @@ fn pair_const_false(es: &[Expr]) -> (bool, bool) {
 mod tests {
     use super::*;
     use crate::lgc::tests::{assert_j_plan1, get_lvl_queries, j_catalog, print_plan};
-    use crate::lgc::{preorder, LgcPlan};
+    use crate::lgc::{preorder, LgcPlan, OpTy};
 
     #[test]
     fn test_op_eliminate_false_pred() {
@@ -346,8 +350,8 @@ mod tests {
             op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
-            if let Op::Proj { input, .. } = &subq.root {
-                assert!(matches!(input.as_ref(), Op::Query(..)))
+            if let OpKind::Proj { input, .. } = &subq.root.kind {
+                assert_eq!(input.ty(), OpTy::Query);
             } else {
                 panic!("fail")
             }
@@ -386,7 +390,7 @@ mod tests {
                 print_plan(s, &q);
                 let subqs = get_lvl_queries(&q, 1);
                 assert_eq!(subqs.len(), 1);
-                assert!(matches!(subqs[0].root, Op::Proj { .. }))
+                assert_eq!(subqs[0].root.ty(), OpTy::Proj);
             },
         );
         // do NOT remove ORDER BY because of LIMIT exists
@@ -398,8 +402,8 @@ mod tests {
                 print_plan(s, &q);
                 let subqs = get_lvl_queries(&q, 1);
                 assert_eq!(subqs.len(), 1);
-                if let Op::Limit { input, .. } = &subqs[0].root {
-                    assert!(matches!(input.as_ref(), Op::Sort { .. }));
+                if let OpKind::Limit { input, .. } = &subqs[0].root.kind {
+                    assert_eq!(input.ty(), OpTy::Sort);
                 } else {
                     panic!("fail")
                 }
@@ -415,13 +419,13 @@ mod tests {
             op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
-            assert!(matches!(subq.root, Op::Empty));
+            assert!(subq.root.is_empty());
         });
         assert_j_plan1(&cat, "select c1 from t1 limit 0 offset 3", |s, mut q| {
             op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
-            assert!(matches!(subq.root, Op::Empty));
+            assert!(subq.root.is_empty());
         });
         assert_j_plan1(
             &cat,
@@ -430,7 +434,7 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                assert!(matches!(subq.root, Op::Empty));
+                assert!(subq.root.is_empty());
             },
         );
         // do NOT eliminate if LIMIT non-zero
@@ -438,7 +442,7 @@ mod tests {
             op_eliminate(&mut q.qry_set, q.root).unwrap();
             print_plan(s, &q);
             let subq = q.root_query().unwrap();
-            assert!(matches!(subq.root, Op::Limit { .. }));
+            assert_eq!(subq.root.ty(), OpTy::Limit);
         });
     }
 
@@ -457,8 +461,8 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Setop(_) => panic!("fail to eliminate setop"),
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Setop(_) => panic!("fail to eliminate setop"),
                     _ => (),
                 }));
             },
@@ -470,8 +474,8 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Setop(_) => panic!("fail to eliminate setop"),
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Setop(_) => panic!("fail to eliminate setop"),
                     _ => (),
                 }));
             },
@@ -493,8 +497,8 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Setop(_) => panic!("fail to eliminate setop"),
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Setop(_) => panic!("fail to eliminate setop"),
                     _ => (),
                 }));
             },
@@ -516,8 +520,8 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Setop(_) => panic!("fail to eliminate setop"),
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Setop(_) => panic!("fail to eliminate setop"),
                     _ => (),
                 }));
             },
@@ -572,12 +576,12 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Join(_) => panic!("fail to eliminate op"),
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Join(_) => panic!("fail to eliminate op"),
                     _ => (),
                 }));
-                if let Op::Proj { cols, .. } = &subq.root {
-                    assert_eq!(&cols[0].expr, &Expr::const_null());
+                if let OpKind::Proj { cols, .. } = &subq.root.kind {
+                    assert_eq!(&cols.as_ref().unwrap()[0].expr, &ExprKind::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -596,12 +600,12 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Join(_) => panic!("fail to eliminate op"),
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Join(_) => panic!("fail to eliminate op"),
                     _ => (),
                 }));
-                if let Op::Proj { cols, .. } = &subq.root {
-                    assert_ne!(&cols[0].expr, &Expr::const_null());
+                if let OpKind::Proj { cols, .. } = &subq.root.kind {
+                    assert_ne!(&cols.as_ref().unwrap()[0].expr, &ExprKind::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -625,13 +629,13 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Join(_) => panic!("fail to eliminate op"),
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Join(_) => panic!("fail to eliminate op"),
                     _ => (),
                 }));
-                if let Op::Proj{cols, ..} = &subq.root {
-                    assert_eq!(&cols[0].expr, &Expr::const_null());
-                    assert_ne!(&cols[1].expr, &Expr::const_null());
+                if let OpKind::Proj{cols, ..} = &subq.root.kind {
+                    assert_eq!(&cols.as_ref().unwrap()[0].expr, &ExprKind::const_null());
+                    assert_ne!(&cols.as_ref().unwrap()[1].expr, &ExprKind::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -644,13 +648,13 @@ mod tests {
                 op_eliminate(&mut q.qry_set, q.root).unwrap();
                 print_plan(s, &q);
                 let subq = q.root_query().unwrap();
-                subq.root.walk(&mut preorder(|op| match op {
-                    Op::Join(_) => panic!("fail to eliminate op"),
+                subq.root.walk(&mut preorder(|op| match &op.kind {
+                    OpKind::Join(_) => panic!("fail to eliminate op"),
                     _ => (),
                 }));
-                if let Op::Proj{cols, ..} = &subq.root {
-                    assert_ne!(&cols[0].expr, &Expr::const_null());
-                    assert_eq!(&cols[1].expr, &Expr::const_null());
+                if let OpKind::Proj{cols, ..} = &subq.root.kind {
+                    assert_ne!(&cols.as_ref().unwrap()[0].expr, &ExprKind::const_null());
+                    assert_eq!(&cols.as_ref().unwrap()[1].expr, &ExprKind::const_null());
                 } else {
                     panic!("fail")
                 }
@@ -667,6 +671,6 @@ mod tests {
         op_eliminate(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let root = &q1.root_query().unwrap().root;
-        assert!(matches!(root, Op::Empty));
+        assert!(root.is_empty());
     }
 }

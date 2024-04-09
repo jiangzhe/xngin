@@ -52,7 +52,7 @@ impl Executable for ProjExec {
         } else {
             log::error!("Projection executor starts more than once");
             ctx.cancel.cancel(Error::InvalidExecutorState());
-            return
+            return;
         };
         let mut in_stream = self.input.to_stream(&ctx.cancel);
         if self.reserve_order {
