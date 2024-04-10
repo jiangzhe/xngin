@@ -916,10 +916,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn print_plan(sql: &str, plan: &LgcPlan) {
-        use crate::explain::Explain;
+        use crate::explain::{Explain, ExplainConf};
         println!("SQL: {}", sql);
         let mut s = String::new();
-        plan.explain(&mut s).unwrap();
+        plan.explain(&mut s, &ExplainConf::default()).unwrap();
         println!("Plan:\n{}", s)
     }
 }

@@ -1,4 +1,4 @@
-use xngin_plan::explain::Explain;
+use xngin_plan::explain::{Explain, ExplainConf};
 use xngin_plan::lgc::LgcPlan;
 use xngin_sql::parser::dialect::Ansi;
 use xngin_sql::parser::parse_query_verbose;
@@ -11,7 +11,7 @@ macro_rules! check_build {
         let qry = parse_query_verbose(Ansi(sql)).unwrap();
         let plan = LgcPlan::new(&cat, "tpch", &qry).unwrap();
         let mut s = String::new();
-        assert!(plan.explain(&mut s).is_ok());
+        assert!(plan.explain(&mut s, &ExplainConf::default()).is_ok());
         println!("Explain plan:\n{}", s)
     };
 }
