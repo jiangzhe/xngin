@@ -37,7 +37,7 @@ fn unfold_derived(
             let mut u = Unfold::new(qry_set, mapping, mode);
             op.walk_mut(&mut u).unbranch()
         } else {
-            Ok(RuleEffect::NONE)
+            Ok(RuleEffect::empty())
         }
     })?
 }
@@ -85,7 +85,7 @@ impl OpMutVisitor for Unfold<'_> {
                 unfold_derived(self.qry_set, *qry_id, &mut mapping, Mode::Full).branch()
             }
             OpKind::Join(join) => match join.as_mut() {
-                Join::Cross(_) => ControlFlow::Continue(RuleEffect::NONE),
+                Join::Cross(_) => ControlFlow::Continue(RuleEffect::empty()),
                 Join::Qualified(QualifiedJoin {
                     kind: JoinKind::Left,
                     right,
@@ -115,11 +115,11 @@ impl OpMutVisitor for Unfold<'_> {
                     self.stack.push(left.into());
                     ControlFlow::Continue(eff)
                 }
-                _ => ControlFlow::Continue(RuleEffect::NONE), // other joins is fine to bypass
+                _ => ControlFlow::Continue(RuleEffect::empty()), // other joins is fine to bypass
             },
             OpKind::Setop(so) => {
                 // setop does not support unfolding into current query
-                let mut eff = RuleEffect::NONE;
+                let mut eff = RuleEffect::empty();
                 let Setop { left, right, .. } = so.as_mut();
                 let right = mem::take(right);
                 if let OpKind::Query(qry_id) = &right.kind {
@@ -145,8 +145,8 @@ impl OpMutVisitor for Unfold<'_> {
             | OpKind::Aggr(_)
             | OpKind::Sort { .. }
             | OpKind::Limit { .. }
-            | OpKind::Attach(..) => ControlFlow::Continue(RuleEffect::NONE), // fine to bypass
-            OpKind::Empty => ControlFlow::Continue(RuleEffect::NONE), // as join op is set to empty, it's safe to bypass
+            | OpKind::Attach(..) => ControlFlow::Continue(RuleEffect::empty()), // fine to bypass
+            OpKind::Empty => ControlFlow::Continue(RuleEffect::empty()), // as join op is set to empty, it's safe to bypass
             OpKind::Table(..) | OpKind::Row(_) => unreachable!(),
         }
     }
@@ -168,7 +168,7 @@ impl OpMutVisitor for Unfold<'_> {
                                 *op = new_op;
                                 ControlFlow::Continue(RuleEffect::OPEXPR)
                             }
-                            None => ControlFlow::Continue(RuleEffect::NONE),
+                            None => ControlFlow::Continue(RuleEffect::empty()),
                         }
                     }
                     None => ControlFlow::Break(Error::QueryNotFound(*qry_id)),
@@ -347,10 +347,10 @@ fn rewrite_exprs(op: &mut Op, mapping: &HashMap<QueryCol, ExprKind>) -> RuleEffe
                     return ControlFlow::Continue(RuleEffect::EXPR);
                 }
             }
-            ControlFlow::Continue(RuleEffect::NONE)
+            ControlFlow::Continue(RuleEffect::empty())
         }
     }
-    let mut eff = RuleEffect::NONE;
+    let mut eff = RuleEffect::empty();
     if mapping.is_empty() {
         return eff;
     }

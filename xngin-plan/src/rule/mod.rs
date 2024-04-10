@@ -29,7 +29,7 @@ pub use pred_pushdown::pred_pushdown;
 
 bitflags! {
     pub struct RuleEffect: u8 {
-        const NONE = 0x00;
+        // const NONE = 0x00;
         const OP = 0x01;
         const EXPR = 0x02;
         const OPEXPR = Self::OP.bits | Self::EXPR.bits;
@@ -39,7 +39,7 @@ bitflags! {
 impl Default for RuleEffect {
     #[inline]
     fn default() -> Self {
-        RuleEffect::NONE
+        RuleEffect::empty()
     }
 }
 
@@ -77,7 +77,7 @@ pub fn rule_optimize_each(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()>
             }
             _ => break,
         }
-        eff = RuleEffect::NONE;
+        eff = RuleEffect::empty();
     }
     final_rule_optimize(qry_set, qry_id)?;
     Ok(())
@@ -85,7 +85,7 @@ pub fn rule_optimize_each(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()>
 
 #[inline]
 pub fn init_rule_optimize(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<RuleEffect> {
-    let mut eff = RuleEffect::NONE;
+    let mut eff = RuleEffect::empty();
     // Run column pruning as first step, to remove unused columns in operator tree.
     // this will largely reduce effort of other rules.
     eff |= col_prune(qry_set, qry_id)?; // onetime

@@ -205,7 +205,10 @@ impl TypeFix for ExprKind {
                 _ => return inferer.confirm(self).ok_or(Error::UnknownColumnType),
             },
             ExprKind::Func { kind, args } => fix_func(*kind, args.as_mut(), inferer)?,
-            ExprKind::Pred(..) => PreciseType::bool(),
+            ExprKind::Pred(pred) => {
+                fix_pred(pred, inferer)?;
+                PreciseType::bool()
+            }
             _ => todo!(),
         };
         Ok(ty)

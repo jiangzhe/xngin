@@ -33,7 +33,7 @@ impl OpMutVisitor for PredPushdown<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        let mut eff = RuleEffect::NONE;
+        let mut eff = RuleEffect::empty();
         match &mut op.kind {
             OpKind::Filt { pred, input } => {
                 let mut fallback = vec![];
@@ -212,7 +212,7 @@ fn push_single(
     op: &mut Op,
     mut p: ExprItem,
 ) -> Result<(RuleEffect, Option<ExprItem>)> {
-    let mut eff = RuleEffect::NONE;
+    let mut eff = RuleEffect::empty();
     let res = match &mut op.kind {
         OpKind::Query(qry_id) => {
             if let Some(subq) = qry_set.get(qry_id) {

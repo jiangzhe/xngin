@@ -126,11 +126,11 @@ impl<'a, const N: usize> MySerPackets<'a, N> {
     }
 
     #[inline]
-    fn ser_header_partial<'b>(
+    fn ser_header_partial(
         &mut self,
         ctx: &SerdeCtx,
         mut header: MySerElem<'static>,
-        out: &'b mut [u8],
+        out: &mut [u8],
         start_idx: usize,
     ) {
         let outlen = out.len() - start_idx;
@@ -143,11 +143,11 @@ impl<'a, const N: usize> MySerPackets<'a, N> {
     }
 
     #[inline]
-    fn ser_header<'b>(
+    fn ser_header(
         &mut self,
         ctx: &SerdeCtx,
         mut header: MySerElem<'static>,
-        out: &'b mut [u8],
+        out: &mut [u8],
         mut start_idx: usize,
     ) -> usize {
         let header_len = header.my_len(ctx);
@@ -218,7 +218,7 @@ impl<'a, const N: usize> MySer<'a> for MySerPackets<'a, N> {
     }
 
     #[inline]
-    fn my_ser<'b>(&mut self, ctx: &SerdeCtx, out: &'b mut [u8], mut start_idx: usize) -> usize {
+    fn my_ser(&mut self, ctx: &SerdeCtx, out: &mut [u8], mut start_idx: usize) -> usize {
         if let Some(header) = self.header.take() {
             // write header: 3-byte payload length + 1-byte packet number
             start_idx = self.ser_header(ctx, header, out, start_idx);
@@ -786,7 +786,7 @@ impl<'a> MySer<'a> for MySerElem<'a> {
     }
 
     #[inline]
-    fn my_ser<'b>(&mut self, _ctx: &SerdeCtx, out: &'b mut [u8], start_idx: usize) -> usize {
+    fn my_ser(&mut self, _ctx: &SerdeCtx, out: &mut [u8], start_idx: usize) -> usize {
         match self.kind {
             MySerKind::Empty => start_idx,
             MySerKind::InlineBytes => {

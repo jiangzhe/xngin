@@ -27,7 +27,7 @@ fn reduce_outerjoin(
 ) -> Result<RuleEffect> {
     qry_set.transform_op(qry_id, |qry_set, loc, op| {
         if loc != Location::Intermediate {
-            return Ok(RuleEffect::NONE);
+            return Ok(RuleEffect::empty());
         }
         // as entering a new query, original reject-null exprs should be translated in current scope
         // and check whether it still rejects null, and initialize new rn_map.
@@ -55,7 +55,7 @@ impl OpMutVisitor for Reduce<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        let mut eff = RuleEffect::NONE;
+        let mut eff = RuleEffect::empty();
         match &mut op.kind {
             OpKind::Filt { pred, .. } => analyze_conj_preds(pred, self.rn_map).branch()?,
             OpKind::Aggr(aggr) => analyze_conj_preds(&aggr.filt, self.rn_map).branch()?,

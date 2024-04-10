@@ -82,28 +82,29 @@ impl<'a> PhyBuilder<'a> {
     // Table scan supports Proj and Table operators.
     #[inline]
     fn build_disk_scan(&mut self, mut root: &Op) -> Result<NodeIndex> {
-        let mut proj = None;
-        let table_id;
-        loop {
-            match root {
-                // Op::Proj { cols, input } => {
-                //     let eval_plan = TableEvalPlan::new(cols.iter().map(|c| &c.expr))?;
-                //     proj = Some(eval_plan);
-                //     root = &**input;
-                // }
-                // Op::Table(_, tid) => {
-                //     table_id = Some(*tid);
-                //     break;
-                // }
-                _ => return Err(Error::UnsupportedPhyTableScan),
-            }
-        }
-        let (evals, table_id) = proj.zip(table_id).ok_or(Error::UnsupportedPhyTableScan)?;
-        let node = Phy {
-            kind: PhyKind::TableScan(PhyTableScan { evals, table_id }),
-        };
-        let idx = self.graph.add_node(node);
-        self.start.push(idx);
-        Ok(idx)
+        // let mut proj = None;
+        // let table_id;
+        // loop {
+        //     match &root.kind {
+        //         // Op::Proj { cols, input } => {
+        //         //     let eval_plan = TableEvalPlan::new(cols.iter().map(|c| &c.expr))?;
+        //         //     proj = Some(eval_plan);
+        //         //     root = &**input;
+        //         // }
+        //         OpKind::Table(_, tid) => {
+        //             table_id = Some(*tid);
+        //             break;
+        //         }
+        //         _ => return Err(Error::UnsupportedPhyTableScan),
+        //     }
+        // }
+        // let (evals, table_id) = proj.zip(table_id).ok_or(Error::UnsupportedPhyTableScan)?;
+        // let node = Phy {
+        //     kind: PhyKind::TableScan(PhyTableScan { evals, table_id }),
+        // };
+        // let idx = self.graph.add_node(node);
+        // self.start.push(idx);
+        // Ok(idx)
+        todo!()
     }
 }
