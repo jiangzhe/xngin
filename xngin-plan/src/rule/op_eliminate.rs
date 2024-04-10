@@ -50,7 +50,7 @@ impl<'a> EliminateOp<'a> {
 
     #[inline]
     fn bottom_up(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        let mut eff = RuleEffect::NONE;
+        let mut eff = RuleEffect::empty();
         match &mut op.kind {
             OpKind::Join(j) => match j.as_mut() {
                 Join::Cross(tbls) => {
@@ -213,7 +213,7 @@ impl OpMutVisitor for EliminateOp<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        let mut eff = RuleEffect::NONE;
+        let mut eff = RuleEffect::empty();
         match &mut op.kind {
             OpKind::Filt { pred, input } => {
                 if pred.is_empty() {
@@ -300,7 +300,7 @@ impl OpMutVisitor for EliminateOp<'_> {
 
     #[inline]
     fn leave(&mut self, op: &mut Op) -> ControlFlow<Error, RuleEffect> {
-        let mut eff = RuleEffect::NONE;
+        let mut eff = RuleEffect::empty();
         match &mut op.kind {
             OpKind::Query(qry_id) => {
                 if let Some(subq) = self.qry_set.get(qry_id) {

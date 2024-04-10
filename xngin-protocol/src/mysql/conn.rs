@@ -1006,7 +1006,7 @@ impl<'a> PacketParser<'a> {
             };
         }
         let data = *b;
-        b.advance(b.len() as usize);
+        b.advance(b.len());
         self.b = *b;
         Packet {
             kind: PacketKind::PartialPayload,

@@ -65,7 +65,7 @@ impl OpMutVisitor for ExprSimplify<'_> {
         match &mut op.kind {
             OpKind::Query(qry_id) => simplify_expr(self.qry_set, *qry_id).branch(),
             OpKind::Filt { pred, .. } => {
-                let mut eff = RuleEffect::NONE;
+                let mut eff = RuleEffect::empty();
                 for p in pred.iter_mut() {
                     eff |= simplify_nested(p, NullCoalesce::False).branch()?;
                     normalize_single(p);
@@ -74,9 +74,9 @@ impl OpMutVisitor for ExprSimplify<'_> {
                 ControlFlow::Continue(eff)
             }
             OpKind::Join(join) => match join.as_mut() {
-                Join::Cross(_) => ControlFlow::Continue(RuleEffect::NONE),
+                Join::Cross(_) => ControlFlow::Continue(RuleEffect::empty()),
                 Join::Qualified(QualifiedJoin { cond, filt, .. }) => {
-                    let mut eff = RuleEffect::NONE;
+                    let mut eff = RuleEffect::empty();
                     for c in cond.iter_mut() {
                         eff |= simplify_nested(c, NullCoalesce::False).branch()?;
                         normalize_single(c);
@@ -93,7 +93,7 @@ impl OpMutVisitor for ExprSimplify<'_> {
                 }
             },
             _ => {
-                let mut eff = RuleEffect::NONE;
+                let mut eff = RuleEffect::empty();
                 for e in op.kind.exprs_mut() {
                     eff |= simplify_nested(e, NullCoalesce::Null).branch()?;
                     normalize_single(e);
@@ -124,7 +124,7 @@ pub(crate) fn update_simplify_nested<F: FnMut(&mut ExprKind) -> Result<()>>(
             if let ExprKind::Pred(Pred::Not(_)) = e {
                 self.1.flip();
             }
-            ControlFlow::Continue(RuleEffect::NONE)
+            ControlFlow::Continue(RuleEffect::empty())
         }
 
         #[inline]
@@ -672,7 +672,7 @@ pub(crate) fn simplify_conj(
     es: &mut Vec<ExprKind>,
     null_coalesce: NullCoalesce,
 ) -> Result<RuleEffect> {
-    let mut eff = RuleEffect::NONE;
+    let mut eff = RuleEffect::empty();
     if let Some(e) = simplify_conj_short_circuit(es, null_coalesce, &mut eff) {
         es.clear();
         es.push(e);
@@ -688,7 +688,7 @@ fn update_simplify_single<F: FnMut(&mut ExprKind) -> Result<()>>(
     null_coalesce: NullCoalesce,
     mut f: F,
 ) -> Result<RuleEffect> {
-    let mut eff = RuleEffect::NONE;
+    let mut eff = RuleEffect::empty();
     // we don't count the replacement as expression change
     f(e)?;
     match e {
@@ -1464,7 +1464,7 @@ fn simplify_pred(p: &mut Pred, null_coalesce: NullCoalesce) -> Result<Option<Exp
         }
         Pred::Conj(es) => {
             let eff = simplify_conj(es, null_coalesce)?;
-            if eff == RuleEffect::NONE {
+            if eff.is_empty() {
                 None
             } else if es.len() == 1 {
                 Some(es.pop().unwrap())

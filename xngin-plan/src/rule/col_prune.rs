@@ -25,7 +25,7 @@ fn prune_col(
     if let Some(subq) = qry_set.get_mut(&qry_id) {
         if subq.location != Location::Intermediate {
             // skip other types of queries
-            return Ok(RuleEffect::NONE);
+            return Ok(RuleEffect::empty());
         }
         let mut c = Collect(use_set);
         let _ = subq.root.walk(&mut c);
@@ -101,7 +101,7 @@ impl OpMutVisitor for Modify<'_> {
                 prune_col(self.qry_set, *qry_id, self.use_set).branch()
             }
             _ => {
-                let mut eff = RuleEffect::NONE;
+                let mut eff = RuleEffect::empty();
                 for e in op.kind.exprs_mut() {
                     eff |= e.walk_mut(self)?;
                 }
@@ -116,7 +116,7 @@ impl ExprMutVisitor for Modify<'_> {
     type Break = Error;
     #[inline]
     fn enter(&mut self, e: &mut ExprKind) -> ControlFlow<Error, RuleEffect> {
-        let mut eff = RuleEffect::NONE;
+        let mut eff = RuleEffect::empty();
         match e {
             ExprKind::Col(Col {
                 kind: ColKind::Query(qry_id),

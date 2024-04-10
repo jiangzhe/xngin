@@ -144,7 +144,7 @@ impl TryFrom<LenEncInt> for u64 {
             LenEncInt::Len1(n) => Ok(n as u64),
             LenEncInt::Len3(n) => Ok(n as u64),
             LenEncInt::Len4(n) => Ok(n as u64),
-            LenEncInt::Len9(n) => Ok(n as u64),
+            LenEncInt::Len9(n) => Ok(n),
             _ => Err(Error::InvalidLengthEncoding()),
         }
     }

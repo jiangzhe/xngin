@@ -119,17 +119,12 @@ pub enum Location {
     Virtual,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum QryIDs {
+    #[default]
     Empty,
     Single(QueryID),
     Multi(HashSet<QueryID>),
-}
-
-impl Default for QryIDs {
-    fn default() -> Self {
-        QryIDs::Empty
-    }
 }
 
 /// QuerySet stores all sub-subqeries and provide lookup and update methods.

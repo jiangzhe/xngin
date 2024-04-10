@@ -260,9 +260,9 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
     ///
     /// if correlated is set to true, column can refer to sources in outer scopes.
     #[inline]
-    fn setup_with<'a>(
+    fn setup_with(
         &mut self,
-        with: &With<'a>,
+        with: &With<'_>,
         allow_unknown_ident: bool,
         colgen: &mut ColGen,
     ) -> Result<()> {
@@ -913,7 +913,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         let (qry_id, subquery) = self.qs.insert_empty();
         let mut proj_cols = Vec::with_capacity(all_cols.len());
         for c in all_cols {
-            let idx = ColIndex::from(c.idx as u32);
+            let idx = ColIndex::from(c.idx);
             let col = colgen.gen_tbl_col(qry_id, table_id, idx, c.pty, c.name.clone());
             proj_cols.push(ProjCol::implicit_alias(col, c.name))
         }
