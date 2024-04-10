@@ -1,6 +1,6 @@
 use std::time::Instant;
 use xngin_catalog::Catalog;
-use xngin_plan::explain::Explain;
+use xngin_plan::explain::{Explain, ExplainConf};
 use xngin_plan::lgc::LgcBuilder;
 use xngin_plan::rule::rule_optimize;
 use xngin_sql::parser::dialect::Ansi;
@@ -171,7 +171,7 @@ fn check_tpch_rule_optimize<C: Catalog>(cat: &C, sql: &str) {
     rule_optimize(&mut plan).unwrap();
     let dur_opt = inst.elapsed();
     let mut s = String::new();
-    assert!(plan.explain(&mut s).is_ok());
+    assert!(plan.explain(&mut s, &ExplainConf::default()).is_ok());
     println!("Explain plan:\n{}", s);
     println!(
         "vparse={:?}, build={:?}, opt={:?}",

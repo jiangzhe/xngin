@@ -13,14 +13,36 @@ const BRANCH_N: char = '├';
 const BRANCH_V: char = '│';
 const LINE: char = '─';
 
+#[derive(Debug, Clone)]
+pub struct ExplainConf {
+    show_col_name: bool,
+}
+
+impl Default for ExplainConf {
+    #[inline]
+    fn default() -> Self {
+        ExplainConf {
+            show_col_name: false,
+        }
+    }
+}
+
+impl ExplainConf {
+    #[inline]
+    pub fn show_col_name(mut self, show_col_name: bool) -> Self {
+        self.show_col_name = show_col_name;
+        self
+    }
+}
+
 /// Explain defines how to explain an expression, an operator
 /// or a plan.
 pub trait Explain {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result;
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result;
 }
 
 impl Explain for LgcPlan {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         for attach in &self.attaches {
             match self.qry_set.get(attach) {
                 Some(subq) => {
@@ -29,6 +51,7 @@ impl Explain for LgcPlan {
                         queries: &self.qry_set,
                         f,
                         spans: vec![],
+                        conf,
                     };
                     subq.root.walk(&mut qe).unbranch()?
                 }
@@ -42,6 +65,7 @@ impl Explain for LgcPlan {
                     queries: &self.qry_set,
                     f,
                     spans: vec![],
+                    conf,
                 };
                 subq.root.walk(&mut qe).unbranch()
             }
@@ -53,16 +77,16 @@ impl Explain for LgcPlan {
 /* Implements Explain for all operators */
 
 impl Explain for Op {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         match &self.kind {
             OpKind::Proj { cols, .. } => {
                 if let OpOutput::Ref(cols) = &self.output {
                     f.write_str("Proj{")?;
-                    write_refs(f, cols.iter().map(|c| &c.expr), ", ")?;
+                    write_refs(f, cols.iter().map(|c| &c.expr), ", ", conf)?;
                     f.write_str("}")
                 } else if let Some(cols) = cols {
                     f.write_str("Proj{")?;
-                    write_refs(f, cols.iter().map(|c| &c.expr), ", ")?;
+                    write_refs(f, cols.iter().map(|c| &c.expr), ", ", conf)?;
                     f.write_str("}")
                 } else {
                     return Err(fmt::Error);
@@ -71,35 +95,35 @@ impl Explain for Op {
             OpKind::Filt { pred, .. } => {
                 f.write_str("Filt{")?;
                 if !pred.is_empty() {
-                    write_refs(f, pred, " and ")?;
+                    write_refs(f, pred, " and ", conf)?;
                 }
                 f.write_char('}')
             }
-            OpKind::Aggr(aggr) => aggr.explain(f),
+            OpKind::Aggr(aggr) => aggr.explain(f, conf),
             OpKind::Sort { items, .. } => {
                 f.write_str("Sort{")?;
-                write_refs(f, items, ", ")?;
+                write_refs(f, items, ", ", conf)?;
                 f.write_char('}')
             }
-            OpKind::Join(join) => join.explain(f),
-            OpKind::JoinGraph(graph) => graph.explain(f),
-            OpKind::Setop(setop) => setop.explain(f),
+            OpKind::Join(join) => join.explain(f, conf),
+            OpKind::JoinGraph(graph) => graph.explain(f, conf),
+            OpKind::Setop(setop) => setop.explain(f, conf),
             OpKind::Limit { start, end, .. } => {
                 write!(f, "Limit{{{}, {}}}", start, end)
             }
             OpKind::Attach(_, qry_id) => {
                 f.write_str("Attach{")?;
-                qry_id.explain(f)?;
+                qry_id.explain(f, conf)?;
                 f.write_char('}')
             }
             OpKind::Row(row) => {
                 if let OpOutput::Ref(row) = &self.output {
                     f.write_str("Row{")?;
-                    write_refs(f, row.iter().map(|c| &c.expr), ", ")?;
+                    write_refs(f, row.iter().map(|c| &c.expr), ", ", conf)?;
                     f.write_char('}')
                 } else if let Some(row) = row {
                     f.write_str("Row{")?;
-                    write_refs(f, row.iter().map(|c| &c.expr), ", ")?;
+                    write_refs(f, row.iter().map(|c| &c.expr), ", ", conf)?;
                     f.write_char('}')
                 } else {
                     return Err(fmt::Error);
@@ -115,8 +139,8 @@ impl Explain for Op {
 }
 
 impl Explain for SortItem {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
-        self.expr.explain(f)?;
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
+        self.expr.explain(f, conf)?;
         if self.desc {
             f.write_str(" desc")?
         }
@@ -125,24 +149,24 @@ impl Explain for SortItem {
 }
 
 impl Explain for Aggr {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         f.write_str("Aggr{")?;
         f.write_str("groups=[")?;
-        write_refs(f, &self.groups, ", ")?;
+        write_refs(f, &self.groups, ", ", conf)?;
         f.write_str("], proj=[")?;
-        write_refs(f, self.proj.iter().map(|c| &c.expr), ", ")?;
+        write_refs(f, self.proj.iter().map(|c| &c.expr), ", ", conf)?;
         if self.filt.is_empty() {
             f.write_str("]}")
         } else {
             f.write_str("], filt=[")?;
-            write_refs(f, &self.filt, ", ")?;
+            write_refs(f, &self.filt, ", ", conf)?;
             f.write_str("]}")
         }
     }
 }
 
 impl Explain for Join {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         f.write_str("Join{")?;
         match self {
             Join::Cross(_) => f.write_str("cross")?,
@@ -152,12 +176,12 @@ impl Explain for Join {
                 f.write_str(kind.to_lower())?;
                 if !cond.is_empty() {
                     f.write_str(", cond=[")?;
-                    write_refs(f, cond, " and ")?;
+                    write_refs(f, cond, " and ", conf)?;
                     f.write_char(']')?
                 }
                 if !filt.is_empty() {
                     f.write_str(", filt=[")?;
-                    write_refs(f, filt, " and ")?;
+                    write_refs(f, filt, " and ", conf)?;
                     f.write_char(']')?
                 }
             }
@@ -167,9 +191,9 @@ impl Explain for Join {
 }
 
 impl Explain for JoinGraph {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         f.write_str("JoinGraph{vs=[")?;
-        write_refs(f, &self.queries(), ", ")?;
+        write_refs(f, &self.queries(), ", ", conf)?;
         f.write_str("]")?;
         if self.n_edges() > 0 {
             f.write_str(", es=[{")?;
@@ -180,6 +204,7 @@ impl Explain for JoinGraph {
                     e: self.edge(eid),
                 }),
                 "}, {",
+                conf,
             )?;
             f.write_str("}]")?
         }
@@ -188,7 +213,7 @@ impl Explain for JoinGraph {
 }
 
 impl Explain for QueryID {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         write!(f, "q{}", **self)
     }
 }
@@ -199,7 +224,7 @@ struct GraphEdge<'a> {
 }
 
 impl<'a> Explain for GraphEdge<'a> {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         f.write_str(self.e.kind.to_lower())?;
         write!(
             f,
@@ -208,25 +233,25 @@ impl<'a> Explain for GraphEdge<'a> {
             self.e.r_vset.len(),
             self.e.e_vset.len()
         )?;
-        write_refs(f, self.g.preds(self.e.cond.clone()), " and ")?;
+        write_refs(f, self.g.preds(self.e.cond.clone()), " and ", conf)?;
         if !self.e.filt.is_empty() {
             f.write_str("], filt=[")?;
-            write_refs(f, self.g.preds(self.e.filt.clone()), " and ")?;
+            write_refs(f, self.g.preds(self.e.filt.clone()), " and ", conf)?;
         }
         f.write_char(']')
     }
 }
 
 impl Explain for Apply {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         f.write_str("Apply{[")?;
-        write_refs(f, &self.vars, ", ")?;
+        write_refs(f, &self.vars, ", ", conf)?;
         f.write_str("]}")
     }
 }
 
 impl Explain for Setop {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         f.write_str("Setop{")?;
         f.write_str(self.kind.to_lower())?;
         if self.q == Setq::All {
@@ -239,10 +264,10 @@ impl Explain for Setop {
 /* Implements Explain for all expressions */
 
 impl Explain for ExprKind {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         match self {
-            ExprKind::Const(c) => c.explain(f),
-            ExprKind::Col(c) => c.explain(f),
+            ExprKind::Const(c) => c.explain(f, conf),
+            ExprKind::Col(c) => c.explain(f, conf),
             ExprKind::Aggf { kind, q, arg } => {
                 match kind {
                     AggKind::Count => f.write_str("count(")?,
@@ -254,7 +279,7 @@ impl Explain for ExprKind {
                 if *q == Setq::Distinct {
                     f.write_str("distinct ")?
                 }
-                arg.explain(f)?;
+                arg.explain(f, conf)?;
                 f.write_char(')')
             }
             ExprKind::Func { kind, args, .. } => {
@@ -263,40 +288,40 @@ impl Explain for ExprKind {
                 if args.is_empty() {
                     return f.write_char(')');
                 }
-                write_refs(f, args, ", ")?;
+                write_refs(f, args, ", ", conf)?;
                 f.write_char(')')
             }
             ExprKind::Case { op, acts, fallback } => {
                 f.write_str("case ")?;
                 if let Some(op) = op {
-                    op.explain(f)?;
+                    op.explain(f, conf)?;
                     f.write_char(' ')?
                 }
                 for (when, then) in acts {
                     f.write_str("when ")?;
-                    when.explain(f)?;
+                    when.explain(f, conf)?;
                     f.write_str(" then ")?;
-                    then.explain(f)?;
+                    then.explain(f, conf)?;
                     f.write_char(' ')?
                 }
                 if let Some(fallback) = fallback {
                     f.write_str("else ")?;
-                    fallback.explain(f)?;
+                    fallback.explain(f, conf)?;
                     f.write_char(' ')?
                 }
                 f.write_str("end")
             }
             ExprKind::Cast { arg, ty, .. } => {
                 f.write_str("cast(")?;
-                arg.explain(f)?;
+                arg.explain(f, conf)?;
                 f.write_str(" as ")?;
                 f.write_str(ty.to_lower().as_ref())?;
                 f.write_char(')')
             }
-            ExprKind::Pred(p) => p.explain(f),
+            ExprKind::Pred(p) => p.explain(f, conf),
             ExprKind::Tuple(es) => {
                 f.write_char('(')?;
-                write_refs(f, es, ", ")?;
+                write_refs(f, es, ", ", conf)?;
                 f.write_char(')')
             }
             ExprKind::Subq(_, qry_id) => {
@@ -312,7 +337,7 @@ impl Explain for ExprKind {
 }
 
 impl Explain for Const {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         match self {
             Const::I64(v) => write!(f, "{}", v),
             Const::U64(v) => write!(f, "{}", v),
@@ -331,16 +356,28 @@ impl Explain for Const {
 }
 
 impl Explain for Col {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         match &self.kind {
-            ColKind::Table(table_id, alias, _) => write!(
-                f,
-                "t{}.{}[{}]#{}",
-                table_id.value(),
-                alias,
-                self.idx.value(),
-                self.gid.value()
-            ),
+            ColKind::Table(table_id, alias, _) => {
+                if conf.show_col_name {
+                    write!(
+                        f,
+                        "t{}.{}[{}]#{}",
+                        table_id.value(),
+                        alias,
+                        self.idx.value(),
+                        self.gid.value()
+                    )
+                } else {
+                    write!(
+                        f,
+                        "t{}[{}]#{}",
+                        table_id.value(),
+                        self.idx.value(),
+                        self.gid.value()
+                    )
+                }
+            }
             ColKind::Query(query_id) => write!(
                 f,
                 "q{}[{}]#{}",
@@ -367,44 +404,49 @@ impl Explain for Col {
 }
 
 impl Explain for Pred {
-    fn explain<F: Write>(&self, f: &mut F) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         match self {
-            Pred::Conj(es) => write_refs(f, es, " and "),
-            Pred::Disj(es) => write_refs(f, es, " or "),
-            Pred::Xor(es) => write_refs(f, es, " xor "),
+            Pred::Conj(es) => write_refs(f, es, " and ", conf),
+            Pred::Disj(es) => write_refs(f, es, " or ", conf),
+            Pred::Xor(es) => write_refs(f, es, " xor ", conf),
             Pred::Func { kind, args } => {
                 f.write_str(kind.to_lower())?;
                 f.write_char('(')?;
-                write_refs(f, args, ", ")?;
+                write_refs(f, args, ", ", conf)?;
                 f.write_char(')')
             }
             Pred::Not(e) => {
                 f.write_str("not ")?;
-                e.explain(f)
+                e.explain(f, conf)
             }
             Pred::InSubquery(lhs, subq) => {
-                lhs.explain(f)?;
+                lhs.explain(f, conf)?;
                 f.write_str(" in ")?;
-                subq.explain(f)
+                subq.explain(f, conf)
             }
             Pred::NotInSubquery(lhs, subq) => {
-                lhs.explain(f)?;
+                lhs.explain(f, conf)?;
                 f.write_str(" not in ")?;
-                subq.explain(f)
+                subq.explain(f, conf)
             }
             Pred::Exists(subq) => {
                 f.write_str("exists ")?;
-                subq.explain(f)
+                subq.explain(f, conf)
             }
             Pred::NotExists(subq) => {
                 f.write_str("not exists ")?;
-                subq.explain(f)
+                subq.explain(f, conf)
             }
         }
     }
 }
 
-fn write_refs<'i, F, E: 'i, I>(f: &mut F, exprs: I, delimiter: &str) -> fmt::Result
+fn write_refs<'i, F, E: 'i, I>(
+    f: &mut F,
+    exprs: I,
+    delimiter: &str,
+    conf: &ExplainConf,
+) -> fmt::Result
 where
     F: Write,
     E: Explain,
@@ -412,16 +454,21 @@ where
 {
     let mut exprs = exprs.into_iter();
     if let Some(head) = exprs.next() {
-        head.explain(f)?
+        head.explain(f, conf)?
     }
     for e in exprs {
         f.write_str(delimiter)?;
-        e.explain(f)?
+        e.explain(f, conf)?
     }
     Ok(())
 }
 
-fn write_objs<'i, F, E: 'i, I>(f: &mut F, exprs: I, delimiter: &str) -> fmt::Result
+fn write_objs<'i, F, E: 'i, I>(
+    f: &mut F,
+    exprs: I,
+    delimiter: &str,
+    conf: &ExplainConf,
+) -> fmt::Result
 where
     F: Write,
     E: Explain,
@@ -429,11 +476,11 @@ where
 {
     let mut exprs = exprs.into_iter();
     if let Some(head) = exprs.next() {
-        head.explain(f)?
+        head.explain(f, conf)?
     }
     for e in exprs {
         f.write_str(delimiter)?;
-        e.explain(f)?
+        e.explain(f, conf)?
     }
     Ok(())
 }
@@ -449,7 +496,7 @@ struct QueryExplain<'a, F> {
     queries: &'a QuerySet,
     f: &'a mut F,
     spans: Vec<Span>,
-    // res: fmt::Result,
+    conf: &'a ExplainConf,
 }
 
 impl<'a, F: Write> QueryExplain<'a, F> {
@@ -481,6 +528,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
                     queries: self.queries,
                     f: self.f,
                     spans: self.spans.clone(),
+                    conf: self.conf,
                 };
                 subq.root.walk(&mut qe)
             } else {
@@ -507,7 +555,7 @@ impl<F: Write> OpVisitor for QueryExplain<'_, F> {
         if child_cnt > 0 {
             self.spans.push(Span::Branch(child_cnt as u16, false))
         }
-        op.explain(self.f).branch()?;
+        op.explain(self.f, self.conf).branch()?;
         self.write_str("\n").branch()
     }
 
@@ -562,7 +610,7 @@ fn write_prefix<F: Write>(f: &mut F, spans: &[Span]) -> fmt::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::Explain;
+    use super::{Explain, ExplainConf};
     use crate::lgc::tests::tpch_catalog;
     use crate::lgc::LgcBuilder;
     use xngin_sql::parser::dialect::MySQL;
@@ -571,6 +619,7 @@ mod tests {
     #[test]
     fn test_explain_plan() {
         let cat = tpch_catalog();
+        let conf = ExplainConf::default();
         for sql in vec![
             "select 1, true, 1.0e2, 1 & 2, 1 | 2, 1 ^ 2, 1 << 2, 1 >> 2, 1 and 2, 1 or 2, 1 xor 2",
             "with cte1 as (select 1), cte2 as (select 2) select * from cte1",
@@ -583,7 +632,7 @@ mod tests {
             let qr = parse_query(MySQL(sql)).unwrap();
             let plan = builder.build(&qr).unwrap();
             let mut s = String::new();
-            let _ = plan.explain(&mut s).unwrap();
+            let _ = plan.explain(&mut s, &conf).unwrap();
             println!("Explain plan:\n{}", s)
         }
     }

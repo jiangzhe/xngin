@@ -33,10 +33,10 @@ use std::ops::ControlFlow;
 /// If we want to remove projection, we have to let the output stage
 /// of aggregation handle the addition.
 /// 
-/// 3. unnecessary projection.
-/// 
-/// Example sql: "SELECT * FROM (SELECT c0, c1 FROM t1) t LIMIT 1".
-/// There are two project operators output exactly the same results.
+/// The basic steps are:
+/// 1. Find output columns of top query.
+/// 2. Set output columns to root operator.
+/// 3. From root to leaf, set output according to each operator's behavior.
 #[inline]
 pub fn output_fix(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     if let Some(subq) = qry_set.get_mut(&qry_id) {
