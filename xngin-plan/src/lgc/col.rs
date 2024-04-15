@@ -5,7 +5,7 @@ use xngin_catalog::TableID;
 use xngin_datatype::PreciseType;
 use xngin_expr::{ColIndex, ExprKind, GlobalID, QueryCol, QueryID};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjCol {
     pub expr: ExprKind,
     pub alias: SemiStr,

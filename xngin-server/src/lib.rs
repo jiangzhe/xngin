@@ -1,6 +1,6 @@
 pub mod cancel;
 pub mod chan;
-pub mod exec;
+// pub mod exec;
 pub mod mysql;
 
 #[cfg(test)]

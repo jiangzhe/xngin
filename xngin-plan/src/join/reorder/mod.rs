@@ -245,14 +245,14 @@ mod tests {
                 vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
                 vec![("t1", "t2", 0.1), ("t2", "t3", 0.2)],
                 vec![],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Scan],
             ),
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
                 vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
                 vec![("t1", "t2", 0.2), ("t2", "t3", 0.1)],
                 vec![],
-                vec![Proj, Join, Proj, Table, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Scan, Join, Scan, Scan],
             ),
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1 and t1.c1 = t3.c1",
@@ -260,7 +260,7 @@ mod tests {
                 vec![("t1", "t2", 0.2), ("t2", "t3", 0.1), ("t1", "t3", 0.01)],
                 // final result selectivity 0.002
                 vec![(vec!["t1"], vec!["t2", "t3"], 0.02), (vec!["t1", "t2"], vec!["t3"], 0.1), (vec!["t1", "t3"], vec!["t2"], 0.2)],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Scan],
             ),
             (
                 "select 1 from t0 join t1 on t0.c0 = t1.c0 join t2 on t1.c1 = t2.c1 join t3 on t2.c2 = t3.c3",
@@ -276,7 +276,7 @@ mod tests {
                     (vec!["t1", "t2", "t3"], vec!["t0"], 0.04), // t0,t1,t2,t3=0.002
                     (vec!["t0", "t1"], vec!["t2", "t3"], 1.0), // t0,t1,t2,t3=0.002
                 ],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Join, Scan, Scan],
             ),
         ] {
             assert_j_plan1(&cat, s, |s, mut q| {
@@ -303,14 +303,14 @@ mod tests {
                 vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
                 vec![("t1", "t2", 0.1), ("t2", "t3", 0.2)],
                 vec![],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Scan],
             ),
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
                 vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
                 vec![("t1", "t2", 0.2), ("t2", "t3", 0.1)],
                 vec![],
-                vec![Proj, Join, Proj, Table, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Scan, Join, Scan, Scan],
             ),
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1 and t1.c1 = t3.c1",
@@ -318,7 +318,7 @@ mod tests {
                 vec![("t1", "t2", 0.2), ("t2", "t3", 0.1), ("t1", "t3", 0.01)],
                 // final result selectivity 0.002
                 vec![(vec!["t1"], vec!["t2", "t3"], 0.02), (vec!["t1", "t2"], vec!["t3"], 0.1), (vec!["t1", "t3"], vec!["t2"], 0.2)],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Scan],
             ),
             // test generating bushy tree
             (
@@ -335,7 +335,7 @@ mod tests {
                     (vec!["t1", "t2", "t3"], vec!["t0"], 0.04), // t0,t1,t2,t3=0.002
                     (vec!["t0", "t1"], vec!["t2", "t3"], 1.0), // t0,t1,t2,t3=0.002
                 ],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Join, Scan, Scan],
             ),
         ] {
             assert_j_plan1(&cat, s, |s, mut q| {
@@ -362,14 +362,14 @@ mod tests {
                 vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
                 vec![("t1", "t2", 0.1), ("t2", "t3", 0.2)],
                 vec![],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Scan],
             ),
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1",
                 vec![("t1", 100.0), ("t2", 100.0), ("t3", 100.0)],
                 vec![("t1", "t2", 0.2), ("t2", "t3", 0.1)],
                 vec![],
-                vec![Proj, Join, Proj, Table, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Scan, Join, Scan, Scan],
             ),
             (
                 "select 1 from t1 join t2 on t1.c1 = t2.c1 join t3 on t2.c1 = t3.c1 and t1.c1 = t3.c1",
@@ -377,7 +377,7 @@ mod tests {
                 vec![("t1", "t2", 0.2), ("t2", "t3", 0.1), ("t1", "t3", 0.01)],
                 // final result selectivity 0.002
                 vec![(vec!["t1"], vec!["t2", "t3"], 0.02), (vec!["t1", "t2"], vec!["t3"], 0.1), (vec!["t1", "t3"], vec!["t2"], 0.2)],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Scan],
             ),
             // test generating bushy tree
             (
@@ -394,7 +394,7 @@ mod tests {
                     (vec!["t1", "t2", "t3"], vec!["t0"], 0.04), // t0,t1,t2,t3=0.002
                     (vec!["t0", "t1"], vec!["t2", "t3"], 1.0), // t0,t1,t2,t3=0.002
                 ],
-                vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Join, Scan, Scan, Join, Scan, Scan],
             ),
         ] {
             assert_j_plan1(&cat, s, |s, mut q| {

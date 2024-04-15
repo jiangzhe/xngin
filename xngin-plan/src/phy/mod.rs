@@ -19,8 +19,9 @@ impl PhyPlan {
     #[inline]
     pub fn new(lgc: &LgcPlan) -> Result<Self> {
         // todo: currently we ignore attached plans
-        let subq = lgc.root_query().ok_or(Error::EmptyPlan)?;
-        PhyBuilder::new(&lgc.qry_set).build(subq)
+        // let subq = lgc.root_query().ok_or(Error::EmptyPlan)?;
+        // PhyBuilder::new(&lgc.qry_set).build(subq)
+        todo!()
     }
 }
 
@@ -51,11 +52,9 @@ pub struct PhyTableScan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lgc::LgcBuilder;
     use crate::lgc::LgcPlan;
     use xngin_catalog::mem_impl::MemCatalog;
     use xngin_catalog::{Catalog, ColumnAttr, ColumnSpec, TableSpec};
-    use xngin_datatype::PreciseType;
     use xngin_sql::parser::{dialect, parse_query_verbose};
 
     // #[test]
@@ -84,6 +83,6 @@ mod tests {
 
     fn build_lgc<C: Catalog>(cat: &C, sql: &str) -> LgcPlan {
         let qe = parse_query_verbose(dialect::MySQL(sql)).unwrap();
-        LgcBuilder::new(cat, "phy").unwrap().build(&qe).unwrap()
+        LgcPlan::new(cat, "phy", &qe).unwrap()
     }
 }

@@ -16,7 +16,7 @@ use futures_lite::Stream;
 pub use proj::ProjExec;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use xngin_plan::phy::PhyPlan;
+// use xngin_plan::phy::PhyPlan;
 use xngin_protocol::mysql::error::Result;
 use xngin_storage::block::Block;
 

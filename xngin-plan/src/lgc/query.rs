@@ -86,8 +86,8 @@ impl Subquery {
             type Break = ();
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
                 match &op.kind {
-                    OpKind::Table(schema_id, table_id) => {
-                        self.0 = Some((*schema_id, *table_id));
+                    OpKind::Scan(scan) => {
+                        self.0 = Some((scan.schema, scan.table));
                         ControlFlow::Break(())
                     }
                     _ => ControlFlow::Continue(()),

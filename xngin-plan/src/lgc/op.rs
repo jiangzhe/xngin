@@ -71,8 +71,8 @@ impl Op {
                 OpKind::Sort { input, .. } => op = input.as_ref(),
                 OpKind::Limit { input, .. } => op = input.as_ref(),
                 OpKind::Filt { input, .. } => op = input.as_ref(),
-                OpKind::Table(..)
-                | OpKind::Query(_)
+                OpKind::Scan(scan) => return Some(&scan.cols),
+                OpKind::Query(_)
                 | OpKind::Setop(_)
                 | OpKind::Join(_)
                 | OpKind::JoinGraph(_)
@@ -98,7 +98,7 @@ impl Op {
                 OpKind::Sort { input, .. } => op = input.as_mut(),
                 OpKind::Limit { input, .. } => op = input.as_mut(),
                 OpKind::Filt { input, .. } => op = input.as_mut(),
-                OpKind::Table(..)
+                OpKind::Scan(..)
                 | OpKind::Query(_)
                 | OpKind::Setop(_)
                 | OpKind::Join(_)
@@ -175,7 +175,7 @@ pub enum OpTy {
     Attach,
     Row,
     Query,
-    Table,
+    Scan,
     Setop,
     Empty,
 }
@@ -231,7 +231,8 @@ pub enum OpKind {
     /// a sub-tree containing one or more operators.
     Query(QueryID),
     /// Table node.
-    Table(SchemaID, TableID),
+    // Table(SchemaID, TableID),
+    Scan(Box<TableScan>),
     /// Set operations include union, except, intersect.
     Setop(Box<Setop>),
     /// Empty represent a empty data set.
@@ -255,10 +256,21 @@ impl OpKind {
             OpKind::Attach { .. } => OpTy::Attach,
             OpKind::Row { .. } => OpTy::Row,
             OpKind::Query { .. } => OpTy::Query,
-            OpKind::Table { .. } => OpTy::Table,
+            OpKind::Scan { .. } => OpTy::Scan,
             OpKind::Setop { .. } => OpTy::Setop,
             OpKind::Empty => OpTy::Empty,
         }
+    }
+
+    #[inline]
+    pub fn table(qry: QueryID, schema: SchemaID, table: TableID, cols: Vec<ProjCol>) -> Self {
+        OpKind::Scan(Box::new(TableScan {
+            schema,
+            table,
+            qry,
+            cols,
+            filt: vec![],
+        }))
     }
 
     #[inline]
@@ -356,7 +368,7 @@ impl OpKind {
             | OpKind::Setop(_)
             | OpKind::Attach(..)
             | OpKind::Row(_)
-            | OpKind::Table(..)
+            | OpKind::Scan(..)
             | OpKind::Query(_)
             | OpKind::Empty => None,
         }
@@ -383,7 +395,7 @@ impl OpKind {
                 let Setop { left, right, .. } = set.as_ref();
                 smallvec![left.as_ref(), right.as_ref()]
             }
-            OpKind::Query(_) | OpKind::Row(_) | OpKind::Table(..) | OpKind::Empty => smallvec![],
+            OpKind::Query(_) | OpKind::Row(_) | OpKind::Scan(..) | OpKind::Empty => smallvec![],
         }
     }
 
@@ -407,7 +419,7 @@ impl OpKind {
                 let Setop { left, right, .. } = set.as_mut();
                 smallvec![left.as_mut(), right.as_mut()]
             }
-            OpKind::Query(_) | OpKind::Row(_) | OpKind::Table(..) | OpKind::Empty => smallvec![],
+            OpKind::Query(_) | OpKind::Row(_) | OpKind::Scan(..) | OpKind::Empty => smallvec![],
         }
     }
 
@@ -429,9 +441,14 @@ impl OpKind {
                 .chain(&aggr.filt)
                 .collect(),
             OpKind::Sort { items, .. } => items.iter().map(|si| &si.expr).collect(),
+            OpKind::Scan(scan) => scan
+                .cols
+                .iter()
+                .map(|c| &c.expr)
+                .chain(scan.filt.iter())
+                .collect(),
             OpKind::Limit { .. }
             | OpKind::Query(_)
-            | OpKind::Table(..)
             | OpKind::Setop(_)
             | OpKind::Empty
             | OpKind::Attach(..) => {
@@ -472,9 +489,14 @@ impl OpKind {
                 .chain(&mut aggr.filt)
                 .collect(),
             OpKind::Sort { items, .. } => items.iter_mut().map(|si| &mut si.expr).collect(),
+            OpKind::Scan(scan) => scan
+                .cols
+                .iter_mut()
+                .map(|c| &mut c.expr)
+                .chain(scan.filt.iter_mut())
+                .collect(),
             OpKind::Limit { .. }
             | OpKind::Query(_)
-            | OpKind::Table(..)
             | OpKind::Setop(_)
             | OpKind::Empty
             | OpKind::Attach(..) => {
@@ -547,6 +569,16 @@ pub enum ApplyKind {
 pub struct SortItem {
     pub expr: ExprKind,
     pub desc: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableScan {
+    pub schema: SchemaID,
+    pub table: TableID,
+    pub qry: QueryID,
+    pub cols: Vec<ProjCol>,
+    // filter expression that can be pushed down to scan.
+    pub filt: Vec<ExprKind>,
 }
 
 pub trait OpVisitor {

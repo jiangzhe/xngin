@@ -141,9 +141,7 @@ fn reflect_op<'a, C: Catalog>(
             let child = reflect_op(ctx, arena, qs, root, input, catalog)?;
             reflect_limit(*start, *end, child)?
         }
-        OpKind::Table(schema_id, tbl_id) => {
-            reflect_table(ctx, arena, root, *schema_id, *tbl_id, catalog)?
-        }
+        OpKind::Scan(scan) => reflect_table(ctx, arena, root, scan.schema, scan.table, catalog)?,
         OpKind::Row(cols) => {
             let cols = if let Some(cols) = cols {
                 &cols[..]

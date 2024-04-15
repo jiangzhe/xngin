@@ -27,7 +27,7 @@ pub struct LgcBuilder<'a, C: Catalog> {
 
 impl<'c, C: Catalog> LgcBuilder<'c, C> {
     #[inline]
-    pub fn new(catalog: &'c C, default_schema: &str) -> Result<Self> {
+    pub(super) fn new(catalog: &'c C, default_schema: &str) -> Result<Self> {
         let qs = QuerySet::default();
         let default_schema = if let Some(s) = catalog.find_schema_by_name(default_schema) {
             s.id
@@ -44,7 +44,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
     }
 
     #[inline]
-    pub fn build(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<LgcPlan> {
+    pub(super) fn build(mut self, QueryExpr { with, query }: &QueryExpr<'_>) -> Result<LgcPlan> {
         let mut colgen = ColGen::default();
         let (root, _) = self.build_subquery(with, query, false, &mut colgen)?;
         Ok(LgcPlan {
@@ -907,21 +907,17 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         table_id: TableID,
         colgen: &mut ColGen,
     ) -> Result<QueryID> {
-        // todo: maybe bind columns on-demand(column pruning phase) is better.
         let all_cols = self.catalog.all_columns_in_table(&table_id);
+        let mut proj_cols = Vec::with_capacity(all_cols.len());
         // placeholder for table query.
         let (qry_id, subquery) = self.qs.insert_empty();
-        let mut proj_cols = Vec::with_capacity(all_cols.len());
         for c in all_cols {
             let idx = ColIndex::from(c.idx);
             let col = colgen.gen_tbl_col(qry_id, table_id, idx, c.pty, c.name.clone());
             proj_cols.push(ProjCol::implicit_alias(col, c.name))
         }
-        let proj = Op::new(OpKind::proj(
-            proj_cols,
-            Op::new(OpKind::Table(schema_id, table_id)),
-        ));
-        subquery.root = proj;
+        let scan = OpKind::table(qry_id, schema_id, table_id, proj_cols);
+        subquery.root = Op::new(scan);
         // todo: currently we assume all tables are located on disk.
         subquery.location = Location::Disk;
         Ok(qry_id)
