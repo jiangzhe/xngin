@@ -3,20 +3,23 @@ use crate::digraph::{DiGraph, NodeIndex};
 use crate::error::{Error, Result};
 use crate::lgc::{Location, Op, OpKind, QuerySet, Subquery};
 use xngin_compute::eval::{QueryEvalPlan, TableEvalPlan};
+use xngin_expr::TypeInferer;
 
-pub struct PhyBuilder<'a> {
+pub struct PhyBuilder<'a, I> {
     graph: DiGraph<Phy, ()>,
     start: Vec<NodeIndex>,
     qry_set: &'a QuerySet,
+    inferer: &'a I,
 }
 
-impl<'a> PhyBuilder<'a> {
+impl<'a, I: TypeInferer> PhyBuilder<'a, I> {
     #[inline]
-    pub fn new(qry_set: &'a QuerySet) -> Self {
+    pub fn new(qry_set: &'a QuerySet, inferer: &'a I) -> Self {
         PhyBuilder {
             graph: DiGraph::new(),
             start: vec![],
             qry_set,
+            inferer,
         }
     }
 
@@ -35,21 +38,21 @@ impl<'a> PhyBuilder<'a> {
         })
     }
 
-    #[inline]
-    fn build_subquery(&mut self, subq: &Subquery) -> Result<NodeIndex> {
-        match subq.location {
-            Location::Disk => self.build_disk_scan(&subq.root),
-            Location::Intermediate => self.build_intermediate(&subq.root),
-            Location::Virtual => todo!(),
-            Location::Memory | Location::Network => todo!(),
-        }
-    }
+    // #[inline]
+    // fn build_subquery(&mut self, subq: &Subquery) -> Result<NodeIndex> {
+    //     match subq.location {
+    //         Location::Disk => self.build_disk_scan(&subq.root),
+    //         Location::Intermediate => self.build_intermediate(&subq.root),
+    //         Location::Virtual => todo!(),
+    //         Location::Memory | Location::Network => todo!(),
+    //     }
+    // }
 
     // recursively build the intermediate data flow
     #[inline]
     fn build_intermediate(&mut self, root: &Op) -> Result<NodeIndex> {
-        match root {
-            // Op::Proj { cols, input } => {
+        match &root.kind {
+            // OpKind::Proj { cols, input } => {
             //     let input_idx = self.build_intermediate(input)?;
             //     let evals = QueryEvalPlan::new(cols.iter().map(|c| &c.expr))?;
             //     let proj = Phy {

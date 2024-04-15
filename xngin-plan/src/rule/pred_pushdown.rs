@@ -249,8 +249,11 @@ fn push_single(
                 Some(p)
             }
         }
-        // Table always rejects
-        OpKind::Table(..) => Some(p),
+        // Table always accept
+        OpKind::Scan(scan) => {
+            scan.filt.push(p.e);
+            None
+        }
         // Empty just ignores
         OpKind::Empty => None,
         OpKind::Row(_) => todo!(), // todo: evaluate immediately
@@ -730,7 +733,7 @@ impl ExprMutVisitor for RewriteOutExpr<'_> {
 mod tests {
     use super::*;
     use crate::lgc::tests::{
-        assert_j_plan1, extract_join_kinds, get_subq_by_location, get_subq_filt_expr, j_catalog,
+        assert_j_plan1, extract_join_kinds, get_subq_by_location, get_table_filt_expr, j_catalog,
         print_plan,
     };
     use crate::lgc::{LgcPlan, Location};
@@ -1019,7 +1022,7 @@ mod tests {
                 let subq1 = get_subq_by_location(&q1, Location::Disk);
                 // converted to right table, then left table
                 // the underlying query postion is changed.
-                assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
+                assert!(!get_table_filt_expr(&subq1[1]).is_empty());
             },
         );
         // full join converted to right join, then left join
@@ -1069,22 +1072,22 @@ mod tests {
         pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
+        assert!(!get_table_filt_expr(&subq1[0]).is_empty());
     }
 
     fn assert_filt_on_disk_table1r(s1: &str, mut q1: LgcPlan) {
         pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
+        assert!(!get_table_filt_expr(&subq1[1]).is_empty());
     }
 
     fn assert_filt_on_disk_table2(s1: &str, mut q1: LgcPlan) {
         pred_pushdown(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
         let subq1 = get_subq_by_location(&q1, Location::Disk);
-        assert!(!get_subq_filt_expr(&subq1[0]).is_empty());
-        assert!(!get_subq_filt_expr(&subq1[1]).is_empty());
+        assert!(!get_table_filt_expr(&subq1[0]).is_empty());
+        assert!(!get_table_filt_expr(&subq1[1]).is_empty());
     }
 
     fn assert_no_filt_on_disk_table(s1: &str, mut q1: LgcPlan) {
@@ -1093,6 +1096,6 @@ mod tests {
         let subq1 = get_subq_by_location(&q1, Location::Disk);
         assert!(subq1
             .into_iter()
-            .all(|subq| get_subq_filt_expr(subq).is_empty()));
+            .all(|subq| get_table_filt_expr(subq).is_empty()));
     }
 }

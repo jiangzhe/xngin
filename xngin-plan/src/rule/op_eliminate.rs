@@ -179,7 +179,7 @@ impl<'a> EliminateOp<'a> {
                     eff |= RuleEffect::OP;
                 }
             }
-            OpKind::Query(_) | OpKind::Table(..) | OpKind::Row(_) | OpKind::JoinGraph(_) => {
+            OpKind::Query(_) | OpKind::Scan(..) | OpKind::Row(_) | OpKind::JoinGraph(_) => {
                 unreachable!()
             }
             OpKind::Empty => (),
@@ -311,7 +311,7 @@ impl OpMutVisitor for EliminateOp<'_> {
                     }
                 }
             }
-            OpKind::Table(..) | OpKind::Row(_) => (),
+            OpKind::Scan(..) | OpKind::Row(_) => (),
             _ => {
                 eff |= self.bottom_up(op)?;
             }

@@ -129,8 +129,10 @@ impl Explain for Op {
                     return Err(fmt::Error);
                 }
             }
-            OpKind::Table(_, table_id) => {
-                write!(f, "Table{{{}}}", table_id.value())
+            OpKind::Scan(scan) => {
+                write!(f, "Table{{id={},cols=[", scan.table.value())?;
+                write_refs(f, scan.cols.iter().map(|c| &c.expr), ", ", conf)?;
+                f.write_str("]}}")
             }
             OpKind::Query(_) => f.write_str("(subquery todo)"),
             OpKind::Empty => f.write_str("Empty"),
@@ -213,7 +215,7 @@ impl Explain for JoinGraph {
 }
 
 impl Explain for QueryID {
-    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, _conf: &ExplainConf) -> fmt::Result {
         write!(f, "q{}", **self)
     }
 }
@@ -251,7 +253,7 @@ impl Explain for Apply {
 }
 
 impl Explain for Setop {
-    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, _conf: &ExplainConf) -> fmt::Result {
         f.write_str("Setop{")?;
         f.write_str(self.kind.to_lower())?;
         if self.q == Setq::All {
@@ -337,7 +339,7 @@ impl Explain for ExprKind {
 }
 
 impl Explain for Const {
-    fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
+    fn explain<F: Write>(&self, f: &mut F, _conf: &ExplainConf) -> fmt::Result {
         match self {
             Const::I64(v) => write!(f, "{}", v),
             Const::U64(v) => write!(f, "{}", v),
@@ -612,7 +614,7 @@ fn write_prefix<F: Write>(f: &mut F, spans: &[Span]) -> fmt::Result {
 mod tests {
     use super::{Explain, ExplainConf};
     use crate::lgc::tests::tpch_catalog;
-    use crate::lgc::LgcBuilder;
+    use crate::lgc::LgcPlan;
     use xngin_sql::parser::dialect::MySQL;
     use xngin_sql::parser::parse_query;
 
@@ -628,9 +630,8 @@ mod tests {
             "select 1 union select 2",
             "select 1 from lineitem join (select 1) t1",
         ] {
-            let builder = LgcBuilder::new(&cat, "tpch").unwrap();
-            let qr = parse_query(MySQL(sql)).unwrap();
-            let plan = builder.build(&qr).unwrap();
+            let qe = parse_query(MySQL(sql)).unwrap();
+            let plan = LgcPlan::new(&cat, "tpch", &qe).unwrap();
             let mut s = String::new();
             let _ = plan.explain(&mut s, &conf).unwrap();
             println!("Explain plan:\n{}", s)

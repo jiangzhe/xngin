@@ -145,9 +145,10 @@ impl OpMutVisitor for Unfold<'_> {
             | OpKind::Aggr(_)
             | OpKind::Sort { .. }
             | OpKind::Limit { .. }
+            | OpKind::Scan(_)
             | OpKind::Attach(..) => ControlFlow::Continue(RuleEffect::empty()), // fine to bypass
             OpKind::Empty => ControlFlow::Continue(RuleEffect::empty()), // as join op is set to empty, it's safe to bypass
-            OpKind::Table(..) | OpKind::Row(_) => unreachable!(),
+            OpKind::Row(_) => unreachable!(),
         }
     }
 
@@ -310,7 +311,7 @@ impl OpVisitor for Detect {
                     ControlFlow::Continue(())
                 }
             }
-            OpKind::JoinGraph(_) | OpKind::Row(_) | OpKind::Table(..) | OpKind::Empty => {
+            OpKind::JoinGraph(_) | OpKind::Row(_) | OpKind::Scan(..) | OpKind::Empty => {
                 unreachable!()
             }
         }
@@ -375,26 +376,20 @@ mod tests {
     fn test_derived_unfold_single_table() {
         let cat = j_catalog();
         for (sql, shape) in vec![
-            (
-                "select 1 from (select 1 from t1) t",
-                vec![Proj, Proj, Table],
-            ),
-            (
-                "select c1+1 from (select c1 from t1) t",
-                vec![Proj, Proj, Table],
-            ),
+            ("select 1 from (select 1 from t1) t", vec![Proj, Scan]),
+            ("select c1+1 from (select c1 from t1) t", vec![Proj, Scan]),
             (
                 "select x from (select c1+1 as x from t1) t",
-                vec![Proj, Proj, Table],
+                vec![Proj, Scan],
             ),
             (
                 "select x from (select c1+1 as x from t1) t where x > 0",
-                vec![Proj, Filt, Proj, Table],
+                vec![Proj, Filt, Scan],
             ),
             // as derived table contains Filt, unfold not available.
             (
                 "select x from (select c1+1 as x from t1 where c1 > 0) t",
-                vec![Proj, Proj, Filt, Proj, Table],
+                vec![Proj, Proj, Filt, Scan],
             ),
         ] {
             assert_j_plan1(&cat, sql, |sql, mut p| {
@@ -412,15 +407,15 @@ mod tests {
         for (sql, shape) in vec![
             (
                 "select c1+1 from (select c1 from t1) t where c1 > 0",
-                vec![Proj, Proj, Filt, Table],
+                vec![Proj, Scan],
             ),
             (
                 "select x from (select c0+c1 as x from t1) t where x > 0",
-                vec![Proj, Proj, Filt, Table],
+                vec![Proj, Scan],
             ),
             (
                 "select x from (select c1+1 as x from t1 where c1 > 0) t",
-                vec![Proj, Proj, Filt, Table],
+                vec![Proj, Scan],
             ),
         ] {
             assert_j_plan1(&cat, sql, |sql, mut p| {
@@ -439,15 +434,15 @@ mod tests {
         for (sql, shape) in vec![
             (
                 "select x from (select t1.c1 as x from t1, t2) t",
-                vec![Proj, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Scan, Scan],
             ),
             (
                 "select c1 from t1, (select c2 from t2) t",
-                vec![Proj, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Scan, Scan],
             ),
             (
                 "select * from (select c1 from t1) t, (select c2 from t2) tt",
-                vec![Proj, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Scan, Scan],
             ),
         ] {
             assert_j_plan1(&cat, sql, |sql, mut p| {
@@ -466,20 +461,20 @@ mod tests {
         for (sql, shape) in vec![
             (
                 "select t1.c1 from (select * from t1) t1 left join t2",
-                vec![Proj, Join, Proj, Table, Proj, Table],
+                vec![Proj, Join, Scan, Scan],
             ),
             (
                 "select t1.c1 from (select * from t1 where c1 > 0) t1 left join t2",
-                vec![Proj, Join, Proj, Filt, Table, Proj, Table],
+                vec![Proj, Join, Scan, Scan],
             ),
             (
                 "select * from (select c1 from t1) t left join (select c2 from t2 where c2 > 0) tt",
-                vec![Proj, Join, Proj, Table, Proj, Filt, Table],
+                vec![Proj, Join, Scan, Scan],
             ),
             // computations on right table disable unfolding
             (
                 "select * from t1 left join (select c2+1 from t2 where c2 > 0) tt",
-                vec![Proj, Join, Proj, Table, Proj, Proj, Filt, Table],
+                vec![Proj, Join, Scan, Proj, Scan],
             ),
         ] {
             assert_j_plan1(&cat, sql, |sql, mut p| {
@@ -496,15 +491,15 @@ mod tests {
     fn test_derived_unfold_full_join() {
         let cat = j_catalog();
         for (sql, shape) in vec![
-            ("select t1.c1 from (select * from t1) t1 full join t2", vec![Proj, Join, Proj, Table, Proj, Table]),
-            ("select t1.c1 from (select * from t1 where c1 > 0) t1 full join t2", vec![Proj, Join, Proj, Filt, Table, Proj, Table]),
-            ("select * from (select c1 from t1) t full join (select c2 from t2 where c2 > 0) tt", vec![Proj, Join, Proj, Table, Proj, Filt, Table]),
+            ("select t1.c1 from (select * from t1) t1 full join t2", vec![Proj, Join, Scan, Scan]),
+            ("select t1.c1 from (select * from t1 where c1 > 0) t1 full join t2", vec![Proj, Join, Scan, Scan]),
+            ("select * from (select c1 from t1) t full join (select c2 from t2 where c2 > 0) tt", vec![Proj, Join, Scan, Scan]),
             // computations on right table
-            ("select * from t1 full join (select c2+1 from t2 where c2 > 0) tt", vec![Proj, Join, Proj, Table, Proj, Proj, Filt, Table]),
+            ("select * from t1 full join (select c2+1 from t2 where c2 > 0) tt", vec![Proj, Join, Scan, Proj, Scan]),
             // computations on left table
-            ("select * from (select c1+1 from t1 where c1 > 0) tt full join t2", vec![Proj, Join, Proj, Proj, Filt, Table, Proj, Table]),
+            ("select * from (select c1+1 from t1 where c1 > 0) tt full join t2", vec![Proj, Join, Proj, Scan, Scan]),
             // computations on both tables
-            ("select * from (select c1+1 from t1 where c1 > 0) t1 full join (select c2+1 from t2 where c2 > 0) t2", vec![Proj, Join, Proj, Proj, Filt, Table, Proj, Proj, Filt, Table]),
+            ("select * from (select c1+1 from t1 where c1 > 0) t1 full join (select c2+1 from t2 where c2 > 0) t2", vec![Proj, Join, Proj, Scan, Proj, Scan]),
         ] {
             assert_j_plan1(
                 &cat,
@@ -524,9 +519,9 @@ mod tests {
     fn test_derived_unfold_nested_join() {
         let cat = j_catalog();
         for (sql, shape) in vec![
-            ("select tt.c1 from (select t1.c1 from t1 join t2) tt join t3", vec![Proj, Join, Join, Proj, Table, Proj, Table, Proj, Table]),
-            ("select t1.c1 from t1 join (select * from t2 join t3) tt", vec![Proj, Join, Proj, Table, Join, Proj, Table, Proj, Table]),
-            ("select t1.c1 from (select t1.c1 from t1 join t2) t1 join (select t2.c2 from t2 join t3) t2", vec![Proj, Join, Join, Proj, Table, Proj, Table, Join, Proj, Table, Proj, Table]),
+            ("select tt.c1 from (select t1.c1 from t1 join t2) tt join t3", vec![Proj, Join, Join, Scan, Scan, Scan]),
+            ("select t1.c1 from t1 join (select * from t2 join t3) tt", vec![Proj, Join, Scan, Join, Scan, Scan]),
+            ("select t1.c1 from (select t1.c1 from t1 join t2) t1 join (select t2.c2 from t2 join t3) t2", vec![Proj, Join, Join, Scan, Scan, Join, Scan, Scan]),
         ] {
             assert_j_plan1(
                 &cat,
@@ -547,15 +542,15 @@ mod tests {
         for (sql, shape) in vec![
             (
                 "select t1.c1 from t1 union all select t2.c2 from t2",
-                vec![Setop, Proj, Proj, Table, Proj, Proj, Table],
+                vec![Setop, Proj, Scan, Proj, Scan],
             ),
             (
                 "select * from (select c1 from t1) tt union all select t2.c2 from t2",
-                vec![Setop, Proj, Proj, Table, Proj, Proj, Table],
+                vec![Setop, Proj, Scan, Proj, Scan],
             ),
             (
                 "select t1.c1 from t1 union all select * from (select c2 from t2) tt",
-                vec![Setop, Proj, Proj, Table, Proj, Proj, Table],
+                vec![Setop, Proj, Scan, Proj, Scan],
             ),
         ] {
             assert_j_plan1(&cat, sql, |sql, mut p| {

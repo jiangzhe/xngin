@@ -155,7 +155,7 @@ impl Eval {
 
 /// Load attribute from input or cache by given evaluation reference.
 #[inline]
-pub(self) fn load_attr<'a>(input: &'a Block, cache: &'a EvalCache, r: EvalRef) -> Result<&'a Attr> {
+fn load_attr<'a>(input: &'a Block, cache: &'a EvalCache, r: EvalRef) -> Result<&'a Attr> {
     let res = match r {
         EvalRef::Input(idx) => input.data.get(idx),
         EvalRef::Cache(idx) => cache.get(idx).and_then(|v| match v {

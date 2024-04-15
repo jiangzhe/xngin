@@ -1,8 +1,8 @@
 use crate::mysql::MySQLServer;
 use futures_lite::{AsyncRead, AsyncWrite};
 use xngin_catalog::Catalog;
-use xngin_plan::lgc::LgcBuilder;
-use xngin_plan::phy::PhyPlan;
+use xngin_plan::lgc::LgcPlan;
+// use xngin_plan::phy::PhyPlan;
 use xngin_protocol::buf::ByteBuffer;
 use xngin_protocol::mysql::cmd::MyCmd;
 use xngin_protocol::mysql::conn::MyConn;
@@ -86,13 +86,10 @@ impl<'a, C: Catalog, T: AsyncRead + AsyncWrite + Unpin> Session<'a, C, T> {
                     Statement::Select(qe) => {
                         match &qe.query {
                             Query::Row(..) => {
-                                let lgc = LgcBuilder::new(&self.server.catalog, default_schema)?
-                                    .build(&qe)?;
+                                let _ = LgcPlan::new(&self.server.catalog, default_schema, &qe)?;
                                 // // currently only support select row
-                                // let query = plan.root_query()
-                                //     .ok_or_else(|| Error::PlanError(Box::new(String::from("root query not found"))))?;
-                                let _phy = PhyPlan::new(&lgc)
-                                    .map_err(|e| Error::PlanError(Box::new(e.to_string())))?;
+                                // let _phy = PhyPlan::new(&lgc)
+                                //     .map_err(|e| Error::PlanError(Box::new(e.to_string())))?;
                                 todo!()
                             }
                             _ => return Err(Error::Unimplemented(Box::new("statement"))),

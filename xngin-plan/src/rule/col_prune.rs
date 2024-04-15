@@ -155,6 +155,9 @@ fn modify_subq(subq: &mut Subquery, mapping: Option<&BTreeMap<ColIndex, ColIndex
         OpKind::Row(row) => {
             *row = Some(retain(row.take().unwrap(), mapping));
         }
+        OpKind::Scan(scan) => {
+            scan.cols = retain(mem::take(&mut scan.cols), mapping);
+        }
         _ => {
             let cols: Vec<_> = if let Some(mapping) = mapping {
                 subq.out_cols()

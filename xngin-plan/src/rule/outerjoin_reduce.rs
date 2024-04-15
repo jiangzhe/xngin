@@ -170,7 +170,7 @@ impl OpMutVisitor for Reduce<'_> {
             | OpKind::Empty
             | OpKind::Setop(_)
             | OpKind::Attach(..) => (),
-            OpKind::Table(..) | OpKind::Row(_) => unreachable!(),
+            OpKind::Scan(..) | OpKind::Row(_) => unreachable!(),
         }
         ControlFlow::Continue(eff)
     }

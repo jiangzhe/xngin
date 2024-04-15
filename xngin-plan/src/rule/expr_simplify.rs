@@ -1486,7 +1486,9 @@ fn coerce_cmp_func(kind: PredFuncKind, e1: ExprKind, e2: ExprKind) -> ExprKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lgc::tests::{assert_j_plan1, assert_j_plan2, get_filt_expr, j_catalog, print_plan};
+    use crate::lgc::tests::{
+        assert_j_plan1, assert_j_plan2, get_subq_filt_expr, j_catalog, print_plan,
+    };
     use crate::lgc::LgcPlan;
 
     #[test]
@@ -1674,7 +1676,7 @@ mod tests {
             |s1, mut q1| {
                 expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
-                match get_filt_expr(&q1).as_slice() {
+                match get_subq_filt_expr(q1.root_query().unwrap()).as_slice() {
                     [ExprKind::Pred(Pred::NotExists(_))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
@@ -1686,7 +1688,7 @@ mod tests {
             |s1, mut q1| {
                 expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
-                match get_filt_expr(&q1).as_slice() {
+                match get_subq_filt_expr(q1.root_query().unwrap()).as_slice() {
                     [ExprKind::Pred(Pred::Exists(_))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
@@ -1703,7 +1705,7 @@ mod tests {
             |s1, mut q1| {
                 expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
-                match get_filt_expr(&q1).as_slice() {
+                match get_subq_filt_expr(q1.root_query().unwrap()).as_slice() {
                     [ExprKind::Pred(Pred::NotInSubquery(..))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
@@ -1721,7 +1723,7 @@ mod tests {
             |s1, mut q1| {
                 expr_simplify(&mut q1.qry_set, q1.root).unwrap();
                 print_plan(s1, &q1);
-                match get_filt_expr(&q1).as_slice() {
+                match get_subq_filt_expr(q1.root_query().unwrap()).as_slice() {
                     [ExprKind::Pred(Pred::InSubquery(..))] => (),
                     other => panic!("unmatched filter: {:?}", other),
                 }
@@ -2270,25 +2272,28 @@ mod tests {
     fn assert_eq_filt_expr(s1: &str, mut q1: LgcPlan, _s2: &str, q2: LgcPlan) {
         expr_simplify(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
-        assert_eq!(get_filt_expr(&q1), get_filt_expr(&q2));
+        assert_eq!(
+            get_subq_filt_expr(q1.root_query().unwrap()),
+            get_subq_filt_expr(q2.root_query().unwrap())
+        );
     }
 
     fn assert_no_filt_expr(s1: &str, mut q1: LgcPlan) {
         expr_simplify(&mut q1.qry_set, q1.root).unwrap();
         print_plan(s1, &q1);
-        let filt = get_filt_expr(&q1);
+        let filt = get_subq_filt_expr(q1.root_query().unwrap());
         assert!(filt.is_empty());
     }
 
     fn assert_col_rejects_null(s1: &str, q1: LgcPlan) {
         print_plan(s1, &q1);
-        let filter = get_filt_expr(&q1);
+        let filter = get_subq_filt_expr(q1.root_query().unwrap());
         assert!(expr_rejects_null(&ExprKind::pred_conj(filter)))
     }
 
     fn assert_col_not_rejects_null(s1: &str, q1: LgcPlan) {
         print_plan(s1, &q1);
-        let filter = get_filt_expr(&q1);
+        let filter = get_subq_filt_expr(q1.root_query().unwrap());
         assert!(!expr_rejects_null(&ExprKind::pred_conj(filter)))
     }
 

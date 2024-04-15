@@ -260,7 +260,7 @@ impl OpMutVisitor for PredPullup<'_> {
             | OpKind::Limit { .. }
             | OpKind::Setop(_)
             | OpKind::Attach(..)
-            | OpKind::Table(..)
+            | OpKind::Scan(..)
             | OpKind::JoinGraph(_)
             | OpKind::Row(_)
             | OpKind::Empty => (),
@@ -403,7 +403,7 @@ impl OpMutVisitor for PredPullup<'_> {
             | OpKind::Limit { .. }
             | OpKind::Setop(_)
             | OpKind::Attach(..)
-            | OpKind::Table(..)
+            | OpKind::Scan(..)
             | OpKind::JoinGraph(_)
             | OpKind::Query(_)
             | OpKind::Row(_)
@@ -572,7 +572,7 @@ struct PartialExprSet(GlobalID, HashSet<PartialExpr>);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lgc::tests::{assert_j_plan1, get_filt_expr, j_catalog, print_plan};
+    use crate::lgc::tests::{assert_j_plan1, get_subq_filt_expr, j_catalog, print_plan};
 
     #[test]
     fn test_pred_pullup_cross_join() {
@@ -583,7 +583,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(3, filt.len());
             },
         );
@@ -593,7 +593,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(3, filt.len());
             },
         );
@@ -603,7 +603,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(3, filt.len());
             },
         );
@@ -613,7 +613,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(3, filt.len());
             },
         );
@@ -623,7 +623,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(3, filt.len());
             },
         );
@@ -638,7 +638,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(2, filt.len());
             },
         );
@@ -648,7 +648,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(2, filt.len());
             },
         );
@@ -658,7 +658,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(4, filt.len());
             },
         );
@@ -673,7 +673,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(1, filt.len());
             },
         );
@@ -683,7 +683,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert!(filt.is_empty())
             },
         );
@@ -698,7 +698,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert!(filt.is_empty())
             },
         );
@@ -708,7 +708,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert!(filt.is_empty())
             },
         );
@@ -723,7 +723,7 @@ mod tests {
             |sql, mut plan| {
                 pred_pullup(&mut plan.qry_set, plan.root).unwrap();
                 print_plan(&sql, &plan);
-                let filt = get_filt_expr(&plan);
+                let filt = get_subq_filt_expr(plan.root_query().unwrap());
                 assert_eq!(2, filt.len())
             },
         );
