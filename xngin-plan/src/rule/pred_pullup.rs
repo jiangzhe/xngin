@@ -23,11 +23,14 @@ use xngin_expr::{
 /// 3. full join is discarded as propagation is not available.
 /// 4. left join has limitation that predicates can be propagated
 ///    only from left side to right side.
+///
+/// This rule must be used with(before) predicate pushdown, because it move
+/// predicates into a separate map, and rely on predicate pushdown to move
+/// them back and push down.
 #[inline]
 pub fn pred_pullup(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<()> {
     let mut p_preds = HashMap::new();
-    pullup_pred(qry_set, qry_id, HashMap::new(), &mut p_preds)?; // pass empty parent columns, so pulled preds must be empty
-    Ok(())
+    pullup_pred(qry_set, qry_id, HashMap::new(), &mut p_preds) // pass empty parent columns, so pulled preds must be empty
 }
 
 #[inline]

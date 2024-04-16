@@ -11,16 +11,18 @@ use crate::error::Error;
 use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
 use crate::lgc::col::ProjCol;
 use crate::lgc::setop::{Setop, SetopKind, SubqOp};
+use semistr::SemiStr;
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashSet;
 use std::sync::Arc;
 use xngin_catalog::{SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
-use xngin_expr::{Effect, ExprKind, QueryID, Setq};
+use xngin_expr::{Effect, ExprKind, GlobalID, QueryID, Setq, INVALID_GLOBAL_ID};
 
 #[derive(Debug, Clone, Default)]
 pub struct Op {
-    pub output: OpOutput,
+    pub id: GlobalID,
+    // pub output: OpOutput,
     pub kind: OpKind,
 }
 
@@ -28,7 +30,8 @@ impl Op {
     #[inline]
     pub fn new(kind: OpKind) -> Self {
         Op {
-            output: OpOutput::default(),
+            id: INVALID_GLOBAL_ID,
+            // output: OpOutput::default(),
             kind,
         }
     }
@@ -36,7 +39,8 @@ impl Op {
     #[inline]
     pub fn empty() -> Self {
         Op {
-            output: OpOutput::default(),
+            id: INVALID_GLOBAL_ID,
+            // output: OpOutput::default(),
             kind: OpKind::Empty,
         }
     }
@@ -61,9 +65,6 @@ impl Op {
     pub fn out_cols(&self) -> Option<&[ProjCol]> {
         let mut op = self;
         loop {
-            if let OpOutput::Ref(output) = &op.output {
-                return Some(&output[..]);
-            }
             match &op.kind {
                 OpKind::Aggr(aggr) => return Some(&aggr.proj),
                 OpKind::Proj { cols, .. } => return cols.as_ref().map(|cs| &cs[..]),
@@ -87,10 +88,6 @@ impl Op {
     pub fn out_cols_mut(&mut self) -> Option<&mut Vec<ProjCol>> {
         let mut op = self;
         loop {
-            if let OpOutput::Ref(_) = &mut op.output {
-                // cannot change
-                return None;
-            }
             match &mut op.kind {
                 OpKind::Aggr(aggr) => return Some(&mut aggr.proj),
                 OpKind::Proj { cols, .. } => return cols.as_mut(),
@@ -263,9 +260,18 @@ impl OpKind {
     }
 
     #[inline]
-    pub fn table(qry: QueryID, schema: SchemaID, table: TableID, cols: Vec<ProjCol>) -> Self {
+    pub fn table(
+        qry: QueryID,
+        schema_id: SchemaID,
+        schema: SemiStr,
+        table_id: TableID,
+        table: SemiStr,
+        cols: Vec<ProjCol>,
+    ) -> Self {
         OpKind::Scan(Box::new(TableScan {
+            schema_id,
             schema,
+            table_id,
             table,
             qry,
             cols,
@@ -573,8 +579,10 @@ pub struct SortItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableScan {
-    pub schema: SchemaID,
-    pub table: TableID,
+    pub schema_id: SchemaID,
+    pub schema: SemiStr,
+    pub table_id: TableID,
+    pub table: SemiStr,
     pub qry: QueryID,
     pub cols: Vec<ProjCol>,
     // filter expression that can be pushed down to scan.

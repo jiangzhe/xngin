@@ -30,6 +30,8 @@ impl From<u32> for GlobalID {
     }
 }
 
+pub const INVALID_GLOBAL_ID: GlobalID = GlobalID(0);
+
 /// QueryID wraps u32 to be the identifier of subqueries in single query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QueryID(u32);

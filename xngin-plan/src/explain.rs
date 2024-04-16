@@ -80,16 +80,12 @@ impl Explain for Op {
     fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         match &self.kind {
             OpKind::Proj { cols, .. } => {
-                if let OpOutput::Ref(cols) = &self.output {
-                    f.write_str("Proj{")?;
-                    write_refs(f, cols.iter().map(|c| &c.expr), ", ", conf)?;
-                    f.write_str("}")
-                } else if let Some(cols) = cols {
+                if let Some(cols) = cols {
                     f.write_str("Proj{")?;
                     write_refs(f, cols.iter().map(|c| &c.expr), ", ", conf)?;
                     f.write_str("}")
                 } else {
-                    return Err(fmt::Error);
+                    Err(fmt::Error)
                 }
             }
             OpKind::Filt { pred, .. } => {
@@ -117,20 +113,16 @@ impl Explain for Op {
                 f.write_char('}')
             }
             OpKind::Row(row) => {
-                if let OpOutput::Ref(row) = &self.output {
-                    f.write_str("Row{")?;
-                    write_refs(f, row.iter().map(|c| &c.expr), ", ", conf)?;
-                    f.write_char('}')
-                } else if let Some(row) = row {
+                if let Some(row) = row {
                     f.write_str("Row{")?;
                     write_refs(f, row.iter().map(|c| &c.expr), ", ", conf)?;
                     f.write_char('}')
                 } else {
-                    return Err(fmt::Error);
+                    Err(fmt::Error)
                 }
             }
             OpKind::Scan(scan) => {
-                write!(f, "Table{{id={},cols=[", scan.table.value())?;
+                write!(f, "Table{{name={},cols=[", scan.table)?;
                 write_refs(f, scan.cols.iter().map(|c| &c.expr), ", ", conf)?;
                 f.write_str("]}}")
             }
@@ -360,47 +352,46 @@ impl Explain for Const {
 impl Explain for Col {
     fn explain<F: Write>(&self, f: &mut F, conf: &ExplainConf) -> fmt::Result {
         match &self.kind {
-            ColKind::Table(table_id, alias, _) => {
+            ColKind::Table(_, alias, _) => {
+                if conf.show_col_name {
+                    write!(f, "{}#{}", alias, self.gid.value())
+                } else {
+                    write!(f, "#{}", self.gid.value())
+                }
+            }
+            ColKind::Query(query_id) => {
                 if conf.show_col_name {
                     write!(
                         f,
-                        "t{}.{}[{}]#{}",
-                        table_id.value(),
-                        alias,
+                        "q{}[{}]#{}",
+                        query_id.value(),
                         self.idx.value(),
                         self.gid.value()
                     )
                 } else {
+                    write!(f, "#{}", self.gid.value())
+                }
+            }
+            ColKind::Correlated(query_id) => {
+                if conf.show_col_name {
                     write!(
                         f,
-                        "t{}[{}]#{}",
-                        table_id.value(),
+                        "cq{}[{}]#{}",
+                        query_id.value(),
                         self.idx.value(),
                         self.gid.value()
                     )
+                } else {
+                    write!(f, "c#{}", self.gid.value())
                 }
             }
-            ColKind::Query(query_id) => write!(
-                f,
-                "q{}[{}]#{}",
-                query_id.value(),
-                self.idx.value(),
-                self.gid.value()
-            ),
-            ColKind::Correlated(query_id) => write!(
-                f,
-                "cq{}[{}]#{}",
-                query_id.value(),
-                self.idx.value(),
-                self.gid.value()
-            ),
-            ColKind::Intra(child_id) => write!(
-                f,
-                "i{}[{}]#{}",
-                child_id,
-                self.idx.value(),
-                self.gid.value()
-            ),
+            ColKind::Intra(_) => {
+                if conf.show_col_name {
+                    write!(f, "i[{}]#{}", self.idx.value(), self.gid.value())
+                } else {
+                    write!(f, "i#{}", self.gid.value())
+                }
+            }
         }
     }
 }

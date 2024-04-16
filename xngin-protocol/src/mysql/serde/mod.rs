@@ -191,7 +191,7 @@ impl From<u32> for LenEncInt {
         } else if src <= 0xffff {
             LenEncInt::Len3(src as u16)
         } else {
-            LenEncInt::Len4(src as u32)
+            LenEncInt::Len4(src)
         }
     }
 }

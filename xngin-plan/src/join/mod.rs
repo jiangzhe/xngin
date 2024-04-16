@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::lgc::{Op, OpKind};
 use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
-use xngin_expr::{ExprKind, QueryID};
+use xngin_expr::{ExprKind, GlobalID, QueryID};
 
 // alias of join graph
 pub use graph::Graph as JoinGraph;

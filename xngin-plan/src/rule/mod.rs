@@ -6,15 +6,16 @@ use crate::lgc::{LgcPlan, QuerySet};
 use bitflags::bitflags;
 use xngin_expr::{Effect, QueryID};
 
+pub(self) mod assign_id;
 pub mod col_prune;
 pub mod derived_unfold;
 pub mod expr_simplify;
 pub mod joingraph_initialize;
 pub mod op_eliminate;
 pub mod outerjoin_reduce;
+pub mod pred_move;
 pub mod pred_pullup;
 pub mod pred_pushdown;
-// pub mod fix;
 // pub mod output_fix;
 
 pub use col_prune::col_prune;
@@ -102,7 +103,7 @@ pub fn init_rule_optimize(qry_set: &mut QuerySet, qry_id: QueryID) -> Result<Rul
     eff |= pred_pushdown(qry_set, qry_id)?;
     // Run predicate pullup with predicate propagate for future predicate pushdown.
     pred_pullup(qry_set, qry_id)?; // onetime
-                                   // Run predicate pushdown again
+                                   //                                // Run predicate pushdown again
     eff |= pred_pushdown(qry_set, qry_id)?;
     // Run column pruning again
     eff |= col_prune(qry_set, qry_id)?;

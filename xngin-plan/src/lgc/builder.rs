@@ -13,13 +13,15 @@ use semistr::SemiStr;
 use xngin_catalog::{Catalog, SchemaID, TableID};
 use xngin_expr::controlflow::ControlFlow;
 use xngin_expr::{
-    self as expr, ColIndex, ExprKind, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind,
+    self as expr, ColIndex, ExprKind, ExprMutVisitor, GlobalID, Plhd, PredFuncKind, QueryID, Setq,
+    SubqKind,
 };
 use xngin_sql::ast::*;
 
 pub struct LgcBuilder<'a, C: Catalog> {
     catalog: &'a C,
-    default_schema: SchemaID,
+    default_schema_id: SchemaID,
+    default_schema: SemiStr,
     qs: QuerySet,
     scopes: Scopes,
     attaches: Vec<QueryID>,
@@ -29,14 +31,15 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
     #[inline]
     pub(super) fn new(catalog: &'c C, default_schema: &str) -> Result<Self> {
         let qs = QuerySet::default();
-        let default_schema = if let Some(s) = catalog.find_schema_by_name(default_schema) {
+        let default_schema_id = if let Some(s) = catalog.find_schema_by_name(default_schema) {
             s.id
         } else {
             return Err(Error::SchemaNotExists(default_schema.to_string()));
         };
         Ok(LgcBuilder {
             catalog,
-            default_schema,
+            default_schema_id,
+            default_schema: SemiStr::new(default_schema),
             qs,
             scopes: Scopes::default(),
             attaches: vec![],
@@ -338,7 +341,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
                         }
                     }
                 }
-                Ok((Op::new(OpKind::Row(Some(cols))), Location::Virtual))
+                Ok((self.gen_op(OpKind::Row(Some(cols))), Location::Virtual))
             }
             Query::Table(select_table) => self.setup_select_table(select_table, phc, colgen),
             Query::Set(select_set) => self.setup_select_set(select_set, phc, colgen),
@@ -457,15 +460,15 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
         let mut root = if from.len() == 1 {
             from.into_iter().next().unwrap().into()
         } else {
-            Op::new(OpKind::cross_join(from))
+            self.gen_op(OpKind::cross_join(from))
         };
         // b) build Filt operator
         if let Some(pred) = filter {
-            root = Op::new(OpKind::filt(pred.into_conj(), root));
+            root = self.gen_op(OpKind::filt(pred.into_conj(), root));
         }
         // c) build Aggr operator
         if !groups.is_empty() || scalar_aggr {
-            root = Op::new(OpKind::aggr(groups, root));
+            root = self.gen_op(OpKind::aggr(groups, root));
         }
         // d) build Proj operator or merge into Aggr
         match &mut root.kind {
@@ -473,21 +476,21 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
                 aggr.proj = proj_cols;
             }
             _ => {
-                root = Op::new(OpKind::proj(proj_cols, root));
+                root = self.gen_op(OpKind::proj(proj_cols, root));
             }
         }
         // e) build Filter operator from HAVING clause
         if let Some(pred) = having {
-            root = Op::new(OpKind::filt(pred.into_conj(), root));
+            root = self.gen_op(OpKind::filt(pred.into_conj(), root));
         }
         // f) build Sort operator
         if !order.is_empty() {
             // scalar aggr query only returns 1 row, ingore SORT operation
-            root = Op::new(OpKind::sort(order, root));
+            root = self.gen_op(OpKind::sort(order, root));
         }
         // g) build Limit operator
         if let Some((start, end)) = limit {
-            root = Op::new(OpKind::limit(start, end, root));
+            root = self.gen_op(OpKind::limit(start, end, root));
         }
         Ok((root, Location::Intermediate))
     }
@@ -517,7 +520,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
             self.build_subquery(&None, &select_set.right, phc.allow_unknown_ident, colgen)?;
         let right = SubqOp::query(query_id);
         Ok((
-            Op::new(OpKind::setop(kind, q, left, right)),
+            self.gen_op(OpKind::setop(kind, q, left, right)),
             Location::Intermediate,
         ))
     }
@@ -838,7 +841,7 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
                             )));
                         };
                     // now manually construct a subquery to expose all columns in the table
-                    self.table_to_subquery(schema_id, table_id, colgen)?
+                    self.table_to_subquery(schema_id, schema_name, table_id, tbl_name, colgen)?
                 } else if let Some(query_id) = self.find_cte(&tbl_name) {
                     // schema not present, first check CTEs
                     let query_id = *query_id;
@@ -848,9 +851,15 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
                     self.qs.copy_query(&query_id)?
                 } else if let Some(t) = self
                     .catalog
-                    .find_table_by_name(&self.default_schema, &tbl_name)
+                    .find_table_by_name(&self.default_schema_id, &tbl_name)
                 {
-                    self.table_to_subquery(t.schema_id, t.id, colgen)?
+                    self.table_to_subquery(
+                        t.schema_id,
+                        self.default_schema.clone(),
+                        t.id,
+                        t.name,
+                        colgen,
+                    )?
                 } else {
                     return Err(Error::TableNotExists(tbl_name.to_string()));
                 };
@@ -904,7 +913,9 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
     fn table_to_subquery(
         &mut self,
         schema_id: SchemaID,
+        schema_name: SemiStr,
         table_id: TableID,
+        table_name: SemiStr,
         colgen: &mut ColGen,
     ) -> Result<QueryID> {
         let all_cols = self.catalog.all_columns_in_table(&table_id);
@@ -916,7 +927,14 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
             let col = colgen.gen_tbl_col(qry_id, table_id, idx, c.pty, c.name.clone());
             proj_cols.push(ProjCol::implicit_alias(col, c.name))
         }
-        let scan = OpKind::table(qry_id, schema_id, table_id, proj_cols);
+        let scan = OpKind::table(
+            qry_id,
+            schema_id,
+            schema_name,
+            table_id,
+            table_name,
+            proj_cols,
+        );
         subquery.root = Op::new(scan);
         // todo: currently we assume all tables are located on disk.
         subquery.location = Location::Disk;
@@ -930,6 +948,11 @@ impl<'c, C: Catalog> LgcBuilder<'c, C> {
             .iter()
             .rev()
             .find_map(|s| s.cte_aliases.get(alias))
+    }
+
+    #[inline]
+    fn gen_op(&mut self, kind: OpKind) -> Op {
+        Op::new(kind)
     }
 }
 
