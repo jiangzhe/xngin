@@ -104,8 +104,6 @@ fn reflect_op<'a, C: Catalog>(
             let child = reflect_op(ctx, arena, qs, root, input, catalog)?;
             let cols = if let Some(cols) = cols {
                 &cols[..]
-            } else if let OpOutput::Ref(output) = &op.output {
-                &output[..]
             } else {
                 return Err(Error::InvalidPlanStructureForReflection);
             };
@@ -141,12 +139,22 @@ fn reflect_op<'a, C: Catalog>(
             let child = reflect_op(ctx, arena, qs, root, input, catalog)?;
             reflect_limit(*start, *end, child)?
         }
-        OpKind::Scan(scan) => reflect_table(ctx, arena, root, scan.schema, scan.table, catalog)?,
+        OpKind::Scan(scan) => {
+            let schema = Ident::regular(arena.add(&*scan.schema)?);
+            let tbl = Ident::regular(arena.add(&*scan.table)?);
+            // here we generate alias from table name if neccessary.
+            let alias = ctx.table_name_to_alias(root, tbl, arena)?;
+            AstOp::Partial(AstPartial::TableScan {
+                tbl: TableName::new(Some(schema), tbl),
+                filt: None,
+                cols: vec![],
+                origin: true,
+                alias,
+            })
+        }
         OpKind::Row(cols) => {
             let cols = if let Some(cols) = cols {
                 &cols[..]
-            } else if let OpOutput::Ref(output) = &op.output {
-                &output[..]
             } else {
                 return Err(Error::InvalidPlanStructureForReflection);
             };
@@ -891,34 +899,6 @@ fn reflect_join_op<'a, C: Catalog>(
         _ => unreachable!(),
     };
     Ok(res)
-}
-
-#[inline]
-fn reflect_table<'a, C: Catalog>(
-    ctx: &mut AstContext<'a>,
-    arena: &'a StringArena,
-    root: QueryID,
-    schema_id: SchemaID,
-    tbl_id: TableID,
-    catalog: &C,
-) -> Result<AstOp<'a>> {
-    let schema = catalog
-        .find_schema(&schema_id)
-        .ok_or_else(|| Error::SchemaIdNotFound(schema_id.value()))?;
-    let tbl = catalog
-        .find_table(&tbl_id)
-        .ok_or_else(|| Error::TableIdNotFound(tbl_id.value()))?;
-    let schema = Ident::regular(arena.add(&*schema.name)?);
-    let tbl = Ident::regular(arena.add(&*tbl.name)?);
-    // here we generate alias from table name if neccessary.
-    let alias = ctx.table_name_to_alias(root, tbl, arena)?;
-    Ok(AstOp::Partial(AstPartial::TableScan {
-        tbl: TableName::new(Some(schema), tbl),
-        filt: None,
-        cols: vec![],
-        origin: true,
-        alias,
-    }))
 }
 
 /// Wrap a complete query as a derived table.

@@ -322,8 +322,8 @@ impl OpVisitor for Detect {
 fn extract(op: &mut Op) -> (Op, Vec<ProjCol>) {
     match mem::take(op) {
         Op {
-            output: _,
             kind: OpKind::Proj { cols, input },
+            ..
         } => (*input, cols.unwrap()),
         _ => unreachable!(),
     }

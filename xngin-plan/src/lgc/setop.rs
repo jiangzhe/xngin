@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::lgc::op::{Op, OpKind};
 use std::ops::{Deref, DerefMut};
-use xngin_expr::{QueryID, Setq};
+use xngin_expr::{GlobalID, QueryID, Setq};
 
 #[derive(Debug, Clone)]
 pub struct Setop {

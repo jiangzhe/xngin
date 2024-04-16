@@ -87,7 +87,7 @@ impl Subquery {
             fn enter(&mut self, op: &Op) -> ControlFlow<()> {
                 match &op.kind {
                     OpKind::Scan(scan) => {
-                        self.0 = Some((scan.schema, scan.table));
+                        self.0 = Some((scan.schema_id, scan.table_id));
                         ControlFlow::Break(())
                     }
                     _ => ControlFlow::Continue(()),

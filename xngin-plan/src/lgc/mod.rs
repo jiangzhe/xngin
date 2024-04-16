@@ -789,7 +789,7 @@ pub(crate) mod tests {
             #[inline]
             fn enter(&mut self, op: &Op) -> ControlFlow<TableID> {
                 match &op.kind {
-                    OpKind::Scan(scan) => ControlFlow::Break(scan.table),
+                    OpKind::Scan(scan) => ControlFlow::Break(scan.table_id),
                     _ => ControlFlow::Continue(()),
                 }
             }
@@ -935,7 +935,8 @@ pub(crate) mod tests {
         use crate::explain::{Explain, ExplainConf};
         println!("SQL: {}", sql);
         let mut s = String::new();
-        plan.explain(&mut s, &ExplainConf::default()).unwrap();
+        let conf = ExplainConf::default();
+        plan.explain(&mut s, &conf).unwrap();
         println!("Plan:\n{}", s)
     }
 }
