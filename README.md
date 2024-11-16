@@ -1,13 +1,14 @@
-# EVODB
+# DoraDB
 
-![build](https://github.com/jiangzhe/evodb/actions/workflows/build.yml/badge.svg)
-![codecov](https://codecov.io/gh/jiangzhe/evodb/branch/main/graph/badge.svg?token=T3RMZE2998)
+![build](https://github.com/jiangzhe/doradb/actions/workflows/build.yml/badge.svg)
+![codecov](https://codecov.io/gh/jiangzhe/doradb/branch/main/graph/badge.svg?token=T3RMZE2998)
 
-doradb is a experimental project to memory-optimized disk-based database from scratch.
+DoraDB is a experimental project to memory-optimized disk-based database from scratch.
+It is work in progress.
 
 ## Goal
 
-Fast speed on both transactional and analytical processing.
+Fast on both transactional and analytical processing.
 
 ## License
 
