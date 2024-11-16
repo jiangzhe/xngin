@@ -1,14 +1,14 @@
 [workspace]
 members = [
-    "xngin-datatype",
-    "xngin-catalog", 
-    "xngin-sql",
-    "xngin-expr",
-    "xngin-compute", 
-    "xngin-plan",
-    "xngin-protocol",
-    "xngin-storage",
-    "xngin-server",
-    "xngin-tpch-tests"
+    "doradb-datatype",
+    "doradb-catalog", 
+    "doradb-sql",
+    "doradb-expr",
+    "doradb-compute", 
+    "doradb-plan",
+    "doradb-protocol",
+    "doradb-storage",
+    "doradb-server",
+    "doradb-tpch-tests"
 ]
-exclude = ["xngin-bench"]
+exclude = ["doradb-bench"]

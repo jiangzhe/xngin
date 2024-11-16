@@ -1,18 +1,13 @@
-# XNGIN
+# EVODB
 
-![build](https://github.com/jiangzhe/xngin/actions/workflows/build.yml/badge.svg)
-![codecov](https://codecov.io/gh/jiangzhe/xngin/branch/main/graph/badge.svg?token=T3RMZE2998)
+![build](https://github.com/jiangzhe/evodb/actions/workflows/build.yml/badge.svg)
+![codecov](https://codecov.io/gh/jiangzhe/evodb/branch/main/graph/badge.svg?token=T3RMZE2998)
 
-Xngin(pronounced "X Engine") is a personal project to build a SQL engine from scratch.
-
-The project name is inspired by [Nginx](https://en.wikipedia.org/wiki/Nginx), which is a
-very popular web server with high performance and ease to use. 
+doradb is a experimental project to memory-optimized disk-based database from scratch.
 
 ## Goal
 
-1. Fast.
-2. Easy to use.
-3. Distributed.
+Fast speed on both transactional and analytical processing.
 
 ## License
 
