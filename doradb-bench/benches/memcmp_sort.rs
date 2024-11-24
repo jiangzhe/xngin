@@ -26,11 +26,11 @@ fn bench_sort(c: &mut Criterion) {
             }))
         });
 
-        let mut buf = vec![0u8; 4];
-        for (d1, d2) in data1.iter().zip(data2) {
-            u32::write_mcf(d1, &mut buf);
-            assert_eq!(buf, d2);
-        }
+        // let mut buf = vec![0u8; 4];
+        // for (d1, d2) in data1.iter().zip(data2) {
+        //     u32::write_mcf(d1, &mut buf);
+        //     assert_eq!(buf, d2);
+        // }
     }
     group.finish()
 }

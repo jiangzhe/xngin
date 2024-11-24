@@ -1,3 +1,6 @@
+pub mod latch;
+pub mod buffer;
+pub mod index;
 pub mod alloc;
 pub mod array;
 pub mod attr;
