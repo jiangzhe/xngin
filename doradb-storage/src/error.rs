@@ -26,6 +26,16 @@ pub enum Error {
     ValueCountMismatch,
     #[error("Invalid datatype")]
     InvalidDatatype,
+    // buffer pool errors
+    #[error("insufficient memory({0})")]
+    InsufficientMemory(usize),
+    #[error("insufficient buffer pool({0})")]
+    InsufficientBufferPool(u64),
+    #[error("page id out of bound({0})")]
+    PageIdOutOfBound(u64),
+    // latch errors
+    #[error("retry latch")]
+    RetryLatch,
 }
 
 impl From<TryFromSliceError> for Error {
