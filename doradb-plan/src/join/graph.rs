@@ -1,11 +1,11 @@
 use crate::error::{Error, Result};
 use crate::join::JoinKind;
 use crate::lgc::{Op, OpKind};
+use doradb_expr::{ExprKind, QueryID};
 use indexmap::IndexMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Deref, DerefMut};
-use doradb_expr::{ExprKind, QueryID};
 
 // Support at most 31 tables in single join graph.
 // The threshold is actually very high for DP algorithm

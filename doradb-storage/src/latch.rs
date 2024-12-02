@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use parking_lot::RawRwLock;
+use crate::error::{Error, Result};
 use parking_lot::lock_api::RawRwLock as RawRwLockApi;
-use crate::error::{Result, Error};
+use parking_lot::RawRwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const LATCH_EXCLUSIVE_BIT: u64 = 1;
 
@@ -16,20 +16,20 @@ pub enum LatchFallbackMode {
 /// A HybridLatch combines optimisitic lock(version validation) and
 /// pessimistic lock(tranditional mutex) to support high-performance
 /// on current operations.
-/// 
+///
 /// It has three lock modes.
-/// 
+///
 /// 1. optimisitic. Optimistic mode does not block read or write.
 ///    but once the inner data is read, version must be validated
 ///    to ensure no writer updated it.
-/// 
+///
 /// 2. shared. Same as read lock, it can exist with
 ///    multiple reader but mutually exclusive with writer.
-/// 
+///
 /// 3. exclusive. Same as write lock. Once the writer acquired the lock,
 ///    it first increment version and before unlocking, it also
 ///    increment version.
-/// 
+///
 #[repr(C, align(64))]
 pub struct HybridLatch {
     version: AtomicU64,
@@ -39,7 +39,10 @@ pub struct HybridLatch {
 impl HybridLatch {
     #[inline]
     pub const fn new() -> Self {
-        HybridLatch{version: AtomicU64::new(0), lock: RawRwLock::INIT}
+        HybridLatch {
+            version: AtomicU64::new(0),
+            lock: RawRwLock::INIT,
+        }
     }
 
     /// Returns current version with atomic load.
@@ -48,35 +51,32 @@ impl HybridLatch {
         self.version.load(Ordering::SeqCst)
     }
 
+    #[inline]
+    pub fn version_acq(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
     /// Returns whether the latch is already exclusive locked.
     #[inline]
     pub fn is_exclusive_latched(&self) -> bool {
-        let ver = self.version_seqcst();
+        let ver = self.version_acq();
         (ver & LATCH_EXCLUSIVE_BIT) == LATCH_EXCLUSIVE_BIT
     }
 
     /// Returns whether the current version matches given one.
     #[inline]
     pub fn version_match(&self, version: u64) -> bool {
-        let ver = self.version_seqcst();
+        let ver = self.version_acq();
         ver == version
     }
 
     #[inline]
     pub fn optimistic_fallback(&self, mode: LatchFallbackMode) -> Result<HybridGuard<'_>> {
         match mode {
-            LatchFallbackMode::Spin => {
-                Ok(self.optimistic_spin())
-            }
-            LatchFallbackMode::Shared => {
-                Ok(self.optimistic_or_shared())
-            }
-            LatchFallbackMode::Exclusive => {
-                Ok(self.optimistic_or_exclusive())
-            }
-            LatchFallbackMode::Jump => {
-                self.try_optimistic().ok_or(Error::RetryLatch)
-            }
+            LatchFallbackMode::Spin => Ok(self.optimistic_spin()),
+            LatchFallbackMode::Shared => Ok(self.optimistic_or_shared()),
+            LatchFallbackMode::Exclusive => Ok(self.optimistic_or_exclusive()),
+            LatchFallbackMode::Jump => self.try_optimistic().ok_or(Error::RetryLatch),
         }
     }
 
@@ -86,7 +86,7 @@ impl HybridLatch {
     pub fn optimistic_spin(&self) -> HybridGuard<'_> {
         let mut ver: u64;
         loop {
-            ver = self.version_seqcst();
+            ver = self.version_acq();
             if (ver & LATCH_EXCLUSIVE_BIT) != LATCH_EXCLUSIVE_BIT {
                 break;
             }
@@ -98,7 +98,7 @@ impl HybridLatch {
     /// Fail if the lock is exclusive locked.
     #[inline]
     pub fn try_optimistic(&self) -> Option<HybridGuard<'_>> {
-        let ver = self.version_seqcst();
+        let ver = self.version_acq();
         if (ver & LATCH_EXCLUSIVE_BIT) == LATCH_EXCLUSIVE_BIT {
             None
         } else {
@@ -110,10 +110,10 @@ impl HybridLatch {
     /// Otherwise get an optimistic lock.
     #[inline]
     pub fn optimistic_or_shared(&self) -> HybridGuard<'_> {
-        let ver = self.version_seqcst();
+        let ver = self.version_acq();
         if (ver & LATCH_EXCLUSIVE_BIT) == LATCH_EXCLUSIVE_BIT {
             self.lock.lock_shared();
-            let ver = self.version_seqcst();
+            let ver = self.version_acq();
             HybridGuard::new(self, GuardState::Shared, ver)
         } else {
             HybridGuard::new(self, GuardState::Optimistic, ver)
@@ -125,10 +125,10 @@ impl HybridLatch {
     /// This use case is rare.
     #[inline]
     pub fn optimistic_or_exclusive(&self) -> HybridGuard<'_> {
-        let ver = self.version_seqcst();
+        let ver = self.version_acq();
         if (ver & LATCH_EXCLUSIVE_BIT) == LATCH_EXCLUSIVE_BIT {
             self.lock.lock_exclusive();
-            let ver = self.version_seqcst() + LATCH_EXCLUSIVE_BIT;
+            let ver = self.version_acq() + LATCH_EXCLUSIVE_BIT;
             self.version.store(ver, Ordering::Release);
             HybridGuard::new(self, GuardState::Exclusive, ver)
         } else {
@@ -140,7 +140,7 @@ impl HybridLatch {
     #[inline]
     pub fn exclusive(&self) -> HybridGuard<'_> {
         self.lock.lock_exclusive(); // may block
-        let ver = self.version_seqcst() + LATCH_EXCLUSIVE_BIT;
+        let ver = self.version_acq() + LATCH_EXCLUSIVE_BIT;
         self.version.store(ver, Ordering::Release);
         HybridGuard::new(self, GuardState::Exclusive, ver)
     }
@@ -149,7 +149,7 @@ impl HybridLatch {
     #[inline]
     pub fn shared(&self) -> HybridGuard<'_> {
         self.lock.lock_shared(); // may block
-        let ver = self.version_seqcst();
+        let ver = self.version_acq();
         HybridGuard::new(self, GuardState::Shared, ver)
     }
 
@@ -157,8 +157,9 @@ impl HybridLatch {
     #[inline]
     pub fn try_exclusive(&self) -> Option<HybridGuard<'_>> {
         if self.lock.try_lock_exclusive() {
-            let ver = self.version_seqcst();
-            return Some(HybridGuard::new(self, GuardState::Exclusive, ver))
+            let ver = self.version_acq() + LATCH_EXCLUSIVE_BIT;
+            self.version.store(ver, Ordering::Release);
+            return Some(HybridGuard::new(self, GuardState::Exclusive, ver));
         }
         None
     }
@@ -167,8 +168,8 @@ impl HybridLatch {
     #[inline]
     pub fn try_shared(&self) -> Option<HybridGuard<'_>> {
         if self.lock.try_lock_shared() {
-            let ver = self.version_seqcst();
-            return Some(HybridGuard::new(self, GuardState::Shared, ver))
+            let ver = self.version_acq();
+            return Some(HybridGuard::new(self, GuardState::Shared, ver));
         }
         None
     }
@@ -192,7 +193,11 @@ pub struct HybridGuard<'a> {
 impl<'a> HybridGuard<'a> {
     #[inline]
     fn new(lock: &'a HybridLatch, state: GuardState, version: u64) -> Self {
-        HybridGuard{lock, state, version}
+        HybridGuard {
+            lock,
+            state,
+            version,
+        }
     }
 
     /// Validate the optimistic lock is effective.
@@ -205,17 +210,21 @@ impl<'a> HybridGuard<'a> {
     /// Convert lock mode to optimistic.
     /// Then the guard can be saved and used in future.
     #[inline]
-    pub fn keepalive(&mut self) {
+    pub fn downgrade(&mut self) {
         match self.state {
             GuardState::Exclusive => {
                 let ver = self.version + LATCH_EXCLUSIVE_BIT;
                 self.lock.version.store(ver, Ordering::Release);
-                unsafe { self.lock.lock.unlock_exclusive(); }
+                unsafe {
+                    self.lock.lock.unlock_exclusive();
+                }
                 self.version = ver;
+                self.state = GuardState::Optimistic;
             }
-            GuardState::Shared => {
-                unsafe { self.lock.lock.unlock_shared(); }
-            }
+            GuardState::Shared => unsafe {
+                self.lock.lock.unlock_shared();
+                self.state = GuardState::Optimistic;
+            },
             GuardState::Optimistic => (),
         }
     }
@@ -247,6 +256,40 @@ impl<'a> HybridGuard<'a> {
             GuardState::Exclusive => true,
         }
     }
+
+    #[inline]
+    pub fn try_exclusive(&mut self) -> bool {
+        match self.state {
+            GuardState::Optimistic => {
+                if let Some(guard) = self.lock.try_exclusive() {
+                    *self = guard;
+                    return true;
+                }
+                false
+            }
+            GuardState::Shared => {
+                self.downgrade();
+                if let Some(guard) = self.lock.try_exclusive() {
+                    *self = guard;
+                    return true;
+                }
+                false
+            }
+            GuardState::Exclusive => true,
+        }
+    }
+
+    #[inline]
+    pub fn optimistic_clone(&self) -> Result<Self> {
+        if self.state == GuardState::Optimistic {
+            return Ok(HybridGuard {
+                lock: self.lock,
+                state: self.state,
+                version: self.version,
+            });
+        }
+        Err(Error::InvalidState)
+    }
 }
 
 impl<'a> Drop for HybridGuard<'a> {
@@ -256,11 +299,13 @@ impl<'a> Drop for HybridGuard<'a> {
             GuardState::Exclusive => {
                 let ver = self.version + LATCH_EXCLUSIVE_BIT;
                 self.lock.version.store(ver, Ordering::Release);
-                unsafe { self.lock.lock.unlock_exclusive(); }
+                unsafe {
+                    self.lock.lock.unlock_exclusive();
+                }
             }
-            GuardState::Shared => {
-                unsafe { self.lock.lock.unlock_shared(); }
-            }
+            GuardState::Shared => unsafe {
+                self.lock.lock.unlock_shared();
+            },
             GuardState::Optimistic => (),
         }
     }

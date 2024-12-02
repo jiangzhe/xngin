@@ -4,10 +4,10 @@ use crate::lgc::{
     Location, Op, OpKind, OpMutVisitor, OpVisitor, ProjCol, QuerySet, Setop, SubqOp, Subquery,
 };
 use crate::rule::RuleEffect;
+use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
+use doradb_expr::{Col, ColIndex, ColKind, ExprExt, ExprKind, ExprMutVisitor, QryCol, QueryID};
 use std::collections::HashMap;
 use std::mem;
-use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use doradb_expr::{Col, ColIndex, ColKind, ExprKind, ExprExt, ExprMutVisitor, QryCol, QueryID};
 
 /// Unfold derived table.
 ///
@@ -163,8 +163,10 @@ impl OpMutVisitor for Unfold<'_> {
                                 // unfold subquery as operator tree, we need to store
                                 // the mapping between original columns to unfolded expressions
                                 for (idx, c) in out_cols.into_iter().enumerate() {
-                                    self.mapping
-                                        .insert(QryCol(*qry_id, ColIndex::from(idx as u32)), c.expr);
+                                    self.mapping.insert(
+                                        QryCol(*qry_id, ColIndex::from(idx as u32)),
+                                        c.expr,
+                                    );
                                 }
                                 *op = new_op;
                                 ControlFlow::Continue(RuleEffect::OPEXPR)

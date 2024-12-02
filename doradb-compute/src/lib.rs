@@ -6,8 +6,8 @@ pub mod logic;
 
 use crate::error::Result;
 use doradb_datatype::PreciseType;
-use doradb_storage::attr::Attr;
-use doradb_storage::sel::Sel;
+use doradb_storage::col::attr::Attr;
+use doradb_storage::col::sel::Sel;
 
 /// Evaluation of binary expression.
 pub trait BinaryEval {

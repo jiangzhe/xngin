@@ -3,11 +3,11 @@ use crate::cmp::CmpKind;
 use crate::error::{Error, Result};
 use crate::eval::{Eval, EvalPlan, EvalRef};
 use crate::logic::LogicKind;
-use smallvec::{smallvec, SmallVec};
-use std::collections::HashMap;
 use doradb_catalog::ColIndex;
 use doradb_datatype::PreciseType;
 use doradb_expr::{DataSourceID, ExprKind, FuncKind, Pred, TypeInfer, TypeInferer};
+use smallvec::{smallvec, SmallVec};
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub(super) struct EvalBuilder<'a, T, I> {

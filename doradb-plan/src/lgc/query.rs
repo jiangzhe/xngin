@@ -3,13 +3,13 @@ use crate::join::{Join, JoinOp};
 use crate::lgc::col::{AliasKind, ProjCol};
 use crate::lgc::op::{Op, OpKind, OpMutVisitor, OpVisitor};
 use crate::lgc::scope::Scope;
+use doradb_catalog::{SchemaID, TableID};
+use doradb_expr::{GlobalID, QueryID, INVALID_QUERY_ID};
 use fnv::FnvHashMap;
 use std::collections::HashSet;
 use std::mem;
 use std::ops::ControlFlow;
 use std::ops::Deref;
-use doradb_catalog::{SchemaID, TableID};
-use doradb_expr::{GlobalID, QueryID, INVALID_QUERY_ID};
 
 /// Query wraps logical operator with additional syntax information.
 /// group operators as a tree, with output column list.

@@ -3,10 +3,10 @@ use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::lgc::{Op, OpKind, OpMutVisitor, QuerySet, Setop, SetopKind};
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
-use std::collections::HashSet;
-use std::mem;
 use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use doradb_expr::{Col, ColKind, Const, ExprKind, QueryID, Setq};
+use std::collections::HashSet;
+use std::mem;
 
 /// Eliminate redundant operators.
 /// 1. Filter with true predicate can be removed.

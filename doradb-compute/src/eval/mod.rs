@@ -10,10 +10,10 @@ use crate::logic::LogicKind;
 use builder::EvalBuilder;
 use doradb_datatype::{PreciseType, Typed};
 use doradb_expr::Const;
-use doradb_storage::attr::Attr;
-use doradb_storage::block::Block;
-use doradb_storage::codec::Single;
-use doradb_storage::sel::Sel;
+use doradb_storage::col::attr::Attr;
+use doradb_storage::col::chunk::Chunk;
+use doradb_storage::col::codec::Single;
+use doradb_storage::col::sel::Sel;
 
 /// Eval is similar to [`doradb_expr::Expr`], but only for evaluation.
 /// It supports deterministic scalar expressions and is restricted to
@@ -94,7 +94,7 @@ impl Eval {
     #[inline]
     pub fn eval(
         &self,
-        input: &Block,
+        input: &Chunk,
         cache: &mut EvalCache,
         idx: usize,
         sel: Option<&Sel>,
@@ -131,7 +131,7 @@ impl Eval {
     }
 
     #[inline]
-    pub fn get<'a>(&self, input: &'a Block, cache: &'a EvalCache) -> Result<&'a Attr> {
+    pub fn get<'a>(&self, input: &'a Chunk, cache: &'a EvalCache) -> Result<&'a Attr> {
         match &self.kind {
             EvalKind::Ref(r) => load_attr(input, cache, *r),
             _ => Err(Error::InvalidEvalPlan),
@@ -140,7 +140,7 @@ impl Eval {
 
     /// Evaluate constant.
     #[inline]
-    fn eval_const(&self, input: &Block, c: &Const) -> Result<Attr> {
+    fn eval_const(&self, input: &Chunk, c: &Const) -> Result<Attr> {
         let res = match c {
             Const::I64(i) => Attr::new_single(
                 PreciseType::i64(),
@@ -155,7 +155,7 @@ impl Eval {
 
 /// Load attribute from input or cache by given evaluation reference.
 #[inline]
-fn load_attr<'a>(input: &'a Block, cache: &'a EvalCache, r: EvalRef) -> Result<&'a Attr> {
+fn load_attr<'a>(input: &'a Chunk, cache: &'a EvalCache, r: EvalRef) -> Result<&'a Attr> {
     let res = match r {
         EvalRef::Input(idx) => input.data.get(idx),
         EvalRef::Cache(idx) => cache.get(idx).and_then(|v| match v {
@@ -197,8 +197,8 @@ mod tests {
     use doradb_catalog::ColIndex;
     use doradb_expr::util::{TypeFix, TypeInferer};
     use doradb_expr::{Col, ColKind, ExprKind, FuncKind, GlobalID, PredFuncKind, QueryID};
-    use doradb_storage::attr::Attr;
-    use doradb_storage::block::Block;
+    use doradb_storage::col::attr::Attr;
+    use doradb_storage::col::chunk::Chunk;
 
     #[test]
     fn test_build_eval() {
@@ -285,7 +285,7 @@ mod tests {
         let size = 1024i32;
         let attr1 = Attr::from((0..size).map(|i| i as i64));
         let attr2 = attr1.to_owned();
-        let block = Block::new(1024, vec![attr1, attr2]);
+        let block = Chunk::new(1024, vec![attr1, attr2]);
         let col1 = ExprKind::query_col(GlobalID::from(1), QueryID::from(0), ColIndex::from(0));
         let col2 = ExprKind::query_col(GlobalID::from(2), QueryID::from(0), ColIndex::from(1));
         // select c1
@@ -403,12 +403,12 @@ mod tests {
         assert_eq!(1, plan.input.len());
         assert_eq!(1, plan.output.len());
         let attr1 = Attr::from((0..1024).map(|i| i as i64));
-        let block = Block::new(1024, vec![attr1]);
+        let block = Chunk::new(1024, vec![attr1]);
         let res = plan.eval(&block).unwrap();
         assert_eq!(1, res.len());
         assert_eq!(1, res[0].n_records());
         let attr2 = Attr::from((0..1024).map(|i| if i < 100 { 0 } else { i as i64 }));
-        let block = Block::new(1024, vec![attr2]);
+        let block = Chunk::new(1024, vec![attr2]);
         let res = plan.eval(&block).unwrap();
         assert_eq!(1, res.len());
         assert_eq!(100, res[0].n_records());
@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(1, plan.input.len());
         assert_eq!(1, plan.output.len());
         let attr1 = Attr::from((0..1024).map(|i| i as i64));
-        let block = Block::new(1024, vec![attr1]);
+        let block = Chunk::new(1024, vec![attr1]);
         let res = plan.eval(&block).unwrap();
         assert_eq!(1, res.len());
         assert_eq!(9, res[0].n_records());

@@ -1,5 +1,5 @@
-use crate::alloc::{align_u128, RawArray};
-use crate::repr::ByteRepr;
+use crate::col::alloc::{align_u128, RawArray};
+use crate::col::repr::ByteRepr;
 use std::mem::size_of;
 use std::slice::from_raw_parts;
 use std::sync::Arc;

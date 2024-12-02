@@ -1,5 +1,5 @@
-use thiserror::Error;
 use doradb_storage::error::Error as StorageError;
+use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

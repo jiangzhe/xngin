@@ -1,7 +1,7 @@
-use semistr::SemiStr;
-use thiserror::Error;
 use doradb_expr::QueryID;
 use doradb_sql::ast::Ident;
+use semistr::SemiStr;
+use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

@@ -16,7 +16,10 @@ impl<T> SwizPtr<T> {
     /// Create a new swizzled pointer with given raw pointer.
     #[inline]
     pub fn new_bf(ptr: *mut BufferFrame<T>) -> Self {
-        SwizPtr{val: ptr as u64, _marker: PhantomData}
+        SwizPtr {
+            val: ptr as u64,
+            _marker: PhantomData,
+        }
     }
 
     /// Returns the in-memory pointer.

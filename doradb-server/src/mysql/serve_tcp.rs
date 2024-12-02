@@ -2,12 +2,12 @@ use crate::mysql::session::Session;
 use crate::mysql::MySQLServer;
 use async_executor::Executor;
 use async_net::TcpListener;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use doradb_catalog::Catalog;
 use doradb_protocol::mysql::conn::{Buf, MyConn};
 use doradb_protocol::mysql::error::Result;
 use doradb_protocol::mysql::serde::{SerdeCtx, SerdeMode};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 const DEFAULT_READ_BUF_SIZE: usize = 16 * 1024;
 const DEFAULT_WRITE_BUF_SIZE: usize = 16 * 1024;

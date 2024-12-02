@@ -1,7 +1,7 @@
 use crate::mysql::MySQLServer;
-use futures_lite::{AsyncRead, AsyncWrite};
 use doradb_catalog::Catalog;
 use doradb_plan::lgc::LgcPlan;
+use futures_lite::{AsyncRead, AsyncWrite};
 // use doradb_plan::phy::PhyPlan;
 use doradb_protocol::buf::ByteBuffer;
 use doradb_protocol::mysql::cmd::MyCmd;

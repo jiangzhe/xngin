@@ -1,7 +1,7 @@
-use std::ops::{Add, Div, Mul, Sub};
 use doradb_sql::ast::*;
 use doradb_sql::parser::dialect::{Ansi, MySQL};
 use doradb_sql::parser::{parse_multi_stmts, parse_query_verbose};
+use std::ops::{Add, Div, Mul, Sub};
 
 macro_rules! col {
     ( $($lit:literal).* ) => {

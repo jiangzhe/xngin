@@ -1,9 +1,9 @@
 use crate::join::graph::Edge;
 use crate::join::{Join, JoinGraph, QualifiedJoin};
 use crate::lgc::{Aggr, Apply, LgcPlan, Op, OpKind, OpVisitor, QuerySet, Setop, SortItem};
-use std::fmt::{self, Write};
 use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use doradb_expr::{AggKind, Col, ColKind, Const, ExprKind, Pred, QueryID, Setq};
+use std::fmt::{self, Write};
 
 const INDENT: usize = 4;
 const BRANCH_1: char = '└';

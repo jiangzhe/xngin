@@ -1,11 +1,11 @@
 use crate::error::{Error, Result};
 use crate::BinaryEval;
 use doradb_datatype::PreciseType;
-use doradb_storage::array::Array;
-use doradb_storage::attr::Attr;
-use doradb_storage::codec::{Codec, Single};
-use doradb_storage::repr::ByteRepr;
-use doradb_storage::sel::Sel;
+use doradb_storage::col::array::Array;
+use doradb_storage::col::attr::Attr;
+use doradb_storage::col::codec::{Codec, Single};
+use doradb_storage::col::repr::ByteRepr;
+use doradb_storage::col::sel::Sel;
 
 /// Kinds of arithmetic expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -279,7 +279,7 @@ impl_arith_eval_for_num!(AddI64, i64, i64, i64, +);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use doradb_storage::codec::Single;
+    use doradb_storage::col::codec::Single;
 
     #[test]
     fn test_vec_eval_4096() {

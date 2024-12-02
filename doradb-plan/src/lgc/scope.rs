@@ -1,10 +1,10 @@
 use crate::lgc::alias::QueryAliases;
+use doradb_expr::{ColIndex, ExprKind, GlobalID, QueryID};
 use fnv::FnvHashSet;
 use indexmap::IndexMap;
 use semistr::SemiStr;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use doradb_expr::{ColIndex, ExprKind, GlobalID, QueryID};
 
 // Scopes is stack-like environment for query blocks.
 #[derive(Debug, Default)]

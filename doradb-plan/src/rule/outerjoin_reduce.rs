@@ -3,11 +3,11 @@ use crate::join::{Join, JoinKind, QualifiedJoin};
 use crate::lgc::{Location, Op, OpKind, OpMutVisitor, ProjCol, QuerySet};
 use crate::rule::expr_simplify::{simplify_single, NullCoalesce};
 use crate::rule::RuleEffect;
-use std::collections::{HashMap, HashSet};
-use std::mem;
 use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use doradb_expr::fold::Fold;
-use doradb_expr::{Col, ColKind, ExprKind, ExprExt, ExprMutVisitor, QueryID};
+use doradb_expr::{Col, ColKind, ExprExt, ExprKind, ExprMutVisitor, QueryID};
+use std::collections::{HashMap, HashSet};
+use std::mem;
 
 /// Reduce outer join based on predicate analysis.
 /// This rule recognize null rejecting predicates in advance

@@ -2,13 +2,13 @@ use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::lgc::{Op, OpKind, OpMutVisitor, ProjCol, QuerySet};
 use crate::rule::expr_simplify::{update_simplify_nested, NullCoalesce, PartialExpr};
-use std::collections::{HashMap, HashSet};
-use std::mem;
 use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use doradb_expr::{
-    Col, ColIndex, ColKind, ExprKind, ExprExt, ExprVisitor, FuncKind, GlobalID, Pred, PredFuncKind,
+    Col, ColIndex, ColKind, ExprExt, ExprKind, ExprVisitor, FuncKind, GlobalID, Pred, PredFuncKind,
     QryCol, QueryID,
 };
+use std::collections::{HashMap, HashSet};
+use std::mem;
 
 /// Pullup predicates.
 /// The canonical optimizations is pushing down predicates, not pulling up,
