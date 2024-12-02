@@ -1,3 +1,4 @@
+use doradb_protocol::mysql::error::{Error, Result};
 use event_listener::{Event, EventListener};
 use futures_lite::Stream;
 use pin_project_lite::pin_project;
@@ -7,7 +8,6 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use doradb_protocol::mysql::error::{Error, Result};
 
 /// Cancellation represents a handle that can cancel future and stream
 /// processing.

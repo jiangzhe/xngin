@@ -1,7 +1,7 @@
 use crate::expr::{Col, ColKind, ExprKind};
 use crate::id::QueryID;
-use std::hash::Hash;
 use doradb_catalog::{ColIndex, TableID};
+use std::hash::Hash;
 
 pub trait DataSourceID: Clone + Copy + PartialEq + Eq + Hash + PartialOrd + Ord + Sized {
     /// resolve data source from expression

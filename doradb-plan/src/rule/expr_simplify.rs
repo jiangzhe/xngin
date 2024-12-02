@@ -2,16 +2,16 @@ use crate::error::{Error, Result};
 use crate::join::{Join, QualifiedJoin};
 use crate::lgc::{Op, OpKind, OpMutVisitor, QuerySet};
 use crate::rule::RuleEffect;
-use indexmap::{IndexMap, IndexSet};
-use std::cmp::Ordering;
-use std::mem;
 use doradb_datatype::AlignPartialOrd;
 use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use doradb_expr::fold::*;
 use doradb_expr::{
-    Col, ColIndex, ColKind, Const, ExprKind, ExprExt, ExprMutVisitor, FuncKind, GlobalID, Pred,
+    Col, ColIndex, ColKind, Const, ExprExt, ExprKind, ExprMutVisitor, FuncKind, GlobalID, Pred,
     PredFuncKind, QryCol, QueryID,
 };
+use indexmap::{IndexMap, IndexSet};
+use std::cmp::Ordering;
+use std::mem;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NullCoalesce {
@@ -553,12 +553,12 @@ fn simplify_conj_short_circuit(
                                 idx,
                             }), ExprKind::Const(new_c)],
                         ) => {
-                            let ent =
-                                cmps.entry(QryCol(*qry_id, *idx))
-                                    .or_insert_with(|| QueryColPredicates {
-                                        gid: *gid,
-                                        preds: vec![],
-                                    });
+                            let ent = cmps.entry(QryCol(*qry_id, *idx)).or_insert_with(|| {
+                                QueryColPredicates {
+                                    gid: *gid,
+                                    preds: vec![],
+                                }
+                            });
                             match append_conj_cmp(
                                 &mut ent.preds,
                                 (*gid, *qry_id, *idx),

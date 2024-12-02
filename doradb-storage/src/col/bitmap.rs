@@ -1,7 +1,7 @@
-use crate::alloc::{align_u128, RawArray};
+use crate::col::alloc::{align_u128, RawArray};
+use crate::col::sel::Sel;
+use crate::col::slice_ext::{OffsetPairMut, OffsetTripleMut, PairSliceExt};
 use crate::error::{Error, Result};
-use crate::sel::Sel;
-use crate::slice_ext::{OffsetPairMut, OffsetTripleMut, PairSliceExt};
 use smallvec::{smallvec, SmallVec};
 use std::ops::Range;
 use std::sync::Arc;

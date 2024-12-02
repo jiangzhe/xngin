@@ -1,20 +1,20 @@
 use crate::cancel::Cancellation;
+use doradb_protocol::mysql::error::{Error, Result};
+use doradb_storage::col::chunk::Chunk;
 use flume::{Receiver, Sender};
 use futures_lite::Stream;
-use doradb_protocol::mysql::error::{Error, Result};
-use doradb_storage::block::Block;
 
 pub type ExecChannel = (InputChannel, OutputChannel);
 
 /// Channel of input data blocks backed by [`flume::Receiver`].
 #[derive(Clone)]
 pub struct InputChannel {
-    rx: Receiver<Block>,
+    rx: Receiver<Chunk>,
 }
 
 impl InputChannel {
     #[inline]
-    pub fn to_stream(&self, cancel: &Cancellation) -> impl Stream<Item = Result<Block>> {
+    pub fn to_stream(&self, cancel: &Cancellation) -> impl Stream<Item = Result<Chunk>> {
         let rx = self.rx.clone();
         cancel.select_stream(rx.into_stream())
     }
@@ -24,7 +24,7 @@ impl InputChannel {
 #[derive(Clone)]
 pub struct OutputChannel {
     pub expected_len: usize,
-    tx: Sender<Block>,
+    tx: Sender<Chunk>,
 }
 
 impl OutputChannel {
@@ -32,7 +32,7 @@ impl OutputChannel {
     /// The failure only occurs when the receiver side closes
     /// the channel, as somewhere cancellation is triggered.
     #[inline]
-    pub async fn send(&self, block: Block) -> Result<()> {
+    pub async fn send(&self, block: Chunk) -> Result<()> {
         self.tx
             .send_async(block)
             .await

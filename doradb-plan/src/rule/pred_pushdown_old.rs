@@ -3,12 +3,12 @@ use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::lgc::{Op, OpKind, OpMutVisitor, ProjCol, QryIDs, QuerySet};
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
 use crate::rule::RuleEffect;
+use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
+use doradb_expr::fold::Fold;
+use doradb_expr::{Col, ColKind, Const, ExprExt, ExprKind, ExprMutVisitor, ExprVisitor, QueryID};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::mem;
-use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use doradb_expr::fold::Fold;
-use doradb_expr::{Col, ColKind, Const, ExprKind, ExprExt, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Pushdown predicates.
 #[inline]

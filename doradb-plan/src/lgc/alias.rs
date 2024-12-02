@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
+use doradb_expr::QueryID;
 use indexmap::{map, IndexMap};
 use semistr::SemiStr;
 use std::ops::{Deref, DerefMut};
-use doradb_expr::QueryID;
 
 /// QueryAliases stores the aliases of tables.
 /// MySQL allows subquery and table has same alias.

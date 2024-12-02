@@ -6,8 +6,8 @@ mod sub;
 
 use crate::controlflow::{ControlFlow, Unbranch};
 use crate::error::{Error, Result};
-use crate::{Const, ExprKind, ExprMutVisitor, FuncKind, Pred, PredFuncKind};
 use crate::expr_ext::ExprExt;
+use crate::{Const, ExprKind, ExprMutVisitor, FuncKind, Pred, PredFuncKind};
 
 pub use add::*;
 pub use cmp::*;

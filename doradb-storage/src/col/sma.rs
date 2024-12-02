@@ -1,7 +1,7 @@
-use crate::bitmap::Bitmap;
+use crate::col::bitmap::Bitmap;
+use crate::col::repr::{ByteRepr, LeadingNonZeroByte, SMARepr};
+use crate::col::sel::Sel;
 use crate::error::{Error, Result};
-use crate::repr::{ByteRepr, LeadingNonZeroByte, SMARepr};
-use crate::sel::Sel;
 use smallvec::SmallVec;
 use std::ops::Index;
 use std::sync::Arc;

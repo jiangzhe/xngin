@@ -1,29 +1,29 @@
-use crate::attr::{Attr, SerAttrHeader, LEN_ATTR_HDR};
+use crate::col::attr::{Attr, SerAttrHeader, LEN_ATTR_HDR};
 use crate::error::{Error, Result};
 use std::io::{Cursor, Write};
 use std::sync::Arc;
 
-/// Block collects multiple tuples and aggregate synopses for analytical query.
+/// Chunk collects multiple tuples and aggregate synopses for analytical query.
 /// On-disk format is described as below.
 ///
-/// Block:
-/// 1. Block header.
-/// 2. Block data.
-pub struct Block {
+/// Chunk:
+/// 1. Chunk header.
+/// 2. Chunk data.
+pub struct Chunk {
     pub n_records: u16,
-    pub data: BlockData,
+    pub data: ChunkData,
 }
 
-impl Block {
-    /// Create a new block with given data.
+impl Chunk {
+    /// Create a new chunk with given data.
     #[inline]
-    pub fn new(n_records: u16, data: BlockData) -> Self {
-        Block { n_records, data }
+    pub fn new(n_records: u16, data: ChunkData) -> Self {
+        Chunk { n_records, data }
     }
 
-    /// Serializable block.
+    /// Serializable chunk.
     #[inline]
-    pub fn ser(&self) -> SerBlock<'_> {
+    pub fn ser(&self) -> SerChunk<'_> {
         // offset of first attribute data is 16 + N * 48.
         let mut offset = OFFSET_START_ATTR_HDR + self.data.len() * LEN_ATTR_HDR;
         let mut header;
@@ -32,7 +32,7 @@ impl Block {
             (header, offset) = attr.ser_header(offset);
             ser_attrs.push((attr, header));
         }
-        SerBlock {
+        SerChunk {
             n_records: self.n_records,
             ser_bytes: offset,
             data: ser_attrs,
@@ -40,32 +40,32 @@ impl Block {
     }
 }
 
-/// Block Header:
+/// Chunk Header:
 /// 1. Number of records: 2B with 2B padding.
 /// 2. Number of attributes: 2B with 2B padding.
 /// 3. Reserved padding: 8B.
 /// 4. Attribute header, ..., Attribute header: N * 48 B.
 ///
-/// Block Data:
+/// Chunk Data:
 /// 1. Attribute data, ..., Attribute data: variable length.
-pub struct SerBlock<'a> {
+pub struct SerChunk<'a> {
     n_records: u16,
     ser_bytes: usize,
     data: Vec<(&'a Attr, SerAttrHeader)>,
 }
 
-impl<'a> SerBlock<'a> {
-    /// Create an empty serializable block.
+impl<'a> SerChunk<'a> {
+    /// Create an empty serializable chunk.
     #[inline]
     pub fn empty(n_records: u16) -> Self {
-        SerBlock {
+        SerChunk {
             n_records,
             ser_bytes: OFFSET_START_ATTR_HDR,
             data: vec![],
         }
     }
 
-    /// Write this block in byte format.
+    /// Write this chunk in byte format.
     #[inline]
     pub fn store<W: Write>(&self, writer: &mut W, buf: &mut Vec<u8>) -> Result<usize> {
         // buffer header before writing to storage.
@@ -108,21 +108,21 @@ impl<'a> SerBlock<'a> {
     }
 }
 
-/// Block data is just a list of attributes.
-pub type BlockData = Vec<Attr>;
+/// Chunk data is just a list of attributes.
+pub type ChunkData = Vec<Attr>;
 
-// block level offset
+// chunk level offset
 const OFFSET_START_N_RECORDS: usize = 0;
 const OFFSET_END_N_RECORDS: usize = 2;
 const OFFSET_START_N_ATTRS: usize = 4;
 const OFFSET_END_N_ATTRS: usize = 6;
 const OFFSET_START_ATTR_HDR: usize = 16;
 
-/// RawBlock is the serialized byte format of Block, which could
+/// RawChunk is the serialized byte format of Chunk, which could
 /// be written directly to disk, and could be also read
 /// directly from disk.
 #[derive(Clone)]
-pub struct RawBlock {
+pub struct RawChunk {
     /// Reference counted byte array.
     /// All data derived from this byte array must clone the
     /// reference counter to make sure data is immutable and
@@ -130,7 +130,7 @@ pub struct RawBlock {
     inner: Arc<[u8]>,
 }
 
-impl RawBlock {
+impl RawChunk {
     #[inline]
     pub fn new(bytes: Arc<[u8]>) -> Self {
         Self { inner: bytes }
@@ -174,9 +174,9 @@ impl RawBlock {
         Some(attr_header)
     }
 
-    /// Load a new block with all attributes.
+    /// Load a new chunk with all attributes.
     #[inline]
-    pub fn load_all(&self) -> Result<Block> {
+    pub fn load_all(&self) -> Result<Chunk> {
         let n_records = self.n_records();
         let n_attrs = self.n_attrs() as usize;
         let mut data = Vec::with_capacity(n_attrs);
@@ -185,40 +185,40 @@ impl RawBlock {
             let attr = Attr::load(&self.inner, n_records, &header)?;
             data.push(attr);
         }
-        Ok(Block::new(n_records, data))
+        Ok(Chunk::new(n_records, data))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::Single;
-    use crate::sel::Sel;
+    use crate::col::codec::Single;
+    use crate::col::sel::Sel;
+    use doradb_datatype::PreciseType;
     use std::io::Cursor;
     use std::sync::Arc;
-    use doradb_datatype::PreciseType;
 
     #[test]
-    fn test_block_single_store_and_load() {
+    fn test_chunk_single_store_and_load() {
         let attr1 = Attr::new_null(PreciseType::i32(), 1024);
         let attr2 = Attr::new_single(PreciseType::i32(), Single::new(1i32, 1024), Sel::All(1024));
-        let block = Block::new(1024, vec![attr1, attr2]);
+        let chunk = Chunk::new(1024, vec![attr1, attr2]);
         let mut bs: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut bs);
         let mut buf = Vec::with_capacity(4096);
-        let ser_block = block.ser();
-        let total_bytes = ser_block.ser_bytes;
-        let written = ser_block.store(&mut cursor, &mut buf).unwrap();
+        let ser_chunk = chunk.ser();
+        let total_bytes = ser_chunk.ser_bytes;
+        let written = ser_chunk.store(&mut cursor, &mut buf).unwrap();
         assert_eq!(total_bytes, written);
-        let raw_block = RawBlock::new(Arc::from(bs.into_boxed_slice()));
-        assert_eq!(written, raw_block.n_bytes());
-        assert_eq!(1024, raw_block.n_records());
-        assert_eq!(2, raw_block.n_attrs());
-        let new_block = raw_block.load_all().unwrap();
-        let attr1_new = &new_block.data[0];
+        let raw_chunk = RawChunk::new(Arc::from(bs.into_boxed_slice()));
+        assert_eq!(written, raw_chunk.n_bytes());
+        assert_eq!(1024, raw_chunk.n_records());
+        assert_eq!(2, raw_chunk.n_attrs());
+        let new_chunk = raw_chunk.load_all().unwrap();
+        let attr1_new = &new_chunk.data[0];
         assert_eq!(PreciseType::i32(), attr1_new.ty);
         assert!(attr1_new.validity.is_none() && attr1_new.sma.is_none());
-        let attr2_new = &new_block.data[1];
+        let attr2_new = &new_chunk.data[1];
         assert_eq!(PreciseType::i32(), attr2_new.ty);
         assert!(attr2_new.validity.is_all());
         let value = attr2_new.codec.as_single().unwrap().view::<i32>();
@@ -226,29 +226,29 @@ mod tests {
     }
 
     #[test]
-    fn test_block_array_store_and_load() {
+    fn test_chunk_array_store_and_load() {
         let data1: Vec<i32> = (0i32..1024).collect();
         let attr1 = Attr::from(data1.clone().into_iter());
         let attr2 = Attr::from_iter(data1.iter().map(|v| Some(*v)));
-        let block = Block::new(1024, vec![attr1, attr2]);
+        let chunk = Chunk::new(1024, vec![attr1, attr2]);
         let mut bs: Vec<u8> = vec![];
         let mut cursor = Cursor::new(&mut bs);
         let mut buf = Vec::with_capacity(4096);
-        let ser_block = block.ser();
-        let total_bytes = ser_block.ser_bytes;
-        let written = ser_block.store(&mut cursor, &mut buf).unwrap();
+        let ser_chunk = chunk.ser();
+        let total_bytes = ser_chunk.ser_bytes;
+        let written = ser_chunk.store(&mut cursor, &mut buf).unwrap();
         assert_eq!(total_bytes, written);
-        let raw_block = RawBlock::new(Arc::from(bs.into_boxed_slice()));
-        assert_eq!(written, raw_block.n_bytes());
-        assert_eq!(1024, raw_block.n_records());
-        assert_eq!(2, raw_block.n_attrs());
-        let new_block = raw_block.load_all().unwrap();
-        let attr1_new = &new_block.data[0];
+        let raw_chunk = RawChunk::new(Arc::from(bs.into_boxed_slice()));
+        assert_eq!(written, raw_chunk.n_bytes());
+        assert_eq!(1024, raw_chunk.n_records());
+        assert_eq!(2, raw_chunk.n_attrs());
+        let new_chunk = raw_chunk.load_all().unwrap();
+        let attr1_new = &new_chunk.data[0];
         assert_eq!(PreciseType::i32(), attr1_new.ty);
         assert!(attr1_new.validity.is_all() && attr1_new.sma.is_none());
         let arr1 = attr1_new.codec.as_array().unwrap().cast_slice::<i32>();
         assert_eq!(&data1, arr1);
-        let attr2_new = &new_block.data[1];
+        let attr2_new = &new_chunk.data[1];
         assert_eq!(PreciseType::i32(), attr2_new.ty);
         assert!(!attr2_new.validity.is_all() && attr2_new.sma.is_none());
         let arr2 = attr2_new.codec.as_array().unwrap().cast_slice::<i32>();

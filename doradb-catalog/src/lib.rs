@@ -3,11 +3,11 @@ pub mod mem_impl;
 
 use crate::error::Result;
 use bitflags::bitflags;
+use doradb_datatype::PreciseType;
 use semistr::SemiStr;
 use std::fmt;
 use std::hash::Hash;
 use std::marker::PhantomData;
-use doradb_datatype::PreciseType;
 
 /// Catalog maintains metadata of all database objects.
 /// It could be shared between threads.

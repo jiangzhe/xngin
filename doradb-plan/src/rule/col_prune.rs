@@ -1,11 +1,13 @@
 use crate::error::{Error, Result};
 use crate::lgc::{Location, Op, OpKind, OpMutVisitor, OpVisitor, ProjCol, QuerySet, Subquery};
 use crate::rule::RuleEffect;
+use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
+use doradb_expr::{
+    Col, ColIndex, ColKind, ExprExt, ExprKind, ExprMutVisitor, ExprVisitor, QueryID,
+};
 use fnv::FnvHashMap;
 use std::collections::BTreeMap;
 use std::mem;
-use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use doradb_expr::{Col, ColIndex, ColKind, ExprKind, ExprExt, ExprMutVisitor, ExprVisitor, QueryID};
 
 /// Column pruning will remove unnecessary columns from the given plan.
 /// It is invoked top down. First collect all output columns from current

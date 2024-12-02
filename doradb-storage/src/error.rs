@@ -1,6 +1,6 @@
+use doradb_datatype::error::Error as DataTypeError;
 use std::array::TryFromSliceError;
 use thiserror::Error;
-use doradb_datatype::error::Error as DataTypeError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -10,6 +10,8 @@ pub enum Error {
     InvalidArgument,
     #[error("internal error")]
     InternalError,
+    #[error("invalid state")]
+    InvalidState,
     #[error("Invalid format")]
     InvalidFormat,
     #[error("Checksum mismatch")]
@@ -33,6 +35,8 @@ pub enum Error {
     InsufficientBufferPool(u64),
     #[error("page id out of bound({0})")]
     PageIdOutOfBound(u64),
+    #[error("empty free list of buffer pool")]
+    EmptyFreeListOfBufferPool,
     // latch errors
     #[error("retry latch")]
     RetryLatch,

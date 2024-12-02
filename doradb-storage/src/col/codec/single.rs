@@ -1,4 +1,4 @@
-use crate::repr::ByteRepr;
+use crate::col::repr::ByteRepr;
 use smallvec::{smallvec, SmallVec};
 
 /// Single codec encodes single value as bytes in case all

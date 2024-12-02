@@ -5,12 +5,12 @@ use crate::lgc::op::{Op, OpKind, SortItem};
 use crate::lgc::query::QuerySet;
 use crate::lgc::LgcPlan;
 use aosa::StringArena;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 use doradb_catalog::Catalog;
 use doradb_datatype::{self as datatype, TimeUnit, DEFAULT_DATE_FORMAT};
 use doradb_expr::{self as expr, ColKind, Const, ExprKind, Farg, FuncKind, PredFuncKind, QueryID};
 use doradb_sql::ast::*;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 
 #[inline]
 pub fn reflect<'a, C: Catalog>(

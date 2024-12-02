@@ -1,8 +1,8 @@
 use crate::error::{Error, Result};
 use crate::lgc::op::{Op, OpKind};
 use crate::lgc::ProjCol;
-use std::ops::{Deref, DerefMut};
 use doradb_expr::{QueryID, Setq};
+use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Clone)]
 pub struct Setop {

@@ -1,10 +1,10 @@
 use crate::error::{Error, Result};
 use crate::{BinaryEval, UnaryEval};
 use doradb_datatype::PreciseType;
-use doradb_storage::attr::Attr;
-use doradb_storage::bitmap::Bitmap;
-use doradb_storage::codec::{Codec, Single};
-use doradb_storage::sel::Sel;
+use doradb_storage::col::attr::Attr;
+use doradb_storage::col::bitmap::Bitmap;
+use doradb_storage::col::codec::{Codec, Single};
+use doradb_storage::col::sel::Sel;
 
 /// Kinds of arithmetic expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -11,14 +11,14 @@ mod setop;
 use crate::error::Result;
 pub use builder::LgcBuilder;
 pub use col::ProjCol;
-pub use op::*;
-pub use query::{Location, QryIDs, QuerySet, Subquery};
-pub use reflect::reflect;
-pub use setop::{Setop, SetopKind, SubqOp};
 use doradb_catalog::Catalog;
 use doradb_expr::controlflow::ControlFlow;
 use doradb_expr::{GlobalID, QueryID};
 use doradb_sql::ast::QueryExpr;
+pub use op::*;
+pub use query::{Location, QryIDs, QuerySet, Subquery};
+pub use reflect::reflect;
+pub use setop::{Setop, SetopKind, SubqOp};
 
 /// LgcPlan represents a self-contained logical plan with
 /// complete information about all its nodes.
@@ -95,12 +95,12 @@ impl OpVisitor for ShapeGen<'_> {
 pub(crate) mod tests {
     use super::*;
     use crate::join::{Join, JoinGraph, QualifiedJoin};
-    use std::collections::HashMap;
     use doradb_catalog::mem_impl::MemCatalog;
     use doradb_catalog::{Catalog, ColumnAttr, ColumnSpec, TableID, TableSpec};
     use doradb_datatype::{Collation, PreciseType};
     use doradb_sql::parser::dialect::MySQL;
     use doradb_sql::parser::parse_query;
+    use std::collections::HashMap;
 
     macro_rules! plan_shape {
     ( $($ok:ident),* ) => {

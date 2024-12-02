@@ -11,12 +11,12 @@ use crate::error::Error;
 use crate::join::{Join, JoinGraph, JoinKind, JoinOp, QualifiedJoin};
 use crate::lgc::col::ProjCol;
 use crate::lgc::setop::{Setop, SetopKind, SubqOp};
-use semistr::SemiStr;
-use smallvec::{smallvec, SmallVec};
-use std::collections::HashSet;
 use doradb_catalog::{SchemaID, TableID};
 use doradb_expr::controlflow::ControlFlow;
 use doradb_expr::{Effect, ExprKind, GlobalID, QueryID, Setq, INVALID_GLOBAL_ID};
+use semistr::SemiStr;
+use smallvec::{smallvec, SmallVec};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Default)]
 pub struct Op {

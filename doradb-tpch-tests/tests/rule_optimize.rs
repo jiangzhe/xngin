@@ -1,4 +1,3 @@
-use std::time::Instant;
 use doradb_catalog::Catalog;
 use doradb_plan::explain::{Explain, ExplainConf};
 use doradb_plan::lgc::LgcPlan;
@@ -6,6 +5,7 @@ use doradb_plan::rule::rule_optimize;
 use doradb_sql::parser::dialect::Ansi;
 use doradb_sql::parser::parse_query_verbose;
 use doradb_tpch_tests::tpch_catalog;
+use std::time::Instant;
 
 #[test]
 fn test_tpch_rule_optimize1() {

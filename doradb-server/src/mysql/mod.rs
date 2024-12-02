@@ -5,13 +5,13 @@ pub mod signal;
 use crate::mysql::serve_tcp::ServeTCP;
 use async_executor::Executor;
 use async_io::block_on;
+use doradb_catalog::Catalog;
+use doradb_protocol::mysql::error::{Error, Result};
+use doradb_protocol::mysql::ServerSpec;
 use easy_parallel::Parallel;
 use flume::{Receiver, Sender};
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
-use doradb_catalog::Catalog;
-use doradb_protocol::mysql::error::{Error, Result};
-use doradb_protocol::mysql::ServerSpec;
 
 const DEFAULT_SERVER_THREADS: usize = 1;
 
@@ -77,11 +77,11 @@ mod tests {
     use super::*;
     use crate::mysql::serve_tcp::ServeTCP;
     use async_io::{block_on, Timer};
-    use std::thread;
-    use std::time::Duration;
     use doradb_catalog::mem_impl::MemCatalog;
     use doradb_protocol::buf::ByteBuffer;
     use doradb_protocol::mysql::conn::TcpClientOpts;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn test_server_start() -> Result<()> {

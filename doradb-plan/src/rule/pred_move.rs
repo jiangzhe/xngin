@@ -2,16 +2,16 @@ use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::lgc::{Op, OpKind, OpMutVisitor, ProjCol, QuerySet, SetopKind};
 use crate::rule::op_id::assign_id;
+use doradb_catalog::{Catalog, Key, TableID, TblCol};
+use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
+use doradb_expr::{
+    Col, ColIndex, ColKind, Const, ExprExt, ExprKind, ExprMutVisitor, ExprVisitor, FnlDep,
+    GlobalID, Pred, PredFuncKind, QryCol, QueryID,
+};
 use smallvec::{smallvec, SmallVec};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::mem;
-use doradb_catalog::{Catalog, Key, TableID, TblCol};
-use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use doradb_expr::{
-    Col, ColIndex, ColKind, Const, ExprKind, ExprExt, ExprMutVisitor, ExprVisitor, FnlDep, GlobalID, Pred,
-    PredFuncKind, QueryID, QryCol,
-};
 
 /// Predicate Movearound
 ///
@@ -67,7 +67,7 @@ pub struct PredMap {
     pub(super) qry_col_map: HashMap<QryCol, GlobalID>,
     // note that same table can be referred in a query multiple times.
     // so global id is stored in a set.
-    pub(super) tbl_col_map: HashMap<TblCol, HashSet<GlobalID>>, 
+    pub(super) tbl_col_map: HashMap<TblCol, HashSet<GlobalID>>,
     pub(super) col_map: HashMap<GlobalID, Col>,
     pub(super) tbl_dep_map: HashMap<TblCol, Vec<Vec<TblCol>>>,
     // pub(super) tbl_occurrence: HashMap<TableID, usize>,
@@ -88,11 +88,10 @@ impl PredMap {
     #[inline]
     pub(super) fn merge_inner(&mut self, op_id: GlobalID, mut inner: InnerSet) {
         if inner.is_empty() {
-            return
+            return;
         }
         match self.inner.entry(op_id) {
             Entry::Occupied(occ) => {
-                
                 inner.merge(occ.remove());
                 self.inner.insert(op_id, inner);
             }
@@ -103,9 +102,13 @@ impl PredMap {
     }
 
     #[inline]
-    pub(super) fn extract_and_merge_inner(&mut self, op_id: GlobalID, mut inner: InnerSet) -> InnerSet {
+    pub(super) fn extract_and_merge_inner(
+        &mut self,
+        op_id: GlobalID,
+        mut inner: InnerSet,
+    ) -> InnerSet {
         if inner.is_empty() {
-            return self.remove_inner(op_id)
+            return self.remove_inner(op_id);
         }
         match self.inner.entry(op_id) {
             Entry::Occupied(occ) => {
@@ -259,7 +262,8 @@ impl InnerSet {
         // retain different eq set.
         let mut intersection: Vec<GlobalID> = vec![];
         for eq_set in &mut self.eq_sets {
-            if eq_set.len() > 1 { // skip if eq set is not meaningless.
+            if eq_set.len() > 1 {
+                // skip if eq set is not meaningless.
                 for other_set in &other.eq_sets {
                     intersection.clear();
                     intersection.extend(eq_set.intersection(other_set));
@@ -588,7 +592,10 @@ impl PredExpr {
     }
 
     #[inline]
-    pub(super) fn replace_cols_with_exprs(&self, c2e: &HashMap<GlobalID, ExprKind>) -> Option<Self> {
+    pub(super) fn replace_cols_with_exprs(
+        &self,
+        c2e: &HashMap<GlobalID, ExprKind>,
+    ) -> Option<Self> {
         match self {
             PredExpr::OneCol(_, e) | PredExpr::Other(e) => {
                 let mut new_e = e.clone();
@@ -611,10 +618,8 @@ impl PredExpr {
             PredExpr::TwoColEq(gid1, gid2) => {
                 if let Some(e1) = c2e.get(gid1) {
                     if let Some(e2) = c2e.get(gid2) {
-                        let new_e = ExprKind::pred_func(
-                            PredFuncKind::Equal,
-                            vec![e1.clone(), e2.clone()],
-                        );
+                        let new_e =
+                            ExprKind::pred_func(PredFuncKind::Equal, vec![e1.clone(), e2.clone()]);
                         return Some(new_e.into());
                     }
                 }
@@ -652,7 +657,10 @@ impl PredExpr {
             }
             PredExpr::ColEqConst(gid, cst) => {
                 if let Some(c) = col_map.get(&gid) {
-                    Some(ExprKind::pred_func(PredFuncKind::Equal, vec![ExprKind::Col(c.clone()), ExprKind::Const(cst)]))
+                    Some(ExprKind::pred_func(
+                        PredFuncKind::Equal,
+                        vec![ExprKind::Col(c.clone()), ExprKind::Const(cst)],
+                    ))
                 } else {
                     None
                 }
@@ -660,7 +668,10 @@ impl PredExpr {
             PredExpr::TwoColEq(gid1, gid2) => {
                 if let Some(c1) = col_map.get(&gid1) {
                     if let Some(c2) = col_map.get(&gid2) {
-                        return Some(ExprKind::pred_func(PredFuncKind::Equal, vec![ExprKind::Col(c1.clone()), ExprKind::Col(c2.clone())]));
+                        return Some(ExprKind::pred_func(
+                            PredFuncKind::Equal,
+                            vec![ExprKind::Col(c1.clone()), ExprKind::Col(c2.clone())],
+                        ));
                     }
                 }
                 None
@@ -1304,7 +1315,11 @@ impl<C: Catalog> PredPullup<'_, C> {
                     let dep = ExprKind::tbl_fnl_dep(table_id, col_idx, k_exprs.clone());
                     inner.handle_dep(gid, dep);
                     let tbl_col = TblCol(table_id, col_idx);
-                    self.pred_map.tbl_dep_map.entry(tbl_col).or_default().push(k_cols.clone());
+                    self.pred_map
+                        .tbl_dep_map
+                        .entry(tbl_col)
+                        .or_default()
+                        .push(k_cols.clone());
                 }
             }
         }
@@ -1450,10 +1465,16 @@ impl<C: Catalog> OpMutVisitor for PredPullup<'_, C> {
                 &aggr.proj,
                 mem::take(&mut aggr.filt),
             ),
-            OpKind::Proj { input, .. } | OpKind::Sort { input, limit: None, .. } => {
-                self.pullup_base(op.id, input.id)
-            }
-            OpKind::Limit { input, .. } | OpKind::Sort {input, limit: Some(_), ..} => self.pullup_limit(op.id, input.id),
+            OpKind::Proj { input, .. }
+            | OpKind::Sort {
+                input, limit: None, ..
+            } => self.pullup_base(op.id, input.id),
+            OpKind::Limit { input, .. }
+            | OpKind::Sort {
+                input,
+                limit: Some(_),
+                ..
+            } => self.pullup_limit(op.id, input.id),
             OpKind::JoinGraph(_) => unreachable!(),
             OpKind::Attach(..) | OpKind::Empty => todo!(),
         }
@@ -1596,7 +1617,7 @@ impl ExprMutVisitor for RewriteExprIn<'_> {
 
     #[inline]
     fn leave(&mut self, e: &mut ExprKind) -> ControlFlow<(), ()> {
-        if let ExprKind::Col(Col{gid, ..}) = e {
+        if let ExprKind::Col(Col { gid, .. }) = e {
             if let Some(new_e) = self.0.get(gid) {
                 *e = new_e.clone();
             }
@@ -1644,7 +1665,10 @@ impl<'a> ExprVisitor<'a> for CollectColMapping<'a> {
                         self.qry_col_map.insert(QryCol(*qid, *idx), *gid);
                     }
                     ColKind::Table(table_id, ..) => {
-                        self.tbl_col_map.entry(TblCol(*table_id, *idx)).or_default().insert(*gid);
+                        self.tbl_col_map
+                            .entry(TblCol(*table_id, *idx))
+                            .or_default()
+                            .insert(*gid);
                     }
                     _ => (),
                 }
@@ -1782,9 +1806,6 @@ struct DepCols {
     qry: HashMap<QueryID, HashSet<ColIndex>>,
     tbl: HashMap<TableID, HashSet<ColIndex>>,
 }
-
-
-
 
 #[cfg(test)]
 mod tests {

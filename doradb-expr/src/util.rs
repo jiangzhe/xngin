@@ -1,11 +1,11 @@
 use crate::controlflow::{Branch, ControlFlow, Unbranch};
 use crate::error::{Error, Result};
 use crate::{Col, ColKind, ExprKind, ExprMutVisitor, FuncKind, Pred, PredFuncKind};
+use doradb_catalog::ColIndex;
+use doradb_datatype::{Collation, PreciseType, Typed};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::mem;
-use doradb_catalog::ColIndex;
-use doradb_datatype::{Collation, PreciseType, Typed};
 
 use std::hash::{Hash, Hasher};
 

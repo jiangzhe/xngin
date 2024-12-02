@@ -1,19 +1,19 @@
 use crate::error::{Error, Result};
 use crate::eval::{Eval, EvalBuilder, EvalRef};
 
-use std::mem;
 use doradb_catalog::{ColIndex, TableID};
 use doradb_expr::{DataSourceID, ExprKind, QueryID, TypeInferer};
-use doradb_storage::attr::Attr;
-use doradb_storage::block::Block;
-use doradb_storage::sel::Sel;
+use doradb_storage::col::attr::Attr;
+use doradb_storage::col::chunk::Chunk;
+use doradb_storage::col::sel::Sel;
+use std::mem;
 
 pub type TableEvalPlan = EvalPlan<TableID>;
 pub type QueryEvalPlan = EvalPlan<QueryID>;
 
 /// Evaluation Plan.
 ///
-/// It is designed to support scalar expression evaluation within block.
+/// It is designed to support scalar expression evaluation within chunk.
 /// The plan evaluates all expressions in order, ensuring any common expression
 /// be evaluated only once.
 /// For example, if we have expressions: `abs(c0)`, `abs(c0)+1`, `abs(c0)+2`,
@@ -57,17 +57,17 @@ impl<T: DataSourceID> EvalPlan<T> {
         EvalBuilder::new(inferer).with_filter(exprs, cond_expr)
     }
 
-    /// Evaluate one block.
+    /// Evaluate one chunk.
     #[inline]
-    pub fn eval(&self, block: &Block) -> Result<Vec<Attr>> {
-        assert!(block.data.len() >= self.input.len());
+    pub fn eval(&self, chunk: &Chunk) -> Result<Vec<Attr>> {
+        assert!(chunk.data.len() >= self.input.len());
         let mut cache: EvalCache = (0..self.evals.len())
             .map(|_| CacheEntry::default())
             .collect();
         let (sel, evals) = if let Some(sel_idx) = self.sel_idx {
             // Evaluate filter first
             for (e, idx) in &self.evals[..=sel_idx] {
-                e.eval(block, &mut cache, *idx, None)?;
+                e.eval(chunk, &mut cache, *idx, None)?;
             }
             let sel = cache
                 .get(sel_idx)
@@ -80,19 +80,19 @@ impl<T: DataSourceID> EvalPlan<T> {
         };
         // Evaluate all expressions
         for (e, idx) in evals {
-            e.eval(block, &mut cache, *idx, sel.as_ref())?;
+            e.eval(chunk, &mut cache, *idx, sel.as_ref())?;
         }
         // fetch output from cache
-        self.output(block, cache, sel)
+        self.output(chunk, cache, sel)
     }
 
     #[inline]
-    fn output(&self, block: &Block, mut cache: EvalCache, sel: Option<Sel>) -> Result<Vec<Attr>> {
+    fn output(&self, chunk: &Chunk, mut cache: EvalCache, sel: Option<Sel>) -> Result<Vec<Attr>> {
         let mut output = Vec::with_capacity(self.output.len());
         for r in &self.output {
             match r {
                 EvalRef::Input(idx) => {
-                    let attr = block
+                    let attr = chunk
                         .data
                         .get(*idx)
                         .map(|attr| {

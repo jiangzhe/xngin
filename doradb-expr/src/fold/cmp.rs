@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::{Const, ExprKind};
-use std::cmp::Ordering;
 use doradb_datatype::AlignPartialOrd;
+use std::cmp::Ordering;
 
 macro_rules! impl_fold_cmp {
     ( $fn:ident, $fnc:ident, $($e:pat),* ) => {

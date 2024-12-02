@@ -9,13 +9,13 @@ use crate::lgc::scope::{Scope, Scopes};
 use crate::lgc::setop::{SetopKind, SubqOp};
 use crate::lgc::LgcPlan;
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
-use semistr::SemiStr;
 use doradb_catalog::{Catalog, ColIndex, SchemaID, TableID};
 use doradb_expr::controlflow::ControlFlow;
 use doradb_expr::{
-    self as expr, ExprKind, ExprExt, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind,
+    self as expr, ExprExt, ExprKind, ExprMutVisitor, Plhd, PredFuncKind, QueryID, Setq, SubqKind,
 };
 use doradb_sql::ast::*;
+use semistr::SemiStr;
 
 pub struct LgcBuilder<'a, C: Catalog> {
     catalog: &'a C,

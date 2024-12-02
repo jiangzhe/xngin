@@ -1,4 +1,4 @@
-use crate::expr::{ExprKind, Col, ColKind};
+use crate::expr::{Col, ColKind, ExprKind};
 use crate::id::QueryID;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -64,15 +64,9 @@ impl<'a> ExprVisitor<'a> for CollectQryIDs<'_> {
 
 /// Extended opeartions on ExprKind.
 pub trait ExprExt {
-    fn walk<'a, V: ExprVisitor<'a>>(
-        &'a self,
-        visitor: &mut V,
-    ) -> ControlFlow<V::Break, V::Cont>;
+    fn walk<'a, V: ExprVisitor<'a>>(&'a self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont>;
 
-    fn walk_mut<V: ExprMutVisitor>(
-        &mut self,
-        visitor: &mut V,
-    ) -> ControlFlow<V::Break, V::Cont>;
+    fn walk_mut<V: ExprMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont>;
 
     fn collect_non_aggr_cols(&self) -> (Vec<Col>, bool);
 
@@ -86,11 +80,7 @@ pub trait ExprExt {
 }
 
 impl ExprExt for ExprKind {
-    
-    fn walk<'a, V: ExprVisitor<'a>>(
-        &'a self,
-        visitor: &mut V,
-    ) -> ControlFlow<V::Break, V::Cont> {
+    fn walk<'a, V: ExprVisitor<'a>>(&'a self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
         let mut eff = visitor.enter(self)?;
         for c in self.args() {
             eff.merge(c.walk(visitor)?)
@@ -99,10 +89,7 @@ impl ExprExt for ExprKind {
         ControlFlow::Continue(eff)
     }
 
-    fn walk_mut<V: ExprMutVisitor>(
-        &mut self,
-        visitor: &mut V,
-    ) -> ControlFlow<V::Break, V::Cont> {
+    fn walk_mut<V: ExprMutVisitor>(&mut self, visitor: &mut V) -> ControlFlow<V::Break, V::Cont> {
         let mut eff = visitor.enter(self)?;
         for c in self.args_mut() {
             eff.merge(c.walk_mut(visitor)?)

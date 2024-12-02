@@ -1,5 +1,5 @@
-use std::ops::Deref;
 use doradb_catalog::ColIndex;
+use std::ops::Deref;
 
 /// ColIndex wraps u32 to be the index of column in current table/subquery.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

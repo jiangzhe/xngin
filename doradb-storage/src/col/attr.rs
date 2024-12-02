@@ -1,16 +1,16 @@
-use crate::alloc::align_u128;
-use crate::array::Array;
-use crate::bitmap::Bitmap;
-use crate::codec::{Codec, Single};
+use crate::col::alloc::align_u128;
+use crate::col::array::Array;
+use crate::col::bitmap::Bitmap;
+use crate::col::codec::{Codec, Single};
+use crate::col::repr::ByteRepr;
+use crate::col::sel::Sel;
+use crate::col::sma::{PosKind, PosTbl, SMA};
 use crate::error::{Error, Result};
-use crate::repr::ByteRepr;
-use crate::sel::Sel;
-use crate::sma::{PosKind, PosTbl, SMA};
 use bitflags::bitflags;
+use doradb_datatype::{PreciseType, StaticTyped};
 use smallvec::SmallVec;
 use std::io;
 use std::sync::Arc;
-use doradb_datatype::{PreciseType, StaticTyped};
 
 // attribute header level offset
 const ATTR_HDR_OFFSET_START_FMT: usize = 0;

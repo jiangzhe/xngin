@@ -1,9 +1,9 @@
-use semistr::SemiStr;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 use doradb_catalog::TableID;
 use doradb_datatype::PreciseType;
 use doradb_expr::{ColIndex, ExprKind, GlobalID, QryCol, QueryID};
+use semistr::SemiStr;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjCol {

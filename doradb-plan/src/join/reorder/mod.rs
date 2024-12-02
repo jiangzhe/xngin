@@ -6,11 +6,11 @@ use crate::error::{Error, Result};
 use crate::join::graph::{Edge, Graph, VertexSet};
 use crate::join::{JoinKind, JoinOp};
 use crate::lgc::{LgcPlan, Op, OpKind, OpMutVisitor, QuerySet};
+use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
+use doradb_expr::QueryID;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem;
-use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use doradb_expr::QueryID;
 
 // Export GOO algorithm
 pub use greedy::Goo;

@@ -1,18 +1,21 @@
 use crate::error::{Error, Result};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
-use crate::lgc::{Op, OpKind, OpVisitor, ProjCol, QryIDs, QuerySet, Aggr};
+use crate::lgc::{Aggr, Op, OpKind, OpVisitor, ProjCol, QryIDs, QuerySet};
 use crate::rule::expr_simplify::{simplify_nested, NullCoalesce};
-use crate::rule::pred_move::{InnerSet, PredMap, CollectColMapping, RewriteExprIn};
 use crate::rule::op_id::assign_id;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
-use std::mem;
-use std::hash::Hash;
-use std::cell::RefCell;
+use crate::rule::pred_move::{CollectColMapping, InnerSet, PredMap, RewriteExprIn};
 use doradb_catalog::{TableID, TblCol};
 use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
 use doradb_expr::fold::Fold;
-use doradb_expr::{Col, ColKind, ColIndex, ExprKind, ExprExt, ExprVisitor, FnlDep, GlobalID, PredFuncKind, QueryID, QryCol};
+use doradb_expr::{
+    Col, ColIndex, ColKind, ExprExt, ExprKind, ExprVisitor, FnlDep, GlobalID, PredFuncKind, QryCol,
+    QueryID,
+};
+use std::cell::RefCell;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+use std::mem;
 
 #[inline]
 pub fn pred_pushdown(qry_set: &mut QuerySet, qry_id: QueryID, col_id: &mut GlobalID) -> Result<()> {
@@ -20,22 +23,41 @@ pub fn pred_pushdown(qry_set: &mut QuerySet, qry_id: QueryID, col_id: &mut Globa
     let inner = InnerSet::default();
     let mut max_op_id = assign_id(qry_set, qry_id)?;
     collect_cols(qry_set, qry_id, &mut pred_map)?;
-    pushdown_pred(qry_set, qry_id, &mut pred_map, &mut max_op_id, col_id, inner)?;
+    pushdown_pred(
+        qry_set,
+        qry_id,
+        &mut pred_map,
+        &mut max_op_id,
+        col_id,
+        inner,
+    )?;
     Ok(())
 }
 
 #[inline]
 fn collect_cols(qry_set: &mut QuerySet, qry_id: QueryID, pred_map: &mut PredMap) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
-        let mut cc = CollectCols { qry_set, pred_map};
+        let mut cc = CollectCols { qry_set, pred_map };
         op.walk(&mut cc).unbranch()
     })?
 }
 
 #[inline]
-fn pushdown_pred(qry_set: &mut QuerySet, qry_id: QueryID, pred_map: &mut PredMap, op_id: &mut GlobalID, col_id: &mut GlobalID, inner: InnerSet) -> Result<()> {
+fn pushdown_pred(
+    qry_set: &mut QuerySet,
+    qry_id: QueryID,
+    pred_map: &mut PredMap,
+    op_id: &mut GlobalID,
+    col_id: &mut GlobalID,
+    inner: InnerSet,
+) -> Result<()> {
     qry_set.transform_op(qry_id, |qry_set, _, op| {
-        let mut ppd = PredPushdown { qry_set, pred_map, op_id, col_id };
+        let mut ppd = PredPushdown {
+            qry_set,
+            pred_map,
+            op_id,
+            col_id,
+        };
         ppd.push(op, inner)
     })?
 }
@@ -48,13 +70,17 @@ struct PredPushdown<'a> {
 }
 
 impl PredPushdown<'_> {
-
     /// push inner set to node.
     #[inline]
     pub fn push(&mut self, op: &mut Op, mut inner: InnerSet) -> Result<()> {
         inner = self.pred_map.extract_and_merge_inner(op.id, inner);
         match &mut op.kind {
-            OpKind::Limit{input, ..} | OpKind::Sort{limit: Some(_), input, ..} => {
+            OpKind::Limit { input, .. }
+            | OpKind::Sort {
+                limit: Some(_),
+                input,
+                ..
+            } => {
                 // predicates should not be pushed down to limit or sort operator,
                 // except it originates from downside.
                 let inner = self.push_retain_diff(input, inner)?;
@@ -62,10 +88,10 @@ impl PredPushdown<'_> {
                 if !inner.is_empty() {
                     let filter = self.create_new_filt(mem::take(op), inner);
                     *op = filter;
-                }   
+                }
                 Ok(())
             }
-            OpKind::Proj { input, .. } | OpKind::Sort{input, ..} | OpKind::Attach(input, _) => {
+            OpKind::Proj { input, .. } | OpKind::Sort { input, .. } | OpKind::Attach(input, _) => {
                 self.push_base(input, inner)
             }
             OpKind::Filt { input, pred } => {
@@ -79,12 +105,8 @@ impl PredPushdown<'_> {
                 mem::swap(op, &mut *input);
                 Ok(())
             }
-            OpKind::Query(qry_id) => {
-                self.push_query(*qry_id, inner)
-            }
-            OpKind::Scan(scan) => {
-                self.apply_scan(scan.table_id, &scan.cols, &mut scan.filt, inner)
-            }
+            OpKind::Query(qry_id) => self.push_query(*qry_id, inner),
+            OpKind::Scan(scan) => self.apply_scan(scan.table_id, &scan.cols, &mut scan.filt, inner),
             OpKind::Aggr(aggr) => {
                 if let Some(new_inner) = self.push_aggr(aggr, inner)? {
                     if !new_inner.is_empty() {
@@ -105,7 +127,9 @@ impl PredPushdown<'_> {
             }
             OpKind::Empty => Ok(()),
             OpKind::Row(_) => todo!(), // todo: evaluate immediately
-            OpKind::JoinGraph(_) => unreachable!("Predicates pushdown to join graph is not supported"),
+            OpKind::JoinGraph(_) => {
+                unreachable!("Predicates pushdown to join graph is not supported")
+            }
             OpKind::Join(join) => todo!(),
         }
     }
@@ -142,7 +166,10 @@ impl PredPushdown<'_> {
         }
         // equal set here can always be pushed to child, because
         // columns must be in group items.
-        debug_assert!(inner.eq_sets.iter().all(|eq_set| eq_set_all_included_in_groups(eq_set, &aggr.groups)));
+        debug_assert!(inner
+            .eq_sets
+            .iter()
+            .all(|eq_set| eq_set_all_included_in_groups(eq_set, &aggr.groups)));
         let mut new_inner = InnerSet::default();
         new_inner.eq_sets = mem::take(&mut inner.eq_sets);
         if inner.filt.is_empty() {
@@ -151,7 +178,8 @@ impl PredPushdown<'_> {
         }
         // handle filter
         // expressions with aggregate functions can not be pushed down to child.
-        let (curr_filt, child_filt): (Vec<_>, Vec<_>) = inner.filt.into_iter().partition(|e| e.contains_aggr_func());
+        let (curr_filt, child_filt): (Vec<_>, Vec<_>) =
+            inner.filt.into_iter().partition(|e| e.contains_aggr_func());
         inner.filt = curr_filt;
         new_inner.filt = child_filt;
         self.push(&mut aggr.input, new_inner)?;
@@ -167,9 +195,15 @@ impl PredPushdown<'_> {
         let orig_in = input;
         let mut pred = vec![];
         self.pred_map.apply_inner(new_inner, &mut pred);
-        let filter = OpKind::Filt{pred, input: Box::new(orig_in)};
+        let filter = OpKind::Filt {
+            pred,
+            input: Box::new(orig_in),
+        };
         let op_id = self.op_id.inc_fetch();
-        Op{id: op_id, kind: filter}
+        Op {
+            id: op_id,
+            kind: filter,
+        }
     }
 
     #[inline]
@@ -178,14 +212,17 @@ impl PredPushdown<'_> {
         let in_map: HashMap<GlobalID, ExprKind> = {
             let subq = self.qry_set.get(&qry_id).unwrap();
             let out_cols = subq.out_cols();
-            out_cols.iter()
-            .enumerate()
-            .filter_map(|(i, pc)| {
-                let qry_col = QryCol(qry_id, ColIndex::from(i as u32));
-                self.pred_map.qry_col_map.get(&qry_col)
-                    .map(|gid| (*gid, pc.expr.clone()))
-            })
-            .collect()
+            out_cols
+                .iter()
+                .enumerate()
+                .filter_map(|(i, pc)| {
+                    let qry_col = QryCol(qry_id, ColIndex::from(i as u32));
+                    self.pred_map
+                        .qry_col_map
+                        .get(&qry_col)
+                        .map(|gid| (*gid, pc.expr.clone()))
+                })
+                .collect()
         };
         let mut new_inner = InnerSet::default();
         // translate inner set
@@ -194,7 +231,7 @@ impl PredPushdown<'_> {
             let mut new_expr_set = HashSet::new();
             for gid in eq_set {
                 match &in_map[gid] {
-                    ExprKind::Col(Col{gid, ..}) => {
+                    ExprKind::Col(Col { gid, .. }) => {
                         new_gid_set.insert(*gid);
                     }
                     e => {
@@ -218,7 +255,10 @@ impl PredPushdown<'_> {
                     let gid = new_gid_set.into_iter().next().unwrap();
                     let col = self.pred_map.col_map[&gid].clone();
                     for expr in new_expr_set {
-                        let e = ExprKind::pred_func(PredFuncKind::Equal, vec![ExprKind::Col(col.clone()), expr]);
+                        let e = ExprKind::pred_func(
+                            PredFuncKind::Equal,
+                            vec![ExprKind::Col(col.clone()), expr],
+                        );
                         new_inner.handle_filt(e.into());
                     }
                 }
@@ -228,7 +268,10 @@ impl PredPushdown<'_> {
                     let gid = new_gid_set.iter().next().cloned().unwrap();
                     let col = self.pred_map.col_map[&gid].clone();
                     for expr in new_expr_set {
-                        let e = ExprKind::pred_func(PredFuncKind::Equal, vec![ExprKind::Col(col.clone()), expr]);
+                        let e = ExprKind::pred_func(
+                            PredFuncKind::Equal,
+                            vec![ExprKind::Col(col.clone()), expr],
+                        );
                         new_inner.handle_filt(e.into());
                     }
                     if new_gid_set.len() > 1 {
@@ -247,14 +290,14 @@ impl PredPushdown<'_> {
             for dep in deps {
                 let e = &in_map[gid];
                 if e == dep {
-                    // e.g. SELECT 1 as c1 FROM t1. 
+                    // e.g. SELECT 1 as c1 FROM t1.
                     // functional dependency is c1 -> 1.
                     // If we translate functional dependency back, we got
                     // predicate 1 = 1.
                     // So we check if this can be skipped.
-                    continue
+                    continue;
                 }
-                if let ExprKind::Col(c) = e { 
+                if let ExprKind::Col(c) = e {
                     // still an column, just keep the dependency.
                     // e.g.
                     let new_gid = c.gid;
@@ -263,7 +306,8 @@ impl PredPushdown<'_> {
                     let mut ri = RewriteExprIn(&in_map);
                     let mut new_dep = dep.clone();
                     assert!(new_dep.walk_mut(&mut ri).is_continue());
-                    let new_e = ExprKind::pred_func(PredFuncKind::Equal, vec![e.clone(), new_dep.clone()]);
+                    let new_e =
+                        ExprKind::pred_func(PredFuncKind::Equal, vec![e.clone(), new_dep.clone()]);
                     new_inner.handle_filt(new_e.into());
                 }
             }
@@ -282,33 +326,59 @@ impl PredPushdown<'_> {
             // but root operator of subquery is limit, which can not be pushed.
             // so the predicate will fall back to outer query, and then we create
             // a new filter to hold it.
-            return pushdown_pred(self.qry_set, qry_id, self.pred_map, self.op_id, self.col_id, inner)
+            return pushdown_pred(
+                self.qry_set,
+                qry_id,
+                self.pred_map,
+                self.op_id,
+                self.col_id,
+                inner,
+            );
         }
-        pushdown_pred(self.qry_set, qry_id, self.pred_map, self.op_id, self.col_id, inner)
+        pushdown_pred(
+            self.qry_set,
+            qry_id,
+            self.pred_map,
+            self.op_id,
+            self.col_id,
+            inner,
+        )
     }
 
     #[inline]
-    fn resolve_tbl_dep(&mut self, dep: FnlDep, exported_cols: &HashSet<GlobalID>, eq_sets: &[HashSet<TblCol>]) -> Option<(ExprKind, Col)> {
+    fn resolve_tbl_dep(
+        &mut self,
+        dep: FnlDep,
+        exported_cols: &HashSet<GlobalID>,
+        eq_sets: &[HashSet<TblCol>],
+    ) -> Option<(ExprKind, Col)> {
         let mut key_cols = vec![];
         for key in &dep.keys[..] {
-            if let ExprKind::Col(Col{idx, kind: ColKind::Table(table_id, ..), ..}) = key {
+            if let ExprKind::Col(Col {
+                idx,
+                kind: ColKind::Table(table_id, ..),
+                ..
+            }) = key
+            {
                 let key_tbl_col = TblCol(*table_id, *idx);
                 key_cols.push(key_tbl_col);
             } else {
                 // key is not column, fail.
-                return None
+                return None;
             }
         }
         // check if key match original dependency
-        let orig_keys: Vec<&Vec<TblCol>> = self.pred_map.tbl_dep_map[&dep.tbl_col].iter()
+        let orig_keys: Vec<&Vec<TblCol>> = self.pred_map.tbl_dep_map[&dep.tbl_col]
+            .iter()
             .filter(|key| key.len() == key_cols.len())
             .collect();
-        if orig_keys.is_empty() { // key number mismatch
-            return None
+        if orig_keys.is_empty() {
+            // key number mismatch
+            return None;
         }
         for orig_key in orig_keys {
             if orig_key.len() != key_cols.len() {
-                continue
+                continue;
             }
             let mut perm_keys = permute_keys(orig_key, &eq_sets);
             let mut test_key = Vec::with_capacity(orig_key.len());
@@ -318,12 +388,12 @@ impl PredPushdown<'_> {
                     let gids = &self.pred_map.tbl_col_map[&dep.tbl_col]; // at least one
                     if let Some(gid) = gids.iter().find(|gid| exported_cols.contains(gid)) {
                         let c = self.pred_map.col_map[gid].clone();
-                        return Some((ExprKind::FnlDep(dep), c))
+                        return Some((ExprKind::FnlDep(dep), c));
                     } else {
                         // generate table column with new gid
                         let mut c = self.pred_map.col_map[gids.iter().next().unwrap()].clone();
                         c.gid = self.col_id.inc_fetch();
-                        return Some((ExprKind::FnlDep(dep), c))
+                        return Some((ExprKind::FnlDep(dep), c));
                     }
                 }
             }
@@ -332,7 +402,13 @@ impl PredPushdown<'_> {
     }
 
     #[inline]
-    fn apply_scan(&mut self, table_id: TableID, cols: &[ProjCol], filt: &mut Vec<ExprKind>, inner: InnerSet) -> Result<()> {
+    fn apply_scan(
+        &mut self,
+        table_id: TableID,
+        cols: &[ProjCol],
+        filt: &mut Vec<ExprKind>,
+        inner: InnerSet,
+    ) -> Result<()> {
         assert!(filt.is_empty());
         // convert equal set to filter expression
         for eq_set in &inner.eq_sets {
@@ -341,20 +417,29 @@ impl PredPushdown<'_> {
             let c1 = self.pred_map.col_map[&gid1].clone();
             while let Some(gid2) = eq_set_iter.next() {
                 let c2 = self.pred_map.col_map[&gid2].clone();
-                let e = ExprKind::pred_func(PredFuncKind::Equal, vec![ExprKind::Col(c1.clone()), ExprKind::Col(c2)]);
+                let e = ExprKind::pred_func(
+                    PredFuncKind::Equal,
+                    vec![ExprKind::Col(c1.clone()), ExprKind::Col(c2)],
+                );
                 filt.push(e);
             }
         }
         let exported_cols: HashSet<_> = cols.iter().map(|pc| pc.expr.col_gid().unwrap()).collect();
-        let eq_sets = inner.eq_sets.iter().map(|eq_set| {
-            eq_set.iter().map(|gid| {
-                let col = &self.pred_map.col_map[gid]; // must be table column
-                TblCol(table_id, col.idx)
-            }).collect::<HashSet<_>>()
-        }).collect::<Vec<_>>();
+        let eq_sets = inner
+            .eq_sets
+            .iter()
+            .map(|eq_set| {
+                eq_set
+                    .iter()
+                    .map(|gid| {
+                        let col = &self.pred_map.col_map[gid]; // must be table column
+                        TblCol(table_id, col.idx)
+                    })
+                    .collect::<HashSet<_>>()
+            })
+            .collect::<Vec<_>>();
         // apply filter expression, we need to check if any functional dependency exists.
-        'FILT_LOOP:
-        for p in inner.filt {
+        'FILT_LOOP: for p in inner.filt {
             let fnl_deps = p.find_fnl_dep();
             if fnl_deps.is_empty() {
                 let e = p.into_expr(&self.pred_map.col_map).unwrap(); // won't fail
@@ -367,11 +452,13 @@ impl PredPushdown<'_> {
                         expr_map.insert(dep, col);
                     } else {
                         // drop the predicate if dependency is not resolvable.
-                        continue 'FILT_LOOP
+                        continue 'FILT_LOOP;
                     }
                 }
-                let e = p.replace_exprs_with_cols(&expr_map, &self.pred_map.col_map)
-                    .and_then(|p| p.into_expr(&self.pred_map.col_map)).unwrap();
+                let e = p
+                    .replace_exprs_with_cols(&expr_map, &self.pred_map.col_map)
+                    .and_then(|p| p.into_expr(&self.pred_map.col_map))
+                    .unwrap();
                 filt.push(e);
             }
         }
@@ -382,7 +469,7 @@ impl PredPushdown<'_> {
     fn extract_inner(&mut self, op: &mut Op) -> InnerSet {
         let mut inner = self.pred_map.remove_inner(op.id);
         match &mut op.kind {
-            OpKind::Filt {pred, ..} => {
+            OpKind::Filt { pred, .. } => {
                 for e in mem::take(pred) {
                     inner.handle_filt(e.into());
                 }
@@ -393,13 +480,13 @@ impl PredPushdown<'_> {
                 }
             }
             OpKind::Join(join) => match &mut **join {
-                Join::Qualified(QualifiedJoin{filt, ..}) => {
+                Join::Qualified(QualifiedJoin { filt, .. }) => {
                     for e in mem::take(filt) {
                         inner.handle_filt(e.into());
                     }
                 }
                 _ => (),
-            }
+            },
             OpKind::Scan(scan) => {
                 for e in mem::take(&mut scan.filt) {
                     inner.handle_filt(e.into());
@@ -414,10 +501,10 @@ impl PredPushdown<'_> {
     #[inline]
     fn try_push(&mut self, op: &mut Op, inner: InnerSet) -> Option<InnerSet> {
         if inner.is_empty() {
-            return None
+            return None;
         }
         match &op.kind {
-            OpKind::Limit{..} | OpKind::Sort{limit: Some(_), ..} => {
+            OpKind::Limit { .. } | OpKind::Sort { limit: Some(_), .. } => {
                 // predicate can not be pushed down across limit operator.
                 Some(inner)
             }
@@ -430,7 +517,10 @@ impl PredPushdown<'_> {
 }
 
 #[inline]
-fn permute_keys<'a, T: Clone + Hash + PartialEq + Eq>(key: &'a [T], eq_sets: &'a [HashSet<T>]) -> Permutation<'a, T> {
+fn permute_keys<'a, T: Clone + Hash + PartialEq + Eq>(
+    key: &'a [T],
+    eq_sets: &'a [HashSet<T>],
+) -> Permutation<'a, T> {
     let mut key_sets = vec![];
     for k in key {
         if let Some(eq_set) = eq_sets.iter().find(|s| s.contains(k)) {
@@ -465,13 +555,18 @@ impl<'a, T: Clone> Permutation<'a, T> {
             i -= 1;
             div[i] = n;
         }
-        Permutation{key_sets, div, start_idx: 0, end_idx}
+        Permutation {
+            key_sets,
+            div,
+            start_idx: 0,
+            end_idx,
+        }
     }
 
     #[inline]
     fn next(&mut self, buf: &mut Vec<T>) -> bool {
         if self.start_idx == self.end_idx {
-            return false
+            return false;
         }
         buf.clear();
         let mut idx = self.start_idx;
@@ -480,13 +575,13 @@ impl<'a, T: Clone> Permutation<'a, T> {
             buf.push(key_set[k_idx].clone());
             idx -= k_idx * div;
         }
-        buf.push(self.key_sets[self.key_sets.len()-1][idx].clone());
+        buf.push(self.key_sets[self.key_sets.len() - 1][idx].clone());
         self.start_idx += 1;
         true
     }
 }
 
-struct CollectCols<'a>{
+struct CollectCols<'a> {
     qry_set: &'a mut QuerySet,
     pred_map: &'a mut PredMap,
 }
@@ -520,12 +615,15 @@ impl OpVisitor for CollectCols<'_> {
 #[inline]
 fn eq_set_all_included_in_groups(eq_set: &HashSet<GlobalID>, groups: &[ExprKind]) -> bool {
     eq_set.iter().all(|g| {
-        groups.iter().any(|e| if let ExprKind::Col(Col{gid,..}) = e {
-            gid == g
-        } else { false })
+        groups.iter().any(|e| {
+            if let ExprKind::Col(Col { gid, .. }) = e {
+                gid == g
+            } else {
+                false
+            }
+        })
     })
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -592,7 +690,7 @@ mod tests {
             "select 1 from (select c1 from t1 order by c0 limit 10) x1 where c1 > 0",
             assert_no_filt_on_disk_table,
         );
-        
+
         // todo: as we identify the predicate is always true or false,
         // we can eliminate it or the whole operator subtree.
         //

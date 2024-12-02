@@ -3,11 +3,11 @@ use crate::join::graph::{Edge, EdgeID, Graph, VertexSet};
 use crate::join::{Join, JoinKind, JoinOp, QualifiedJoin};
 use crate::lgc::{Location, Op, OpKind, OpMutVisitor, QuerySet};
 use bitflags::bitflags;
+use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
+use doradb_expr::{ExprExt, ExprKind, QueryID};
 use indexmap::IndexMap;
 use std::collections::HashSet;
 use std::mem;
-use doradb_expr::controlflow::{Branch, ControlFlow, Unbranch};
-use doradb_expr::{ExprKind, ExprExt, QueryID};
 
 bitflags! {
     struct Spec: u8 {

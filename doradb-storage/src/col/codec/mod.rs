@@ -2,8 +2,8 @@ mod single;
 
 use std::sync::Arc;
 
-use crate::array::Array;
-use crate::bitmap::Bitmap;
+use crate::col::array::Array;
+use crate::col::bitmap::Bitmap;
 pub use single::Single;
 
 /// Codec of attributes.

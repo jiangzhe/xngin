@@ -4,9 +4,9 @@ pub mod reorder;
 
 use crate::error::{Error, Result};
 use crate::lgc::{Op, OpKind};
+use doradb_expr::{ExprKind, QueryID};
 use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
-use doradb_expr::{ExprKind, QueryID};
 
 // alias of join graph
 pub use graph::Graph as JoinGraph;

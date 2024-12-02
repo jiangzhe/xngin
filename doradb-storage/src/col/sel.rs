@@ -1,12 +1,12 @@
-use crate::array::Array;
-use crate::attr::Attr;
-use crate::bitmap::Bitmap;
-use crate::codec::{Codec, Single};
+use crate::col::array::Array;
+use crate::col::attr::Attr;
+use crate::col::bitmap::Bitmap;
+use crate::col::codec::{Codec, Single};
 use crate::error::{Error, Result};
+use doradb_datatype::PreciseType;
 use smallvec::SmallVec;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use doradb_datatype::PreciseType;
 
 /// Sel encodes filter indexes into bitmap, single or none.
 #[derive(Debug)]
