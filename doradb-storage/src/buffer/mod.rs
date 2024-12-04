@@ -1,186 +1,19 @@
 pub mod page;
 pub mod ptr;
+pub mod frame;
+pub mod guard;
 
-use super::latch::{HybridGuard, LatchFallbackMode};
-use crate::buffer::page::{Page, PageID, INVALID_PAGE_ID};
-use crate::error::{Error, Result};
-use crate::latch::{GuardState, HybridLatch};
 use libc::{
     c_void, madvise, mmap, munmap, MADV_DONTFORK, MADV_HUGEPAGE, MAP_ANONYMOUS, MAP_FAILED,
     MAP_PRIVATE, PROT_READ, PROT_WRITE,
 };
-use std::cell::{Cell, UnsafeCell};
-use std::marker::PhantomData;
+use crate::buffer::frame::BufferFrame;
+use crate::buffer::page::{PageID, INVALID_PAGE_ID};
+use crate::buffer::guard::{PageGuard, PageExclusiveGuard};
+use crate::latch::LatchFallbackMode;
+use crate::error::{Result, Error, Validation, Validation::{Valid, Invalid}};
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-pub struct BufferFrame {
-    pub page_id: Cell<PageID>,
-    pub latch: HybridLatch, // lock proctects free list and page.
-    pub next_free: UnsafeCell<PageID>,
-    pub page: UnsafeCell<Page>,
-}
-
-pub struct PageGuard<'a, T> {
-    bf: &'a BufferFrame,
-    guard: HybridGuard<'a>,
-    _marker: PhantomData<&'a T>,
-}
-
-impl<'a, T> PageGuard<'a, T> {
-    #[inline]
-    fn new(bf: &'a BufferFrame, guard: HybridGuard<'a>) -> Self {
-        Self {
-            bf,
-            guard,
-            _marker: PhantomData,
-        }
-    }
-
-    #[inline]
-    pub fn page_id(&self) -> PageID {
-        self.bf.page_id.get()
-    }
-
-    #[inline]
-    pub fn shared(mut self) -> Result<PageSharedGuard<'a, T>> {
-        if !self.guard.shared() {
-            return Err(Error::RetryLatch);
-        }
-        Ok(PageSharedGuard {
-            bf: self.bf,
-            guard: self.guard,
-            _marker: PhantomData,
-        })
-    }
-
-    #[inline]
-    pub fn exclusive(mut self) -> Result<PageExclusiveGuard<'a, T>> {
-        if !self.guard.exclusive() {
-            return Err(Error::RetryLatch);
-        }
-        Ok(PageExclusiveGuard {
-            bf: self.bf,
-            guard: self.guard,
-            _marker: PhantomData,
-        })
-    }
-
-    #[inline]
-    pub fn try_exclusive(mut self) -> Result<PageExclusiveGuard<'a, T>> {
-        if !self.guard.try_exclusive() {
-            return Err(Error::RetryLatch);
-        }
-        Ok(PageExclusiveGuard {
-            bf: self.bf,
-            guard: self.guard,
-            _marker: PhantomData,
-        })
-    }
-
-    /// Returns page with optimistic read.
-    /// All values must be validated before use.
-    #[inline]
-    pub fn page(&self) -> &T {
-        unsafe { &*(self.bf.page.get() as *const _ as *const T) }
-    }
-
-    /// Validates the optimistic version.
-    #[inline]
-    pub fn validate(&self) -> Result<()> {
-        if !self.guard.validate() {
-            return Err(Error::RetryLatch);
-        }
-        Ok(())
-    }
-
-    /// Returns a copy of optimistic guard.
-    /// Otherwise fail.
-    #[inline]
-    pub fn copy_keepalive(&self) -> Result<Self> {
-        let guard = self.guard.optimistic_clone()?;
-        Ok(PageGuard {
-            bf: self.bf,
-            guard,
-            _marker: PhantomData,
-        })
-    }
-
-    /// Downgrade read/write lock to optimistic lock.
-    #[inline]
-    pub fn downgrade(&mut self) {
-        self.guard.downgrade(); // convert read/write lock to optimistic lock
-    }
-
-    /// Returns whether the guard is in optimistic mode.
-    #[inline]
-    pub fn is_optimistic(&self) -> bool {
-        self.guard.state == GuardState::Optimistic
-    }
-}
-
-pub struct PageSharedGuard<'a, T> {
-    bf: &'a BufferFrame,
-    guard: HybridGuard<'a>,
-    _marker: PhantomData<&'a T>,
-}
-
-impl<'a, T> PageSharedGuard<'a, T> {
-    /// Convert a page shared guard to optimistic guard
-    /// with long lifetime.
-    #[inline]
-    pub fn downgrade(&mut self) {
-        self.guard.downgrade();
-    }
-
-    #[inline]
-    pub fn page_id(&self) -> PageID {
-        self.bf.page_id.get()
-    }
-
-    /// Returns shared page.
-    #[inline]
-    pub fn page(&self) -> &T {
-        unsafe { &*(self.bf.page.get() as *const _ as *const T) }
-    }
-}
-
-pub struct PageExclusiveGuard<'a, T> {
-    bf: &'a BufferFrame,
-    guard: HybridGuard<'a>,
-    _marker: PhantomData<&'a mut T>,
-}
-
-impl<'a, T> PageExclusiveGuard<'a, T> {
-    /// Convert a page exclusive guard to optimistic guard
-    /// with long lifetime.
-    #[inline]
-    pub fn downgrade(&mut self) {
-        self.guard.downgrade();
-    }
-
-    #[inline]
-    pub fn page_id(&self) -> PageID {
-        self.bf.page_id.get()
-    }
-
-    #[inline]
-    pub fn page(&self) -> &T {
-        unsafe { &*(self.bf.page.get() as *const T) }
-    }
-
-    #[inline]
-    pub fn page_mut(&mut self) -> &mut T {
-        unsafe { &mut *(self.bf.page.get() as *mut T) }
-    }
-
-    #[inline]
-    pub fn set_next_free(&mut self, next_free: PageID) {
-        unsafe {
-            *self.bf.next_free.get() = next_free;
-        }
-    }
-}
 
 pub const SAFETY_PAGES: usize = 10;
 
@@ -242,7 +75,7 @@ impl FixedBufferPool {
 
     // allocate a new page with exclusive lock.
     #[inline]
-    pub fn allocate_page<T>(&self) -> Result<PageGuard<'_, T>> {
+    pub fn allocate_page<T>(&self) -> Result<PageExclusiveGuard<'_, T>> {
         // try get from free list.
         loop {
             let page_id = self.free_list.load(Ordering::Acquire);
@@ -257,8 +90,11 @@ impl FixedBufferPool {
                 .is_ok()
             {
                 *bf.next_free.get_mut() = INVALID_PAGE_ID;
-                let guard = bf.latch.exclusive();
-                return Ok(PageGuard::new(bf, guard));
+                let g = bf.latch.exclusive();
+                let g = PageGuard::new(bf, g)
+                    .try_exclusive()
+                    .expect("free page owns exclusive lock");
+                return Ok(g);
             }
         }
 
@@ -270,8 +106,11 @@ impl FixedBufferPool {
         let bf = unsafe { &mut *self.bfs.offset(page_id as isize) };
         bf.page_id.set(page_id);
         *bf.next_free.get_mut() = INVALID_PAGE_ID; // only current thread hold the mutable ref.
-        let guard = bf.latch.exclusive();
-        Ok(PageGuard::new(bf, guard))
+        let g = bf.latch.exclusive();
+        let g = PageGuard::new(bf, g)
+            .try_exclusive()
+            .expect("new page owns exclusive lock");
+        Ok(g)
     }
 
     /// Returns the page guard with given page id.
@@ -285,16 +124,22 @@ impl FixedBufferPool {
         if page_id >= self.allocated.load(Ordering::Relaxed) {
             return Err(Error::PageIdOutOfBound(page_id));
         }
-        let bf = unsafe { &*self.bfs.offset(page_id as isize) };
-        let guard = bf.latch.optimistic_fallback(mode)?;
-        Ok(PageGuard::new(bf, guard))
+        Ok(self.get_page_internal(page_id, mode))
     }
 
     #[inline]
-    pub fn deallocate_page<T>(&self, g: PageGuard<'_, T>) {
-        let mut g = g
-            .exclusive()
-            .expect("no one should hold lock on deallocating page");
+    fn get_page_internal<T>(
+        &self, 
+        page_id: PageID,
+        mode: LatchFallbackMode,
+    ) -> PageGuard<'_, T> {
+        let bf = unsafe { &*self.bfs.offset(page_id as usize as isize) };
+        let g = bf.latch.optimistic_fallback(mode);
+        PageGuard::new(bf, g)
+    }
+
+    #[inline]
+    pub fn deallocate_page<T>(&self, mut g: PageExclusiveGuard<'_, T>) {
         loop {
             let page_id = self.free_list.load(Ordering::Acquire);
             g.set_next_free(page_id);
@@ -318,14 +163,15 @@ impl FixedBufferPool {
         p_guard: PageGuard<'_, T>,
         page_id: PageID,
         mode: LatchFallbackMode,
-    ) -> Result<PageGuard<'_, T>> {
+    ) -> Validation<Result<PageGuard<'_, T>>> {
         if page_id >= self.allocated.load(Ordering::Relaxed) {
-            return Err(Error::PageIdOutOfBound(page_id));
+            return Valid(Err(Error::PageIdOutOfBound(page_id)));
         }
-        p_guard.validate()?;
-        let bf = unsafe { &*self.bfs.offset(page_id as isize) };
-        let c_guard = bf.latch.optimistic_fallback(mode)?;
-        Ok(PageGuard::new(bf, c_guard))
+        let g = self.get_page_internal(page_id, mode);
+        // apply lock coupling.
+        // the validation make sure parent page does not change until child
+        // page is acquired.
+        p_guard.validate().and_then(|_| Valid(Ok(g)))
     }
 }
 
@@ -347,22 +193,22 @@ mod tests {
     fn test_fixed_buffer_pool() {
         let pool = FixedBufferPool::with_capacity_static(64 * 1024 * 1024).unwrap();
         {
-            let g: PageGuard<'_, BlockNode> = pool.allocate_page().unwrap();
+            let g: PageExclusiveGuard<'_, BlockNode> = pool.allocate_page().unwrap();
             assert_eq!(g.page_id(), 0);
         }
         {
-            let g: PageGuard<'_, BlockNode> = pool.allocate_page().unwrap();
+            let g: PageExclusiveGuard<'_, BlockNode> = pool.allocate_page().unwrap();
             assert_eq!(g.page_id(), 1);
             pool.deallocate_page(g);
-            let g: PageGuard<'_, BlockNode> = pool.allocate_page().unwrap();
+            let g: PageExclusiveGuard<'_, BlockNode> = pool.allocate_page().unwrap();
             assert_eq!(g.page_id(), 1);
         }
         {
-            let g: PageGuard<'_, BlockNode> = pool.get_page(0, LatchFallbackMode::Jump).unwrap();
+            let g: PageGuard<'_, BlockNode> = pool.get_page(0, LatchFallbackMode::Spin).unwrap();
             assert_eq!(g.page_id(), 0);
         }
         assert!(pool
-            .get_page::<BlockNode>(5, LatchFallbackMode::Jump)
+            .get_page::<BlockNode>(5, LatchFallbackMode::Spin)
             .is_err());
 
         unsafe {

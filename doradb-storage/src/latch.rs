@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, Validation, Validation::Valid, Validation::Invalid};
 use parking_lot::lock_api::RawRwLock as RawRwLockApi;
 use parking_lot::RawRwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,7 +10,6 @@ pub enum LatchFallbackMode {
     Shared,
     Exclusive,
     Spin,
-    Jump, // retry is a special mode that will directly return and caller need to retry.
 }
 
 /// A HybridLatch combines optimisitic lock(version validation) and
@@ -71,12 +70,11 @@ impl HybridLatch {
     }
 
     #[inline]
-    pub fn optimistic_fallback(&self, mode: LatchFallbackMode) -> Result<HybridGuard<'_>> {
+    pub fn optimistic_fallback(&self, mode: LatchFallbackMode) -> HybridGuard<'_> {
         match mode {
-            LatchFallbackMode::Spin => Ok(self.optimistic_spin()),
-            LatchFallbackMode::Shared => Ok(self.optimistic_or_shared()),
-            LatchFallbackMode::Exclusive => Ok(self.optimistic_or_exclusive()),
-            LatchFallbackMode::Jump => self.try_optimistic().ok_or(Error::RetryLatch),
+            LatchFallbackMode::Spin => self.optimistic_spin(),
+            LatchFallbackMode::Shared => self.optimistic_or_shared(),
+            LatchFallbackMode::Exclusive => self.optimistic_or_exclusive(),
         }
     }
 
@@ -183,6 +181,18 @@ pub enum GuardState {
     Exclusive,
 }
 
+/// HybridGuard is the union of three kinds of locks.
+/// The common usage is to acquire optimistic lock first
+/// and then upgrade to shared lock or exclusive lock.
+/// 
+/// An additional validation must be executed to for lock
+/// upgrade, because the protected object may be entirely
+/// rewritten to another object, e.g. frames in buffer pool
+/// can be swapped to disk and reload another data page.
+/// So any time we save an optimistic guard and would like
+/// restore it later, we have to check the protected object
+/// is still same, for simplicity we just check whether the
+/// version is changed inbetween.
 pub struct HybridGuard<'a> {
     lock: &'a HybridLatch,
     pub state: GuardState,
@@ -200,11 +210,24 @@ impl<'a> HybridGuard<'a> {
         }
     }
 
-    /// Validate the optimistic lock is effective.
+    /// Validate version is not changed.
     #[inline]
     pub fn validate(&self) -> bool {
+        self.lock.version_match(self.version)
+    }
+
+    /// Validate whether transition from optimistic to shared is valid.
+    #[inline]
+    fn validate_shared_internal(&self) -> bool {
         debug_assert!(self.state == GuardState::Optimistic);
         self.lock.version_match(self.version)
+    }
+
+    #[inline]
+    fn validate_exclusive_internal(&self) -> bool {
+        debug_assert!(self.state == GuardState::Optimistic);
+        // as we already acquire exclusive lock, current version is added by 1.
+        self.lock.version_match(self.version + LATCH_EXCLUSIVE_BIT)
     }
 
     /// Convert lock mode to optimistic.
@@ -229,53 +252,57 @@ impl<'a> HybridGuard<'a> {
         }
     }
 
-    /// Convert a guard to shared mode.
-    /// return false if fail.(exclusive to shared will fail)
+    /// Try to convert a guard to shared mode.
     #[inline]
-    pub fn shared(&mut self) -> bool {
+    pub fn try_shared(&mut self) -> Validation<()> {
         match self.state {
             GuardState::Optimistic => {
-                *self = self.lock.shared();
-                true
+                // use try shared is ok. 
+                // because only when there is a exclusive lock, this try will fail. 
+                // and optimistic lock must be retried as vesion won't be matched.
+                // an additional validation is required, because other thread may 
+                // gain the exclusive lock inbetween.    
+                if let Some(g) = self.lock.try_shared() {
+                    if self.validate_shared_internal() {
+                        *self = g;
+                        return Valid(());
+                    } // otherwise drop the read lock and notify caller to retry
+                    debug_assert!(self.version != g.version);
+                }
+                Invalid
             }
-            GuardState::Shared => true,
-            GuardState::Exclusive => false,
+            GuardState::Shared => Valid(()),
+            GuardState::Exclusive => {
+                // downgrade to optimistic lock and then retry
+                self.downgrade();
+                // even though other thread may acquire the exclusive lock
+                // inbetween, version validation will make sure caller will
+                // be notified to retry.
+                self.try_shared()
+            }
         }
     }
 
     /// Convert a guard to exclusive mode.
     /// return false if fail.(shared to exclusive will fail)
     #[inline]
-    pub fn exclusive(&mut self) -> bool {
+    pub fn try_exclusive(&mut self) -> Validation<()> {
         match self.state {
             GuardState::Optimistic => {
-                *self = self.lock.exclusive();
-                true
-            }
-            GuardState::Shared => false,
-            GuardState::Exclusive => true,
-        }
-    }
-
-    #[inline]
-    pub fn try_exclusive(&mut self) -> bool {
-        match self.state {
-            GuardState::Optimistic => {
-                if let Some(guard) = self.lock.try_exclusive() {
-                    *self = guard;
-                    return true;
+                if let Some(g) = self.lock.try_exclusive() {
+                    if self.validate_exclusive_internal() {
+                        *self = g;
+                        return Valid(())
+                    }
+                    debug_assert!(self.version + LATCH_EXCLUSIVE_BIT != g.version);
                 }
-                false
+                Invalid
             }
             GuardState::Shared => {
                 self.downgrade();
-                if let Some(guard) = self.lock.try_exclusive() {
-                    *self = guard;
-                    return true;
-                }
-                false
+                self.try_exclusive()
             }
-            GuardState::Exclusive => true,
+            GuardState::Exclusive => Valid(()),
         }
     }
 
