@@ -110,6 +110,7 @@ pub struct TableSpec {
     pub schema_name: SemiStr,
     pub table_name: SemiStr,
     pub columns: Vec<ColumnSpec>,
+    // todo: index and constraint
 }
 
 impl TableSpec {
