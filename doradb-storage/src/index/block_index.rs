@@ -4,6 +4,7 @@ use crate::buffer::guard::{PageExclusiveGuard, PageGuard, PageSharedGuard};
 use crate::error::{Error, Result, Validation, Validation::{Valid, Invalid}};
 use crate::latch::LatchFallbackMode;
 use crate::row::{RowID, RowPage};
+use crate::row::layout::ColLayout;
 use parking_lot::Mutex;
 use std::mem;
 
@@ -387,7 +388,7 @@ impl<'a> BlockIndex<'a> {
     /// Get row page for insertion.
     /// Caller should cache insert page id to avoid invoking this method frequently.
     #[inline]
-    pub fn get_insert_page(&self, count: usize) -> Result<PageExclusiveGuard<'a, RowPage>> {
+    pub fn get_insert_page(&self, count: usize, cols: &[ColLayout]) -> Result<PageExclusiveGuard<'a, RowPage>> {
         match self.get_insert_page_from_free_list() {
             Valid(Ok(free_page)) => return Ok(free_page),
             Valid(_) | Invalid => {
@@ -402,8 +403,9 @@ impl<'a> BlockIndex<'a> {
                 Invalid => (),
                 Valid(Ok((start_row_id, end_row_id))) => {
                     // initialize row page.
+                    debug_assert!(end_row_id == start_row_id + count as u64);
                     let p = new_page.page_mut();
-                    p.init(start_row_id, end_row_id);
+                    p.init(start_row_id, count as u16, cols);
                     return Ok(new_page);
                 }
                 Valid(Err(e)) => {
@@ -931,12 +933,13 @@ mod tests {
     fn test_block_index_free_list() {
         let buf_pool = FixedBufferPool::with_capacity_static(64 * 1024 * 1024).unwrap();
         {
+            let cols = vec![ColLayout::Byte8, ColLayout::Byte8];
             let blk_idx = BlockIndex::new(buf_pool).unwrap();
-            let p1 = blk_idx.get_insert_page(100).unwrap();
+            let p1 = blk_idx.get_insert_page(100, &cols).unwrap();
             let pid1 = p1.page_id();
             blk_idx.free_exclusive_insert_page(p1);
             assert!(blk_idx.insert_free_list.lock().len() == 1);
-            let p2 = blk_idx.get_insert_page(100).unwrap();
+            let p2 = blk_idx.get_insert_page(100, &cols).unwrap();
             assert!(pid1 == p2.page_id());
             assert!(blk_idx.insert_free_list.lock().is_empty());
         }
@@ -949,12 +952,13 @@ mod tests {
     fn test_block_index_insert_row_page() {
         let buf_pool = FixedBufferPool::with_capacity_static(64 * 1024 * 1024).unwrap();
         {
+            let cols = vec![ColLayout::Byte8, ColLayout::Byte8];
             let blk_idx = BlockIndex::new(buf_pool).unwrap();
-            let p1 = blk_idx.get_insert_page(100).unwrap();
+            let p1 = blk_idx.get_insert_page(100, &cols).unwrap();
             let pid1 = p1.page_id();
             blk_idx.free_exclusive_insert_page(p1);
             assert!(blk_idx.insert_free_list.lock().len() == 1);
-            let p2 = blk_idx.get_insert_page(100).unwrap();
+            let p2 = blk_idx.get_insert_page(100, &cols).unwrap();
             assert!(pid1 == p2.page_id());
             assert!(blk_idx.insert_free_list.lock().is_empty());
         }
@@ -969,9 +973,10 @@ mod tests {
         // allocate 1GB buffer pool is enough: 10240 pages ~= 640MB
         let buf_pool = FixedBufferPool::with_capacity_static(1024 * 1024 * 1024).unwrap();
         {
+            let cols = vec![ColLayout::Byte8, ColLayout::Byte8];
             let blk_idx = BlockIndex::new(buf_pool).unwrap();
             for _ in 0..row_pages {
-                let _ = blk_idx.get_insert_page(100).unwrap();
+                let _ = blk_idx.get_insert_page(100, &cols).unwrap();
             }
             let mut count = 0usize;
             for res in blk_idx.cursor_shared(0).unwrap() {
@@ -1002,9 +1007,10 @@ mod tests {
         let rows_per_page = 100usize;
         let buf_pool = FixedBufferPool::with_capacity_static(1024 * 1024 * 1024).unwrap();
         {
+            let cols = vec![ColLayout::Byte8, ColLayout::Byte8];
             let blk_idx = BlockIndex::new(buf_pool).unwrap();
             for _ in 0..row_pages {
-                let _ = blk_idx.get_insert_page(rows_per_page).unwrap();
+                let _ = blk_idx.get_insert_page(rows_per_page, &cols).unwrap();
             }
             {
                 let res = blk_idx.buf_pool.get_page::<BlockNode>(blk_idx.root, LatchFallbackMode::Spin).unwrap();
