@@ -20,9 +20,9 @@ impl Layout {
             Layout::Byte4 => 4,
             Layout::Byte8 => 8,
             Layout::Byte16 => 16,
-            // 2-byte len, 2-byte offset, 12-byte prefix
-            // or inline version, 2-byte len, at most 14 inline bytes
-            Layout::VarByte => 16, 
+            // 2-byte len, 2-byte offset, 4-byte prefix
+            // or inline version, 2-byte len, at most 6 inline bytes
+            Layout::VarByte => 8, 
         }
     }
 }
