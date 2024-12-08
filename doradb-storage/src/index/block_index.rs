@@ -4,7 +4,7 @@ use crate::buffer::guard::{PageExclusiveGuard, PageGuard, PageSharedGuard};
 use crate::error::{Error, Result, Validation, Validation::{Valid, Invalid}};
 use crate::latch::LatchFallbackMode;
 use crate::row::{RowID, RowPage};
-use crate::row::layout::ColLayout;
+use crate::row::layout::Layout;
 use parking_lot::Mutex;
 use std::mem;
 
@@ -388,7 +388,7 @@ impl<'a> BlockIndex<'a> {
     /// Get row page for insertion.
     /// Caller should cache insert page id to avoid invoking this method frequently.
     #[inline]
-    pub fn get_insert_page(&self, count: usize, cols: &[ColLayout]) -> Result<PageExclusiveGuard<'a, RowPage>> {
+    pub fn get_insert_page(&self, count: usize, cols: &[Layout]) -> Result<PageExclusiveGuard<'a, RowPage>> {
         match self.get_insert_page_from_free_list() {
             Valid(Ok(free_page)) => return Ok(free_page),
             Valid(_) | Invalid => {
@@ -405,7 +405,7 @@ impl<'a> BlockIndex<'a> {
                     // initialize row page.
                     debug_assert!(end_row_id == start_row_id + count as u64);
                     let p = new_page.page_mut();
-                    p.init(start_row_id, count as u16, cols);
+                    p.init(start_row_id, count as usize, cols);
                     return Ok(new_page);
                 }
                 Valid(Err(e)) => {
@@ -933,7 +933,7 @@ mod tests {
     fn test_block_index_free_list() {
         let buf_pool = FixedBufferPool::with_capacity_static(64 * 1024 * 1024).unwrap();
         {
-            let cols = vec![ColLayout::Byte8, ColLayout::Byte8];
+            let cols = vec![Layout::Byte8, Layout::Byte8];
             let blk_idx = BlockIndex::new(buf_pool).unwrap();
             let p1 = blk_idx.get_insert_page(100, &cols).unwrap();
             let pid1 = p1.page_id();
@@ -952,7 +952,7 @@ mod tests {
     fn test_block_index_insert_row_page() {
         let buf_pool = FixedBufferPool::with_capacity_static(64 * 1024 * 1024).unwrap();
         {
-            let cols = vec![ColLayout::Byte8, ColLayout::Byte8];
+            let cols = vec![Layout::Byte8, Layout::Byte8];
             let blk_idx = BlockIndex::new(buf_pool).unwrap();
             let p1 = blk_idx.get_insert_page(100, &cols).unwrap();
             let pid1 = p1.page_id();
@@ -973,7 +973,7 @@ mod tests {
         // allocate 1GB buffer pool is enough: 10240 pages ~= 640MB
         let buf_pool = FixedBufferPool::with_capacity_static(1024 * 1024 * 1024).unwrap();
         {
-            let cols = vec![ColLayout::Byte8, ColLayout::Byte8];
+            let cols = vec![Layout::Byte8, Layout::Byte8];
             let blk_idx = BlockIndex::new(buf_pool).unwrap();
             for _ in 0..row_pages {
                 let _ = blk_idx.get_insert_page(100, &cols).unwrap();
@@ -1007,7 +1007,7 @@ mod tests {
         let rows_per_page = 100usize;
         let buf_pool = FixedBufferPool::with_capacity_static(1024 * 1024 * 1024).unwrap();
         {
-            let cols = vec![ColLayout::Byte8, ColLayout::Byte8];
+            let cols = vec![Layout::Byte8, Layout::Byte8];
             let blk_idx = BlockIndex::new(buf_pool).unwrap();
             for _ in 0..row_pages {
                 let _ = blk_idx.get_insert_page(rows_per_page, &cols).unwrap();
