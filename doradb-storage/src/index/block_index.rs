@@ -1,10 +1,14 @@
+use crate::buffer::frame::{BufferFrame, BufferFrameAware};
+use crate::buffer::guard::{PageExclusiveGuard, PageGuard, PageSharedGuard};
 use crate::buffer::page::{PageID, LSN, PAGE_SIZE};
 use crate::buffer::FixedBufferPool;
-use crate::buffer::guard::{PageExclusiveGuard, PageGuard, PageSharedGuard};
-use crate::error::{Error, Result, Validation, Validation::{Valid, Invalid}};
+use crate::error::{
+    Error, Result, Validation,
+    Validation::{Invalid, Valid},
+};
 use crate::latch::LatchFallbackMode;
-use crate::row::{RowID, RowPage};
 use crate::row::layout::Layout;
+use crate::row::{RowID, RowPage};
 use parking_lot::Mutex;
 use std::mem;
 
@@ -22,17 +26,20 @@ pub const BLOCK_BRANCH_ENTRY_START: usize = 48;
 // header 32 bytes, padding 640 bytes.
 pub const BLOCK_LEAF_ENTRY_START: usize = 672;
 
-const _: () = assert!({
-    mem::size_of::<BlockNode>() == BLOCK_PAGE_SIZE
-}, "Size of node of BlockIndex should equal to 64KB");
+const _: () = assert!(
+    { mem::size_of::<BlockNode>() == BLOCK_PAGE_SIZE },
+    "Size of node of BlockIndex should equal to 64KB"
+);
 
-const _: () = assert!({
-    BLOCK_HEADER_SIZE + NBR_ENTRIES_IN_BRANCH * ENTRY_SIZE <= BLOCK_PAGE_SIZE
-}, "Size of branch node of BlockIndex can be at most 64KB");
+const _: () = assert!(
+    { BLOCK_HEADER_SIZE + NBR_ENTRIES_IN_BRANCH * ENTRY_SIZE <= BLOCK_PAGE_SIZE },
+    "Size of branch node of BlockIndex can be at most 64KB"
+);
 
-const _: () = assert!({
-    BLOCK_HEADER_SIZE + NBR_BLOCKS_IN_LEAF * BLOCK_SIZE <= BLOCK_PAGE_SIZE
-}, "Size of leaf node of BlockIndex can be at most 64KB");
+const _: () = assert!(
+    { BLOCK_HEADER_SIZE + NBR_BLOCKS_IN_LEAF * BLOCK_SIZE <= BLOCK_PAGE_SIZE },
+    "Size of leaf node of BlockIndex can be at most 64KB"
+);
 
 /// BlockKind can be Row or Col.
 /// Row Block contains 78 row page ids.
@@ -106,9 +113,7 @@ impl BlockNode {
     #[inline]
     pub fn branch_entries_mut(&mut self) -> &mut [PageEntry] {
         debug_assert!(self.is_branch());
-        unsafe {
-            std::slice::from_raw_parts_mut(self.data_ptr_mut(), self.header.count as usize)
-        }
+        unsafe { std::slice::from_raw_parts_mut(self.data_ptr_mut(), self.header.count as usize) }
     }
 
     /// Returns entry in branch node by given index.
@@ -193,10 +198,13 @@ impl BlockNode {
         debug_assert!(!self.leaf_is_full());
         let end_row_id = self.header.end_row_id;
         self.header.count += 1;
-        self.leaf_last_block_mut().init_row(end_row_id, count, page_id);
+        self.leaf_last_block_mut()
+            .init_row(end_row_id, count, page_id);
         self.header.end_row_id += count;
     }
 }
+
+impl BufferFrameAware for BlockNode {}
 
 #[repr(C)]
 #[derive(Clone)]
@@ -388,15 +396,18 @@ impl<'a> BlockIndex<'a> {
     /// Get row page for insertion.
     /// Caller should cache insert page id to avoid invoking this method frequently.
     #[inline]
-    pub fn get_insert_page(&self, count: usize, cols: &[Layout]) -> Result<PageExclusiveGuard<'a, RowPage>> {
+    pub fn get_insert_page(
+        &self,
+        count: usize,
+        cols: &[Layout],
+    ) -> Result<PageExclusiveGuard<'a, RowPage>> {
         match self.get_insert_page_from_free_list() {
             Valid(Ok(free_page)) => return Ok(free_page),
             Valid(_) | Invalid => {
                 // we just ignore the free list error and latch error, and continue to get new page.
             }
         }
-        let mut new_page: PageExclusiveGuard<'a, RowPage> =
-            self.buf_pool.allocate_page()?;
+        let mut new_page: PageExclusiveGuard<'a, RowPage> = self.buf_pool.allocate_page()?;
         let new_page_id = new_page.page_id();
         loop {
             match self.insert_row_page(count as u64, new_page_id) {
@@ -442,7 +453,7 @@ impl<'a> BlockIndex<'a> {
         let mut stack = vec![];
         loop {
             let res = self.try_find_leaf_by_row_id(row_id, &mut stack);
-            let res =verify_continue!(res);
+            let res = verify_continue!(res);
             return res.map(|_| CursorShared {
                 blk_idx: self,
                 stack,
@@ -451,7 +462,9 @@ impl<'a> BlockIndex<'a> {
     }
 
     #[inline]
-    fn get_insert_page_from_free_list(&self) -> Validation<Result<PageExclusiveGuard<'a, RowPage>>> {
+    fn get_insert_page_from_free_list(
+        &self,
+    ) -> Validation<Result<PageExclusiveGuard<'a, RowPage>>> {
         let page_id = {
             let mut g = self.insert_free_list.lock();
             if g.is_empty() {
@@ -460,7 +473,9 @@ impl<'a> BlockIndex<'a> {
             g.pop().unwrap()
         };
         let page: PageGuard<'a, RowPage> = {
-            let res = self.buf_pool.get_page(page_id, LatchFallbackMode::Exclusive);
+            let res = self
+                .buf_pool
+                .get_page(page_id, LatchFallbackMode::Exclusive);
             bypass_res!(res)
         };
         page.try_exclusive().map(Ok)
@@ -490,14 +505,12 @@ impl<'a> BlockIndex<'a> {
         let max_row_id = r_row_id + count;
 
         // create left child and copy all contents to it.
-        let mut l_guard: PageExclusiveGuard<'_, BlockNode> =
-            self.buf_pool.allocate_page()?;
+        let mut l_guard: PageExclusiveGuard<'_, BlockNode> = self.buf_pool.allocate_page()?;
         let l_page_id = l_guard.page_id();
         l_guard.page_mut().clone_from(p_guard.page()); // todo: LSN
 
         // create right child, add one row block with one page entry.
-        let mut r_guard: PageExclusiveGuard<'_, BlockNode> =
-            self.buf_pool.allocate_page()?;
+        let mut r_guard: PageExclusiveGuard<'_, BlockNode> = self.buf_pool.allocate_page()?;
         let r_page_id = r_guard.page_id();
         {
             let r = r_guard.page_mut();
@@ -544,14 +557,18 @@ impl<'a> BlockIndex<'a> {
         loop {
             // try to lock parent.
             let g = stack.pop().unwrap();
-            debug_assert!(g.page_unchecked().is_branch());
             // if lock failed, just retry the whole process.
             p_guard = verify!(g.try_exclusive());
             if !p_guard.page().branch_is_full() {
                 break;
             } else if stack.is_empty() {
                 // root is full, should split
-                return Valid(self.insert_row_page_split_root(p_guard, row_id, count, insert_page_id));
+                return Valid(self.insert_row_page_split_root(
+                    p_guard,
+                    row_id,
+                    count,
+                    insert_page_id,
+                ));
             }
         }
         // create new leaf node with one insert page id
@@ -580,7 +597,11 @@ impl<'a> BlockIndex<'a> {
     }
 
     #[inline]
-    fn insert_row_page(&self, count: u64, insert_page_id: PageID) -> Validation<Result<(u64, u64)>> {
+    fn insert_row_page(
+        &self,
+        count: u64,
+        insert_page_id: PageID,
+    ) -> Validation<Result<(u64, u64)>> {
         let mut stack = vec![];
         let mut p_guard = {
             let res = verify!(self.find_right_most_leaf(&mut stack, LatchFallbackMode::Exclusive));
@@ -641,7 +662,7 @@ impl<'a> BlockIndex<'a> {
             bypass_res!(g)
         };
         // optimistic mode, should always check version after use protected data.
-        let mut pu = p_guard.page_unchecked();
+        let mut pu = unsafe { p_guard.page_unchecked() };
         let height = pu.header.height;
         let mut level = 1;
         while !pu.is_leaf() {
@@ -656,11 +677,13 @@ impl<'a> BlockIndex<'a> {
                 let res = verify!(g);
                 bypass_res!(res)
             } else {
-                let g = self.buf_pool.get_child_page(p_guard, page_id, LatchFallbackMode::Spin);
+                let g = self
+                    .buf_pool
+                    .get_child_page(p_guard, page_id, LatchFallbackMode::Spin);
                 let res = verify!(g);
                 bypass_res!(res)
             };
-            pu = p_guard.page_unchecked();
+            pu = unsafe { p_guard.page_unchecked() };
             level += 1;
         }
         Valid(Ok(p_guard))
@@ -677,7 +700,7 @@ impl<'a> BlockIndex<'a> {
             bypass_res!(res)
         };
         loop {
-            let pu = g.page_unchecked();
+            let pu = unsafe { g.page_unchecked() };
             if pu.is_leaf() {
                 debug_assert!(g.is_optimistic());
                 let row_id = pu.header.start_row_id;
@@ -721,7 +744,7 @@ impl<'a> BlockIndex<'a> {
             bypass_res!(res)
         };
         loop {
-            let pu = g.page_unchecked();
+            let pu = unsafe { g.page_unchecked() };
             if pu.is_leaf() {
                 // for leaf node, end_row_id is always correct,
                 // so we can quickly determine if row id exists
@@ -761,11 +784,11 @@ impl<'a> BlockIndex<'a> {
                 return Valid(Ok(RowLocation::RowPage(entries[idx].page_id)));
             }
             // For branch node, end_row_id is not always correct.
-            // 
+            //
             // With current page insert logic, at most time end_row_id
             // equals to its right-most child's start_row_id plus
             // row count of one row page.
-            // 
+            //
             // All leaf nodes maintain correct row id range.
             // so if input row id exceeds end_row_id, we just redirect
             // it to right-most leaf.
@@ -785,7 +808,9 @@ impl<'a> BlockIndex<'a> {
             };
             verify!(g.validate());
             g = {
-                let v = self.buf_pool.get_child_page(g, page_id, LatchFallbackMode::Spin);
+                let v = self
+                    .buf_pool
+                    .get_child_page(g, page_id, LatchFallbackMode::Spin);
                 let res = verify!(v);
                 bypass_res!(res)
             };
@@ -810,7 +835,8 @@ impl<'a> CursorShared<'a> {
     fn fill_stack_by_row_id_search(&mut self, row_id: RowID) -> Result<()> {
         loop {
             self.stack.clear();
-            let v = self.blk_idx
+            let v = self
+                .blk_idx
                 .try_find_leaf_by_row_id(row_id, &mut self.stack);
             let res = verify_continue!(v);
             match res {
@@ -844,7 +870,7 @@ impl<'a> Iterator for CursorShared<'a> {
                     }
                 }
                 NextKind::Branch(idx, row_id) => {
-                    let pu = pos.g.page_unchecked();
+                    let pu = unsafe { pos.g.page_unchecked() };
                     // all entries in branch have been traversed.
                     if idx == pu.header.count as usize {
                         if pos.g.validate().is_valid() {
@@ -879,12 +905,10 @@ impl<'a> Iterator for CursorShared<'a> {
                             });
                             match g.try_shared() {
                                 Valid(g) => return Some(Ok(g)),
-                                Invalid => {
-                                    match self.fill_stack_by_row_id_search(row_id) {
-                                        Ok(_) => continue 'LOOP,
-                                        Err(e) => return Some(Err(e)),
-                                    }
-                                }
+                                Invalid => match self.fill_stack_by_row_id_search(row_id) {
+                                    Ok(_) => continue 'LOOP,
+                                    Err(e) => return Some(Err(e)),
+                                },
                             }
                         }
                         Valid(Err(e)) => {
@@ -985,13 +1009,21 @@ mod tests {
                 let g = res.unwrap();
                 let node = g.page();
                 assert!(node.is_leaf());
-                let row_pages: usize = node.leaf_blocks().iter()
-                    .map(|block| if block.is_row() {
-                        block.row_page_entries().iter().count()
-                    } else { 0usize })
+                let row_pages: usize = node
+                    .leaf_blocks()
+                    .iter()
+                    .map(|block| {
+                        if block.is_row() {
+                            block.row_page_entries().iter().count()
+                        } else {
+                            0usize
+                        }
+                    })
                     .sum();
-                println!("start_row_id={:?}, end_row_id={:?}, blocks={:?}, row_pages={:?}", 
-                    node.header.start_row_id, node.header.end_row_id, node.header.count, row_pages);
+                println!(
+                    "start_row_id={:?}, end_row_id={:?}, blocks={:?}, row_pages={:?}",
+                    node.header.start_row_id, node.header.end_row_id, node.header.count, row_pages
+                );
             }
             let row_pages_per_leaf = NBR_BLOCKS_IN_LEAF * NBR_PAGES_IN_ROW_BLOCK;
             assert!(count == (row_pages + row_pages_per_leaf - 1) / row_pages_per_leaf);
@@ -1013,11 +1045,19 @@ mod tests {
                 let _ = blk_idx.get_insert_page(rows_per_page, &cols).unwrap();
             }
             {
-                let res = blk_idx.buf_pool.get_page::<BlockNode>(blk_idx.root, LatchFallbackMode::Spin).unwrap();
+                let res = blk_idx
+                    .buf_pool
+                    .get_page::<BlockNode>(blk_idx.root, LatchFallbackMode::Spin)
+                    .unwrap();
                 let p = res.try_exclusive().unwrap();
                 let bn = p.page();
                 println!("root is leaf ? {:?}", bn.is_leaf());
-                println!("root page_id={:?}, start_row_id={:?}, end_row_id={:?}", p.page_id(), bn.header.start_row_id, bn.header.end_row_id);
+                println!(
+                    "root page_id={:?}, start_row_id={:?}, end_row_id={:?}",
+                    p.page_id(),
+                    bn.header.start_row_id,
+                    bn.header.end_row_id
+                );
                 println!("root entries {:?}", bn.branch_entries());
             }
             for i in 0..row_pages {
@@ -1025,7 +1065,9 @@ mod tests {
                 let res = blk_idx.find_row_id(row_id).unwrap();
                 match res {
                     RowLocation::RowPage(page_id) => {
-                        let g: PageGuard<'_, RowPage> = buf_pool.get_page(page_id, LatchFallbackMode::Shared).unwrap();
+                        let g: PageGuard<'_, RowPage> = buf_pool
+                            .get_page(page_id, LatchFallbackMode::Shared)
+                            .unwrap();
                         let g = g.try_shared().unwrap();
                         let p = g.page();
                         assert!(p.header.start_row_id as usize == i * rows_per_page);

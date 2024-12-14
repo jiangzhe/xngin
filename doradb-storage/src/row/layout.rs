@@ -1,5 +1,5 @@
-/// Layout defines the memory layout of columns 
-/// stored in row page. 
+/// Layout defines the memory layout of columns
+/// stored in row page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Layout {
@@ -22,7 +22,7 @@ impl Layout {
             Layout::Byte16 => 16,
             // 2-byte len, 2-byte offset, 4-byte prefix
             // or inline version, 2-byte len, at most 6 inline bytes
-            Layout::VarByte => 8, 
+            Layout::VarByte => 8,
         }
     }
 }
