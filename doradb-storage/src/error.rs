@@ -98,7 +98,7 @@ impl<T> Validation<T> {
     #[inline]
     pub fn and_then<U, F>(self, f: F) -> Validation<U>
     where
-        F: FnOnce(T) -> Validation<U>
+        F: FnOnce(T) -> Validation<U>,
     {
         match self {
             Validation::Valid(v) => f(v),
@@ -151,7 +151,7 @@ macro_rules! verify {
             Validation::Valid(v) => v,
             Validation::Invalid => return Validation::Invalid,
         }
-    }
+    };
 }
 
 macro_rules! verify_continue {
@@ -160,7 +160,7 @@ macro_rules! verify_continue {
             Validation::Invalid => continue,
             Validation::Valid(v) => v,
         }
-    }
+    };
 }
 
 macro_rules! bypass_res {
@@ -169,5 +169,5 @@ macro_rules! bypass_res {
             Ok(res) => res,
             Err(e) => return Validation::Valid(Err(e)),
         }
-    }
+    };
 }

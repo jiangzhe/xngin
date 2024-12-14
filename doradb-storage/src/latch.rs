@@ -1,4 +1,4 @@
-use crate::error::{Error, Result, Validation, Validation::Valid, Validation::Invalid};
+use crate::error::{Error, Result, Validation, Validation::Invalid, Validation::Valid};
 use parking_lot::lock_api::RawRwLock as RawRwLockApi;
 use parking_lot::RawRwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -184,7 +184,7 @@ pub enum GuardState {
 /// HybridGuard is the union of three kinds of locks.
 /// The common usage is to acquire optimistic lock first
 /// and then upgrade to shared lock or exclusive lock.
-/// 
+///
 /// An additional validation must be executed to for lock
 /// upgrade, because the protected object may be entirely
 /// rewritten to another object, e.g. frames in buffer pool
@@ -257,11 +257,11 @@ impl<'a> HybridGuard<'a> {
     pub fn try_shared(&mut self) -> Validation<()> {
         match self.state {
             GuardState::Optimistic => {
-                // use try shared is ok. 
-                // because only when there is a exclusive lock, this try will fail. 
+                // use try shared is ok.
+                // because only when there is a exclusive lock, this try will fail.
                 // and optimistic lock must be retried as vesion won't be matched.
-                // an additional validation is required, because other thread may 
-                // gain the exclusive lock inbetween.    
+                // an additional validation is required, because other thread may
+                // gain the exclusive lock inbetween.
                 if let Some(g) = self.lock.try_shared() {
                     if self.validate_shared_internal() {
                         *self = g;
@@ -283,6 +283,12 @@ impl<'a> HybridGuard<'a> {
         }
     }
 
+    #[inline]
+    pub fn block_until_shared(self) -> Self {
+        debug_assert!(self.state == GuardState::Optimistic);
+        self.lock.shared()
+    }
+
     /// Convert a guard to exclusive mode.
     /// return false if fail.(shared to exclusive will fail)
     #[inline]
@@ -292,7 +298,7 @@ impl<'a> HybridGuard<'a> {
                 if let Some(g) = self.lock.try_exclusive() {
                     if self.validate_exclusive_internal() {
                         *self = g;
-                        return Valid(())
+                        return Valid(());
                     }
                     debug_assert!(self.version + LATCH_EXCLUSIVE_BIT != g.version);
                 }
@@ -304,6 +310,12 @@ impl<'a> HybridGuard<'a> {
             }
             GuardState::Exclusive => Valid(()),
         }
+    }
+
+    #[inline]
+    pub fn block_until_exclusive(self) -> Self {
+        debug_assert!(self.state == GuardState::Optimistic);
+        self.lock.exclusive()
     }
 
     #[inline]

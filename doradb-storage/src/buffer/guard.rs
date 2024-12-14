@@ -1,19 +1,24 @@
-use crate::latch::HybridGuard;
-use crate::buffer::page::PageID;
 use crate::buffer::frame::BufferFrame;
-use crate::error::{Result, Validation, Validation::{Valid, Invalid}};
+use crate::buffer::page::PageID;
+use crate::error::{
+    Result, Validation,
+    Validation::{Invalid, Valid},
+};
 use crate::latch::GuardState;
+use crate::latch::HybridGuard;
+use std::cell::UnsafeCell;
 use std::marker::PhantomData;
+use std::mem;
 
 pub struct PageGuard<'a, T> {
-    bf: &'a BufferFrame,
+    bf: &'a UnsafeCell<BufferFrame>,
     guard: HybridGuard<'a>,
     _marker: PhantomData<&'a T>,
 }
 
 impl<'a, T> PageGuard<'a, T> {
     #[inline]
-    pub(super) fn new(bf: &'a BufferFrame, guard: HybridGuard<'a>) -> Self {
+    pub(super) fn new(bf: &'a UnsafeCell<BufferFrame>, guard: HybridGuard<'a>) -> Self {
         Self {
             bf,
             guard,
@@ -22,33 +27,78 @@ impl<'a, T> PageGuard<'a, T> {
     }
 
     #[inline]
-    pub fn page_id(&self) -> PageID {
-        self.bf.page_id.get()
+    pub unsafe fn page_id(&self) -> PageID {
+        (*self.bf.get()).page_id
     }
 
     #[inline]
     pub fn try_shared(mut self) -> Validation<PageSharedGuard<'a, T>> {
-        self.guard.try_shared().map(|_| PageSharedGuard{
-            bf: self.bf,
+        self.guard.try_shared().map(|_| PageSharedGuard {
+            bf: unsafe { &*self.bf.get() },
             guard: self.guard,
             _marker: PhantomData,
         })
+    }
+
+    #[inline]
+    pub fn block_until_shared(self) -> PageSharedGuard<'a, T> {
+        match self.guard.state {
+            GuardState::Exclusive => PageSharedGuard {
+                bf: unsafe { &*self.bf.get() },
+                guard: self.guard,
+                _marker: PhantomData,
+            },
+            GuardState::Shared => {
+                unimplemented!("lock downgrade from exclusive to shared is not supported")
+            }
+            GuardState::Optimistic => {
+                let guard = self.guard.block_until_shared();
+                PageSharedGuard {
+                    bf: unsafe { &*self.bf.get() },
+                    guard,
+                    _marker: PhantomData,
+                }
+            }
+        }
     }
 
     #[inline]
     pub fn try_exclusive(mut self) -> Validation<PageExclusiveGuard<'a, T>> {
         self.guard.try_exclusive().map(|_| PageExclusiveGuard {
-            bf: self.bf,
+            bf: unsafe { &mut *self.bf.get() },
             guard: self.guard,
             _marker: PhantomData,
         })
     }
 
+    #[inline]
+    pub fn block_until_exclusive(self) -> PageExclusiveGuard<'a, T> {
+        match self.guard.state {
+            GuardState::Exclusive => PageExclusiveGuard {
+                bf: unsafe { &mut *self.bf.get() },
+                guard: self.guard,
+                _marker: PhantomData,
+            },
+            GuardState::Shared => {
+                unimplemented!("lock upgradate from shared to exclusive is not supported")
+            }
+            GuardState::Optimistic => {
+                let guard = self.guard.block_until_exclusive();
+                PageExclusiveGuard {
+                    bf: unsafe { &mut *self.bf.get() },
+                    guard,
+                    _marker: PhantomData,
+                }
+            }
+        }
+    }
+
     /// Returns page with optimistic read.
     /// All values must be validated before use.
     #[inline]
-    pub fn page_unchecked(&self) -> &T {
-        unsafe { &*(self.bf.page.get() as *const _ as *const T) }
+    pub unsafe fn page_unchecked(&self) -> &T {
+        let bf = self.bf.get();
+        mem::transmute(&(*bf).page)
     }
 
     /// Validates version not change.
@@ -105,20 +155,27 @@ impl<'a, T> PageSharedGuard<'a, T> {
         self.guard.downgrade();
     }
 
+    /// Returns the buffer frame current page associated.
+    #[inline]
+    pub fn bf(&self) -> &BufferFrame {
+        self.bf
+    }
+
+    /// Returns current page id.
     #[inline]
     pub fn page_id(&self) -> PageID {
-        self.bf.page_id.get()
+        self.bf.page_id
     }
 
     /// Returns shared page.
     #[inline]
     pub fn page(&self) -> &T {
-        unsafe { &*(self.bf.page.get() as *const _ as *const T) }
+        unsafe { mem::transmute(&self.bf.page) }
     }
 }
 
 pub struct PageExclusiveGuard<'a, T> {
-    bf: &'a BufferFrame,
+    bf: &'a mut BufferFrame,
     guard: HybridGuard<'a>,
     _marker: PhantomData<&'a mut T>,
 }
@@ -131,25 +188,39 @@ impl<'a, T> PageExclusiveGuard<'a, T> {
         self.guard.downgrade();
     }
 
+    /// Returns current page id.
     #[inline]
     pub fn page_id(&self) -> PageID {
-        self.bf.page_id.get()
+        self.bf.page_id
     }
 
+    /// Returns current page.
     #[inline]
     pub fn page(&self) -> &T {
-        unsafe { &*(self.bf.page.get() as *const T) }
+        unsafe { mem::transmute(&self.bf.page) }
     }
 
+    /// Returns mutable page.
     #[inline]
     pub fn page_mut(&mut self) -> &mut T {
-        unsafe { &mut *(self.bf.page.get() as *mut T) }
+        unsafe { mem::transmute(&mut self.bf.page) }
     }
 
+    /// Returns current buffer frame.
+    #[inline]
+    pub fn bf(&self) -> &BufferFrame {
+        &self.bf
+    }
+
+    /// Returns mutable buffer frame.
+    #[inline]
+    pub fn bf_mut(&mut self) -> &mut BufferFrame {
+        &mut self.bf
+    }
+
+    /// Set next free page.
     #[inline]
     pub fn set_next_free(&mut self, next_free: PageID) {
-        unsafe {
-            *self.bf.next_free.get() = next_free;
-        }
+        self.bf.next_free = next_free;
     }
 }
