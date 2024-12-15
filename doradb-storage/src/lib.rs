@@ -7,3 +7,4 @@ pub mod latch;
 pub mod row;
 pub mod trx;
 pub mod value;
+pub mod table;

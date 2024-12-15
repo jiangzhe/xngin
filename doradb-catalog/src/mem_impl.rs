@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::{
-    Catalog, ColIndex, Column, ColumnAttr, ColumnID, Key, Schema, SchemaID, Table, TableID,
+    ObjID, Catalog, ColIndex, Column, ColumnAttr, ColumnID, Key, Schema, SchemaID, Table, TableID,
     TableSpec,
 };
 use indexmap::IndexMap;
@@ -18,9 +18,7 @@ struct Inner {
     schemas: IndexMap<SemiStr, Schema>,
     tables: IndexMap<SchemaID, Vec<Table>>,
     table_columns: HashMap<TableID, TableWithColumns>,
-    schema_id_gen: u32,
-    table_id_gen: u32,
-    column_id_gen: u32,
+    obj_id_gen: ObjID,
 }
 
 #[derive(Debug)]
@@ -123,8 +121,8 @@ impl Catalog for MemCatalog {
         if inner.schemas.contains_key(schema_name) {
             return Err(Error::SchemaAlreadyExists(SemiStr::new(schema_name)));
         }
-        inner.schema_id_gen += 1;
-        let id = SchemaID::new(inner.schema_id_gen);
+        inner.obj_id_gen += 1;
+        let id = inner.obj_id_gen;
         let name = SemiStr::new(schema_name);
         let schema = Schema {
             id,
@@ -158,9 +156,7 @@ impl Catalog for MemCatalog {
             schemas,
             tables,
             table_columns,
-            table_id_gen,
-            column_id_gen,
-            ..
+            obj_id_gen,
         } = &mut *inner;
         match schemas.get(&table_spec.schema_name) {
             None => Err(Error::SchemaNotExists(table_spec.schema_name)),
@@ -172,8 +168,8 @@ impl Catalog for MemCatalog {
                 {
                     return Err(Error::TableAlreadyExists(table_spec.table_name));
                 }
-                *table_id_gen += 1;
-                let table_id = TableID::new(*table_id_gen);
+                *obj_id_gen += 1;
+                let table_id = *obj_id_gen;
                 let table_name = SemiStr::new(&table_spec.table_name);
                 let table = Table {
                     id: table_id,
@@ -183,8 +179,8 @@ impl Catalog for MemCatalog {
                 tables.entry(schema.id).or_default().push(table.clone());
                 let mut columns = Vec::with_capacity(table_spec.columns.len());
                 for (i, c) in table_spec.columns.iter().enumerate() {
-                    *column_id_gen += 1;
-                    let id = ColumnID::new(*column_id_gen);
+                    *obj_id_gen += 1;
+                    let id = *obj_id_gen;
                     let column = Column {
                         id,
                         table_id,

@@ -45,46 +45,10 @@ pub trait Catalog: Send + Sync {
     fn find_keys(&self, table_id: &TableID) -> Vec<Key>;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ObjectID<T> {
-    id: u32,
-    _marker: PhantomData<T>,
-}
-
-impl<T> fmt::Debug for ObjectID<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ObjectID").field("id", &self.id).finish()
-    }
-}
-
-impl<T> ObjectID<T> {
-    /// Required to create object only within the catalog module.
-    pub(crate) fn new(id: u32) -> Self {
-        ObjectID {
-            id,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T> ObjectID<T> {
-    #[inline]
-    pub fn value(&self) -> u32 {
-        self.id
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct S;
-pub type SchemaID = ObjectID<S>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct T;
-pub type TableID = ObjectID<T>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct C;
-pub type ColumnID = ObjectID<C>;
+pub type ObjID = u64;
+pub type TableID = ObjID;
+pub type SchemaID = ObjID;
+pub type ColumnID = ObjID;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {

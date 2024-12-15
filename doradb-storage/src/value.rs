@@ -18,6 +18,7 @@ const _: () = assert!(mem::size_of::<MemVar>() == 16);
 /// because we cannot rely on page data.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Val {
+    Null,
     Byte1(Byte1Val),
     Byte2(Byte2Val),
     Byte4(Byte4Val),
@@ -32,6 +33,7 @@ impl PartialEq for Val {
     #[inline]
     fn eq(&self, rhs: &Self) -> bool {
         match (self, rhs) {
+            (Val::Null, Val::Null) => true,
             (Val::Byte1(l), Val::Byte1(r)) => l == r,
             (Val::Byte2(l), Val::Byte2(r)) => l == r,
             (Val::Byte4(l), Val::Byte4(r)) => l == r,
