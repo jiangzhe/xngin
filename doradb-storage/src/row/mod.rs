@@ -1,9 +1,9 @@
-pub mod layout;
 pub mod ops;
 
 use crate::buffer::frame::{BufferFrame, BufferFrameAware};
 use crate::buffer::page::PAGE_SIZE;
-use crate::row::layout::Layout;
+use crate::table::layout::Layout;
+use crate::table::SchemaRef;
 use crate::row::ops::{
     DeleteResult, DeleteRow, InsertResult, InsertRow, SelectResult, UpdateCol, UpdateResult,
     UpdateRow, UpdateWithUndoResult,
@@ -89,13 +89,13 @@ impl RowPage {
     }
 
     #[inline]
-    fn init_col_offset_list_and_fix_field_end(&mut self, cols: &[Layout], row_count: u16) {
-        debug_assert!(cols.len() >= 2); // at least RowID and one user column.
-        debug_assert!(cols[0] == Layout::Byte8); // first column must be RowID, with 8-byte layout.
+    fn init_col_offset_list_and_fix_field_end(&mut self, schema: SchemaRef<'_>, row_count: u16) {
+        debug_assert!(schema.len() >= 2); // at least RowID and one user column.
+        debug_assert!(schema[0] == Layout::Byte8); // first column must be RowID, with 8-byte layout.
         debug_assert!(self.header.col_offset_list_offset != 0);
         debug_assert!(self.header.fix_field_offset != 0);
         let mut col_offset = self.header.fix_field_offset;
-        for (i, col) in cols.iter().enumerate() {
+        for (i, col) in schema.iter().enumerate() {
             *self.col_offset_mut(i) = col_offset;
             col_offset += col_fix_len(col, row_count as usize) as u16;
         }
@@ -151,7 +151,8 @@ impl RowPage {
 
     /// Insert a new row in page.
     #[inline]
-    pub fn insert(&mut self, insert: &InsertRow) -> InsertResult {
+    pub fn insert(&mut self, schema: SchemaRef<'_>, insert: &InsertRow) -> InsertResult {
+        debug_assert!(schema.len() == self.header.col_count as usize);
         // insert row does not include RowID, as RowID is auto-generated.
         debug_assert!(insert.0.len() + 1 == self.header.col_count as usize);
         if self.header.row_count == self.header.max_row_count {
@@ -163,6 +164,7 @@ impl RowPage {
         let mut new_row = self.new_row();
         for v in &insert.0 {
             match v {
+                Val::Null => new_row.add_null(),
                 Val::Byte1(v1) => new_row.add_val(*v1),
                 Val::Byte2(v2) => new_row.add_val(*v2),
                 Val::Byte4(v4) => new_row.add_val(*v4),
@@ -235,7 +237,7 @@ impl RowPage {
     }
 
     #[inline]
-    pub fn update_with_undo(&mut self, update: &UpdateRow) -> UpdateWithUndoResult {
+    pub fn update_with_undo(&mut self, schema: SchemaRef<'_>, update: &UpdateRow) -> UpdateWithUndoResult {
         // column indexes must be in range
         debug_assert!(
             {
@@ -274,7 +276,7 @@ impl RowPage {
         // todo: identify difference and skip if the same.
         let mut undo = vec![];
         for uc in &update.cols {
-            if let Some(old) = row.is_different(uc.idx, &uc.val) {
+            if let Some(old) = row.is_different(uc.idx, schema[uc.idx], &uc.val) {
                 undo.push(UpdateCol {
                     idx: uc.idx,
                     val: Val::from(old),
@@ -735,37 +737,65 @@ impl<'a> RowMut<'a> {
 
     /// Returns the old value if different from given index and new value.
     #[inline]
-    pub fn is_different(&self, col_idx: usize, value: &Val) -> Option<Val> {
-        match value {
-            Val::Byte1(new) => {
+    pub fn is_different(&self, col_idx: usize, layout: Layout, value: &Val) -> Option<Val> {
+        match (value, self.is_null(col_idx), layout) {
+            (Val::Null, true, _) => None,
+            (_, true, _) => Some(Val::Null),
+            // we cannot identify column type from input null, so use layout
+            (Val::Null, false, Layout::Byte1) => {
+                let old = self.val::<Byte1Val>(col_idx);
+                Some(Val::Byte1(*old))
+            }
+            (Val::Null, false, Layout::Byte2) => {
+                let old = self.val::<Byte2Val>(col_idx);
+                Some(Val::Byte2(*old))
+            }
+            (Val::Null, false, Layout::Byte4) => {
+                let old = self.val::<Byte4Val>(col_idx);
+                Some(Val::Byte4(*old))
+            }
+            (Val::Null, false, Layout::Byte8) => {
+                let old = self.val::<Byte8Val>(col_idx);
+                Some(Val::Byte8(*old))
+            }
+            (Val::Null, false, Layout::VarByte) => {
+                let old = self.var(col_idx);
+                Some(Val::VarByte(MemVar::new(old)))
+            }
+            (Val::Byte1(new), false, lo) => {
+                debug_assert!(lo == Layout::Byte1);
                 let old = self.val::<Byte1Val>(col_idx);
                 if old == new {
                     return None;
                 }
                 Some(Val::Byte1(*old))
             }
-            Val::Byte2(new) => {
+            (Val::Byte2(new), false, lo) => {
+                debug_assert!(lo == Layout::Byte2);
                 let old = self.val::<Byte2Val>(col_idx);
                 if old == new {
                     return None;
                 }
                 Some(Val::Byte2(*old))
             }
-            Val::Byte4(new) => {
+            (Val::Byte4(new), false, lo) => {
+                debug_assert!(lo == Layout::Byte4);
                 let old = self.val::<Byte4Val>(col_idx);
                 if old == new {
                     return None;
                 }
                 Some(Val::Byte4(*old))
             }
-            Val::Byte8(new) => {
+            (Val::Byte8(new), false, lo) => {
+                debug_assert!(lo == Layout::Byte8);
                 let old = self.val::<Byte8Val>(col_idx);
                 if old == new {
                     return None;
                 }
                 Some(Val::Byte8(*old))
             }
-            Val::VarByte(new) => {
+            (Val::VarByte(new), false, lo) => {
+                debug_assert!(lo == Layout::VarByte);
                 let old = self.var(col_idx);
                 if old == new.as_bytes() {
                     return None;
@@ -779,6 +809,9 @@ impl<'a> RowMut<'a> {
     #[inline]
     pub fn update_col(&mut self, col_idx: usize, value: &Val) {
         match value {
+            Val::Null => {
+                self.set_null(col_idx);
+            }
             Val::Byte1(v1) => {
                 self.update_val(col_idx, v1);
             }
@@ -1000,7 +1033,7 @@ mod tests {
             Val::Byte8(1 << 35),
             Val::from(&short[..]),
         ]);
-        let res = page.insert(&insert);
+        let res = page.insert(&cols, &insert);
         assert!(matches!(res, InsertResult::Ok(100)));
         assert!(!page.row(0).is_deleted());
 

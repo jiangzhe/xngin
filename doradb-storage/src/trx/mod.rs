@@ -4,12 +4,12 @@
 //! 1. When starting a transaction, a snapshot timestamp(STS) is generated, and transaction id
 //!    is also derived from STS by setting highest bit to 1.
 //! 2. When the transaction do any insert, update or delete, an undo log is generated with
-//!    RowID and stored in a page-level transaction version map(TRX-MAP). The undo log records
+//!    RowID and stored in a page-level transaction version map(UndoMap). The undo log records
 //!    current transaction id at head.
 //! 3. When the transaction commits, a commit timestamp(CTS) is generated, and all undo logs of
 //!    this transaction will update CTS in its head.
 //! 4. When a transaction query a row in one page,
-//!    a) it first look at page-level TRX-MAP, if the map is empty, then all data on the page
+//!    a) it first look at page-level UndoMap, if the map is empty, then all data on the page
 //!       are latest. So directly read data and return.
 //!    b) otherwise, check if queried RowID exists in the map. if not, same as a).
 //!    c) If exists, check the timestamp in entry head. If it's larger than current STS, means
@@ -19,15 +19,12 @@ pub mod redo;
 pub mod sys;
 pub mod undo;
 
-use crate::buffer::guard::{PageExclusiveGuard, PageGuard};
+use crate::buffer::guard::PageGuard;
 use crate::buffer::FixedBufferPool;
 use crate::latch::LatchFallbackMode;
-use crate::row::ops::{InsertResult, InsertRow};
 use crate::row::RowPage;
 use crate::trx::redo::{RedoBin, RedoEntry, RedoLog};
-use crate::trx::undo::{SharedUndoEntry, UndoEntry, UndoKind};
-use parking_lot::Mutex;
-use std::collections::HashMap;
+use crate::trx::undo::SharedUndoEntry;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -41,16 +38,16 @@ pub const MAX_COMMIT_TS: TrxID = 1 << 63;
 pub const MIN_ACTIVE_TRX_ID: TrxID = (1 << 63) + 1;
 
 pub struct ActiveTrx {
-    trx_id: Arc<AtomicU64>,
+    pub trx_id: Arc<AtomicU64>,
     pub sts: TrxID,
     // transaction-level undo logs.
     trx_undo: Vec<SharedUndoEntry>,
     // statement-level undo logs.
-    stmt_undo: Vec<SharedUndoEntry>,
+    pub stmt_undo: Vec<SharedUndoEntry>,
     // transaction-level redo logs.
     trx_redo: Vec<RedoEntry>,
     // statement-level redo logs.
-    stmt_redo: Vec<RedoEntry>,
+    pub stmt_redo: Vec<RedoEntry>,
 }
 
 impl ActiveTrx {
@@ -130,47 +127,6 @@ impl ActiveTrx {
     #[inline]
     pub fn rollback(self) {
         todo!()
-    }
-
-    #[inline]
-    fn insert_row_into_page(
-        &mut self,
-        page_guard: &mut PageExclusiveGuard<'_, RowPage>,
-        insert: &InsertRow,
-    ) -> InsertResult {
-        match page_guard.page_mut().insert(&insert) {
-            InsertResult::Ok(row_id) => {
-                let page_id = page_guard.page_id();
-                // create undo log.
-                let undo_entry = Arc::new(UndoEntry {
-                    ts: Arc::clone(&self.trx_id),
-                    page_id,
-                    row_id,
-                    kind: UndoKind::Insert,
-                    next: Mutex::new(None),
-                });
-                // store undo log in undo map.
-                let undo_map = page_guard
-                    .bf_mut()
-                    .undo_map
-                    .get_or_insert_with(|| Box::new(HashMap::new()))
-                    .as_mut();
-                let res = undo_map.insert(row_id, Arc::clone(&undo_entry));
-                debug_assert!(res.is_none()); // insert must not have old version.
-                                              // store undo log into transaction undo buffer.
-                self.stmt_undo.push(undo_entry);
-                // create redo log.
-                let redo_entry = RedoEntry {
-                    page_id,
-                    row_id,
-                    kind: insert.create_redo(),
-                };
-                // store redo log into transaction redo buffer.
-                self.stmt_redo.push(redo_entry);
-                InsertResult::Ok(row_id)
-            }
-            err => err,
-        }
     }
 }
 
