@@ -80,9 +80,7 @@ pub struct TransactionSystem {
     /// Head is always oldest and tail is newest.
     gc_info: CachePadded<Mutex<GCInfo>>,
     /// Log writer controls how to persist redo log buffer to disk.
-    redo_logger: Mutex<Option<RedoLogger>>,
-    /// Flag to indicate whether redo log is enabled.
-    redo_log_enabled: AtomicBool,
+    redo_logger: Mutex<Option<Box<dyn RedoLogger>>>,
     /// Background GC thread identify which transactions can be garbage collected and
     /// calculate watermark for other thread to cooperate.
     gc_thread: Mutex<Option<GCThread>>,
@@ -229,21 +227,6 @@ impl TransactionSystem {
         debug_assert!(rollback_inserted);
     }
 
-    /// Returns whether redo log is enabled.
-    #[inline]
-    pub fn redo_log_enabled(&self) -> bool {
-        self.redo_log_enabled.load(Ordering::Relaxed)
-    }
-
-    /// Enable or disable redo log persistence.
-    /// It will not impact redo log generation even if it's disabled.
-    /// But the log persistence will be disabled.
-    #[inline]
-    pub fn set_redo_log_enabled(&self, redo_log_enabled: bool) {
-        self.redo_log_enabled
-            .store(redo_log_enabled, Ordering::SeqCst);
-    }
-
     /// Start background GC thread.
     /// This method should be called once transaction system is initialized.
     #[inline]
@@ -276,10 +259,10 @@ impl TransactionSystem {
     /// The method should be called before shutdown transaction system if GC thread
     /// is enabled.
     #[inline]
-    pub fn stop_gc_thread(&'static self) {
+    pub fn stop_gc_thread(&self) {
         let mut group_commit_g = self.group_commit.lock();
         if group_commit_g.gc_chan.is_none() {
-            panic!("GC thread should be stopped only once");
+            return;
         }
         group_commit_g.gc_chan = None;
         drop(group_commit_g);
@@ -292,6 +275,16 @@ impl TransactionSystem {
         }
     }
 
+    /// Set redo logger.
+    #[inline]
+    pub fn set_redo_logger(&self, logger: Box<dyn RedoLogger>) {
+        let mut logger_g = self.redo_logger.lock();
+        if logger_g.is_some() {
+            panic!("redo logger can be set only once");
+        }
+        *logger_g = Some(logger);
+    }
+
     #[inline]
     fn commit_single_trx(
         &self,
@@ -299,13 +292,16 @@ impl TransactionSystem {
         gc_chan: Option<Sender<Vec<CommittedTrx>>>,
     ) -> TrxID {
         let cts = trx.cts;
-        // todo: persist log
-        if self.redo_log_enabled() {
+        
+        // persist log
+        if let Some(redo_bin) = trx.redo_bin {
             let mut g = self.redo_logger.lock();
             if let Some(logger) = g.as_mut() {
-                logger.log();
+                logger.write(trx.cts, redo_bin);
+                logger.sync();
             }
         }
+
         // backfill cts
         trx.trx_id.store(cts, Ordering::SeqCst);
 
@@ -328,7 +324,7 @@ impl TransactionSystem {
     #[inline]
     fn commit_multi_trx(
         &self,
-        trx_list: Vec<PrecommitTrx>,
+        mut trx_list: Vec<PrecommitTrx>,
         gc_chan: Option<Sender<Vec<CommittedTrx>>>,
     ) -> TrxID {
         debug_assert!(trx_list.len() > 1);
@@ -339,11 +335,17 @@ impl TransactionSystem {
                 .all(|(l, r)| l.cts < r.cts)
         });
         let max_cts = trx_list.last().unwrap().cts;
-        // todo: persist log
-        if self.redo_log_enabled() {
+        
+        // persist log
+        {
             let mut g = self.redo_logger.lock();
             if let Some(logger) = g.as_mut() {
-                logger.log();
+                for trx in &mut trx_list {
+                    if let Some(redo_bin) = trx.redo_bin.take() {
+                        logger.write(trx.cts, redo_bin);
+                    }
+                }
+                logger.sync();
             }
         }
         // Instead of letting each thread backfill its CTS in undo logs,
@@ -452,11 +454,8 @@ impl TransactionSystem {
             // and new transactions must join this group because it's not started.
             // so group count must be 1.
             debug_assert!(group_commit_g.groups.len() == 1);
-            let CommitGroup {
-                kind,
-                notifier: notify,
-            } = &mut group_commit_g.groups.front_mut().unwrap();
-            let kind = mem::replace(kind, CommitGroupKind::Processing);
+            let curr_group = group_commit_g.groups.front_mut().unwrap();
+            let kind = mem::replace(&mut curr_group.kind, CommitGroupKind::Processing);
             let gc_chan = group_commit_g.gc_chan.clone();
             (kind, gc_chan)
         }; // Here release the lock so other transactions can form new group.
@@ -589,13 +588,19 @@ impl TransactionSystem {
             persisted_cts: CachePadded::new(AtomicU64::new(MIN_SNAPSHOT_TS)),
             gc_info: CachePadded::new(Mutex::new(GCInfo::new())),
             redo_logger: Mutex::new(None),
-            redo_log_enabled: AtomicBool::new(false),
             gc_thread: Mutex::new(None),
         }
     }
 }
 
 unsafe impl Sync for TransactionSystem {}
+
+impl Drop for TransactionSystem {
+    #[inline]
+    fn drop(&mut self) {
+        self.stop_gc_thread();
+    }
+}
 
 /// GCInfo is only used for GroupCommitter to store and analyze GC related information,
 /// including committed transaction list, old transaction list, active snapshot timestamp
