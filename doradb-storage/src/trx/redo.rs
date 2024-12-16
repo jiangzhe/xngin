@@ -28,13 +28,14 @@ pub struct RedoLog {
 /// RedoBin is serialized redo log in binary format
 pub type RedoBin = Vec<u8>;
 
-pub struct RedoLogger;
+/// Abstraction of redo logger.
+/// It's responsible to persist redo logs and wait for it's persisted.
+pub trait RedoLogger {
+    /// Write redo binary logs to disk.
+    fn write(&mut self, cts: TrxID, redo_bin: RedoBin);
 
-impl RedoLogger {
-    #[inline]
-    pub fn log(&mut self) {
-        // todo
-    }
+    /// wait for previous written logs to be persisted.
+    fn sync(&mut self);
 }
 
 #[cfg(test)]

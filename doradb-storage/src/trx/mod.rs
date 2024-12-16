@@ -103,6 +103,8 @@ impl ActiveTrx {
         debug_assert!(self.stmt_redo.is_empty());
         // use bincode to serialize redo log
         let redo_bin = if self.trx_redo.is_empty() {
+            // todo: only for test
+            // Some(vec![])
             None
         } else {
             // todo: use customized serialization method, and keep CTS placeholder.

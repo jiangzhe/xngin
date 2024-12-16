@@ -25,3 +25,4 @@ flume = "0.11"
 [dev-dependencies]
 rand = "0.8"
 bitcode = { version = "0.6.3", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
